@@ -1067,53 +1067,81 @@ class DigitalTwinEngine:
         return hit, reasons
 
     # ★ Phase 6c* 統合: NumPy 時系列トレンドによる動的 RUL 予測
-    def _predict_rul_with_trend(self, device_id: str, current_level: int, base_ttf_hours: int) -> int:
+    def _predict_rul_with_trend(self, device_id: str, current_level: int,
+                                base_ttf_hours: int, source: str = "real") -> int:
         """
-        過去の履歴データからトレンド（傾き）を NumPy 線形回帰で計算し、
-        閾値到達までの RUL（残存寿命）を動的に予測する。
-        データ不足時は静的スケール係数にフォールバック。
+        残存寿命 (RUL) を予測する。
+
+        ■ simulation モード: 決定論的な指数減衰モデル
+          - Level が上がるにつれ RUL が滑らかに短縮
+          - スライダー操作で履歴が汚染されない
+        ■ real モード: 過去の *real* 履歴からトレンドを線形回帰
+          - データ不足時は simulation と同じ決定論的モデルにフォールバック
         """
+        # ─── 決定論的 RUL（simulation 用、real のフォールバックも兼用） ───
+        #   指数減衰: base_hours * decay_factor
+        #   Level 1: 100% → Level 5: ~1.5%
+        _DETERMINISTIC_DECAY = {
+            1: 1.00,   # 14日  (optical 336h)
+            2: 0.50,   # 7日
+            3: 0.21,   # 2.9日 (≈70h)
+            4: 0.07,   # 1日   (≈24h)
+            5: 0.015,  # 5時間
+        }
+
+        _level = max(1, min(5, current_level))
+
+        if source == "simulation":
+            _decay = _DETERMINISTIC_DECAY.get(_level, 0.50)
+            return max(1, int(base_ttf_hours * _decay))
+
+        # ─── real モード: トレンド分析 ─────────────────────
         now = time.time()
         window_start = now - (24 * 3600)  # 過去24時間
 
+        # ★ simulation 由来の履歴を除外して real のみ使用
         history_data = [
             h for h in self.history
-            if h.get("device_id") == device_id and h.get("timestamp", 0) >= window_start
+            if (h.get("device_id") == device_id
+                and h.get("timestamp", 0) >= window_start
+                and h.get("source", "real") != "simulation")
         ]
 
-        # データ不足時はフォールバック
+        # データ不足時は決定論的モデルにフォールバック
         if len(history_data) < 3:
-            _ttf_scale = (6 - current_level) / 5.0
-            return max(1, int(base_ttf_hours * _ttf_scale))
-
-        timestamps = np.array([h.get("timestamp") for h in history_data])
-        x = (timestamps - window_start) / 3600.0  # 時間単位
-        y = np.array([h.get("prob", 0.1) for h in history_data])
-
-        # 現在の状態を追加
-        x = np.append(x, 24.0)
-        current_prob = min(0.99, current_level * 0.2)
-        y = np.append(y, current_prob)
+            _decay = _DETERMINISTIC_DECAY.get(_level, 0.50)
+            return max(1, int(base_ttf_hours * _decay))
 
         try:
+            timestamps = np.array([h.get("timestamp") for h in history_data])
+            x = (timestamps - window_start) / 3600.0  # 時間単位
+            y = np.array([h.get("prob", 0.1) for h in history_data])
+
+            # 現在の状態を追加
+            x = np.append(x, 24.0)
+            current_prob = min(0.99, _level * 0.2)
+            y = np.append(y, current_prob)
+
             coeffs = np.polyfit(x, y, 1)
             slope = coeffs[0]
             intercept = coeffs[1]
 
             if slope > 0.001:
-                # 閾値 0.95 到達までの時間を予測
                 target_x = (0.95 - intercept) / slope
                 predicted_rul_hours = target_x - 24.0
-                return max(1, min(int(predicted_rul_hours), base_ttf_hours))
+                # sanity check: RUL は決定論的モデルの 0.3倍〜3倍の範囲に制約
+                _det_rul = max(1, int(base_ttf_hours * _DETERMINISTIC_DECAY.get(_level, 0.50)))
+                _min_rul = max(1, int(_det_rul * 0.3))
+                _max_rul = min(base_ttf_hours, int(_det_rul * 3.0))
+                return max(_min_rul, min(int(predicted_rul_hours), _max_rul))
             else:
-                # 傾きが無視できるほど小さい → 静的スケール
-                _ttf_scale = (6 - current_level) / 5.0
-                return max(1, int(base_ttf_hours * _ttf_scale))
+                _decay = _DETERMINISTIC_DECAY.get(_level, 0.50)
+                return max(1, int(base_ttf_hours * _decay))
 
         except Exception as e:
             logger.warning(f"RUL trend prediction failed for {device_id}: {e}")
-            _ttf_scale = (6 - current_level) / 5.0
-            return max(1, int(base_ttf_hours * _ttf_scale))
+            _decay = _DETERMINISTIC_DECAY.get(_level, 0.50)
+            return max(1, int(base_ttf_hours * _decay))
 
     def predict(self, device_id: str, msg: str, timestamp: float,
                 attrs: Optional[Dict[str, Any]] = None,
@@ -1146,9 +1174,20 @@ class DigitalTwinEngine:
 
         _min_conf = float(MIN_PREDICTION_CONFIDENCE)
 
-        # Level ブースト係数（Level1=0.0 → Level5=0.20）
+        # ★ 再設計: Level-based Confidence Model
+        #   Level が上がるにつれ、確信度が明確に上昇する
+        #   base_confidence (ルール固有) はレンジ内の位置を決定
         _level = max(1, min(5, int(degradation_level or 1)))
-        _conf_boost    = (_level - 1) * 0.05          # +0.00〜+0.20
+        _LEVEL_CONF_RANGE = {
+            # (lower_bound, upper_bound) — base_confidence が位置を決定
+            1: (0.52, 0.65),  # 52-65%: 微弱な兆候
+            2: (0.66, 0.76),  # 66-76%: 注意段階
+            3: (0.77, 0.86),  # 77-86%: 警戒段階
+            4: (0.87, 0.93),  # 87-93%: 危険段階
+            5: (0.94, 0.98),  # 94-98%: 緊急段階
+        }
+
+        # 急性期進行パラメータ（既存互換）
         _ttc_factor    = 1.0 - (_level - 1) * 0.12   # ×1.0〜×0.52（短縮）
         _early_factor  = 1.0 + (_level - 1) * 0.20   # ×1.0〜×1.80（延長）
 
@@ -1168,21 +1207,26 @@ class DigitalTwinEngine:
                 hit, reasons = self._rule_match_simple(rule, msg_n)
                 if not hit:
                     continue
-                base_conf = float(getattr(rule, "base_confidence", 0.5) or 0.5)
-                conf = min(0.99, base_conf + _conf_boost)
+
+                # ★ 新 Confidence モデル: レベルに応じたレンジ内で base_confidence が位置を決定
+                _base_conf = float(getattr(rule, "base_confidence", 0.5) or 0.5)
+                _low, _high = _LEVEL_CONF_RANGE.get(_level, (0.50, 0.60))
+                conf = _low + (_high - _low) * min(1.0, _base_conf)
                 if conf < _min_conf:
                     continue
+
                 _base_ttc   = int(getattr(rule, "time_to_critical_min", 60) or 60)
                 _base_early = int(getattr(rule, "early_warning_hours", 24) or 24)
                 _ttc   = max(5,  int(_base_ttc   * _ttc_factor))
                 _early = max(1,  int(_base_early * _early_factor))
                 
-                # ★ RUL計算: 過去の時系列トレンドを考慮した動的予測
+                # ★ RUL計算: source を渡して simulation/real を区別
                 _base_ttf_hours = int(getattr(rule, "early_warning_hours", 336) or 336)
                 _ttf_hours = self._predict_rul_with_trend(
                     device_id=device_id,
                     current_level=_level,
-                    base_ttf_hours=_base_ttf_hours
+                    base_ttf_hours=_base_ttf_hours,
+                    source=source,
                 )
                 
                 # 故障予測日時を算出
@@ -1267,15 +1311,21 @@ class DigitalTwinEngine:
                     "interaction":   _llm_result.scores.interaction,
                     "change_impact": _llm_result.scores.change_impact,
                 }
-                # ★ LLM スコアで confidence を補正（change_impact を加味した重み配分）
-                _lf = (
-                    _llm_result.scores.semantic      * 0.25 +
-                    _llm_result.scores.interaction   * 0.25 +
-                    _llm_result.scores.trend         * 0.15 +
-                    _llm_result.scores.volatility    * 0.10 +
-                    _llm_result.scores.change_impact * 0.25
-                )
-                _top.confidence = min(0.99, _top.confidence * 0.60 + _top.confidence * _lf * 0.40)
+                # ★ 修正: LLM スコアで confidence を ±微調整（旧公式は常に削減するバグ）
+                #   _lf = 加重平均 (0.0〜1.0)
+                #   _lf_centered = -0.5〜+0.5
+                #   調整幅: ±5% (simulation 時はスキップ)
+                if not _use_fast_scoring:
+                    _lf = (
+                        _llm_result.scores.semantic      * 0.25 +
+                        _llm_result.scores.interaction   * 0.25 +
+                        _llm_result.scores.trend         * 0.15 +
+                        _llm_result.scores.volatility    * 0.10 +
+                        _llm_result.scores.change_impact * 0.25
+                    )
+                    _lf_centered = _lf - 0.50  # -0.5 〜 +0.5
+                    _adjustment = _lf_centered * 0.10  # ±5%
+                    _top.confidence = min(0.99, max(0.30, _top.confidence + _adjustment))
             except Exception as _le:
                 logger.debug(f"LLM score skipped: {_le}")
 
@@ -1331,7 +1381,7 @@ class DigitalTwinEngine:
                 logger.debug(f"Smart recommendations skipped: {_ra_err}")
 
         # ★ 予兆履歴を JSON に記録（AutoTuner が参照するため）
-        # simulation 時はメモリのみ更新（ディスク書き込みスキップで高速化）
+        # simulation 時: source タグ付きでメモリのみ（trend 分析で除外可能に）
         if results:
             _top = results[0]
             import uuid
@@ -1344,11 +1394,12 @@ class DigitalTwinEngine:
                 "prob":          _top.confidence,
                 "anchor_event_time": time.time(),
                 "raw_msg":       msg_n[:200],
+                "source":        source,  # ★ simulation/real を記録
             })
             # 履歴が 500 件超えたら古いものを削除
             if len(self.history) > 500:
                 self.history = self.history[-300:]
-            # ★ 高速化: simulation 時はディスク書き込みをスキップ
+            # ★ simulation 時はディスク書き込みをスキップ
             if not _use_fast_scoring:
                 self.storage.save_json_atomic("history", self.history)
 
