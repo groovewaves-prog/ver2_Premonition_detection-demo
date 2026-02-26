@@ -293,7 +293,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     with col_header[1]:
         if st.button("🔙 一覧に戻る", key="back_to_list"):
             st.session_state.active_site = None
-            #st.rerun()  # Disabled to prevent white screen
+            st.rerun()
 
     # トポロジー読み込み
     paths = get_paths(site_id)
@@ -1327,7 +1327,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                         if r.get("ok"):
                                             _success_count += 1
                                     st.success(f"✅ {_success_count}件を対応済みとして登録しました")
-                                    #st.rerun()  # Disabled to prevent white screen
+                                    st.rerun()
                             
                             with _bulk_col2:
                                 if st.button(
@@ -1346,7 +1346,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                         if r.get("ok"):
                                             _success_count += 1
                                     st.info(f"❌ {_success_count}件を誤検知として登録しました")
-                                    #st.rerun()  # Disabled to prevent white screen
+                                    st.rerun()
                             
                             st.markdown("---")
                             
@@ -1405,7 +1405,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                             )
                                             if r.get("ok"):
                                                 st.success(f"✅ 登録完了")
-                                                #st.rerun()  # Disabled to prevent white screen
+                                                st.rerun()
                                     
                                     with _ind_col2:
                                         if st.button(
@@ -1420,7 +1420,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                             )
                                             if r.get("ok"):
                                                 st.info(f"❌ 登録完了")
-                                                #st.rerun()  # Disabled to prevent white screen
+                                                st.rerun()
 
 
         else:
@@ -1506,7 +1506,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 with col3:
                     if st.button("クリア"):
                         st.session_state.messages = []
-                        #st.rerun()  # Disabled to prevent white screen
+                        st.rerun()
 
                 if send_button and prompt:
                     st.session_state.messages.append({"role": "user", "content": prompt})
