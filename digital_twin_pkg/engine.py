@@ -1230,20 +1230,32 @@ class DigitalTwinEngine:
             _vc_parts.append(f"last_change=({_lc_str})")
         _vendor_ctx = " | ".join(_vc_parts) if _vc_parts else None
 
+        # ★ 高速化: simulation 時は LLM API をスキップ → ルールベーススコアリング
+        #   LLM の真価は「レポート生成」「Generate Fix」で発揮
+        _use_fast_scoring = (source == "simulation")
+
         if results:
             _top = results[0]
             try:
-                _llm_result = self.llm.score_alarm(
-                    alarm_text     = msg_n,
-                    device_id      = device_id,
-                    device_type    = _meta.get("type") or (
-                        _node.get("type", "network") if isinstance(_node, dict) else "network"
-                    ),
-                    signal_count   = len(results),
-                    affected_count = _affected_count,
-                    rule_pattern   = _top.rule_pattern,
-                    vendor_context = _vendor_ctx,
-                )
+                if _use_fast_scoring:
+                    # ★ 高速パス: ルールベースのスコアリング（API呼び出しなし）
+                    _llm_result = self.llm._fallback(
+                        _top.rule_pattern, len(results), _affected_count
+                    )
+                    logger.debug(f"Fast scoring (simulation): {device_id}")
+                else:
+                    # ★ 通常パス: LLM API でスコアリング
+                    _llm_result = self.llm.score_alarm(
+                        alarm_text     = msg_n,
+                        device_id      = device_id,
+                        device_type    = _meta.get("type") or (
+                            _node.get("type", "network") if isinstance(_node, dict) else "network"
+                        ),
+                        signal_count   = len(results),
+                        affected_count = _affected_count,
+                        rule_pattern   = _top.rule_pattern,
+                        vendor_context = _vendor_ctx,
+                    )
                 _llm_narrative    = _llm_result.scores.narrative
                 _llm_anomaly_type = _llm_result.anomaly_type_hint
                 _llm_error        = _llm_result.error
@@ -1268,7 +1280,8 @@ class DigitalTwinEngine:
                 logger.debug(f"LLM score skipped: {_le}")
 
         # Phase 6c*: ベクトルストアに予兆予測を登録（最上位ルールのみ）
-        if results and self.vector_store and self.vector_store.is_ready:
+        # ★ 高速化: simulation 時はベクトルストア書き込みをスキップ
+        if results and self.vector_store and self.vector_store.is_ready and not _use_fast_scoring:
             try:
                 _top = results[0]
                 self.vector_store.add_incident(
@@ -1284,8 +1297,9 @@ class DigitalTwinEngine:
             except Exception as _vs_err:
                 logger.debug(f"vector_store.add_incident skipped: {_vs_err}")
 
-        # ★ LLM ベースの推奨アクション生成（gemini-2.0-flash-exp）
-        #   メッセージからコンポーネント数を抽出し、状況に応じた知的な推奨を生成
+        # ★ LLM ベースの推奨アクション生成
+        #   simulation 時: ルールベースフォールバック（高速）
+        #   real 時: gemini-2.0-flash-exp で真因推論
         if results:
             _top = results[0]
             try:
@@ -1297,20 +1311,27 @@ class DigitalTwinEngine:
                     )
                 _comp_count = max(len(_components), 1)
                 
-                _smart = self._generate_smart_recommendations(
-                    rule_pattern   = _top.rule_pattern,
-                    affected_count = _comp_count,
-                    confidence     = _top.confidence,
-                    messages       = [m.strip() for m in msg_n.split("\n") if m.strip()],
-                    device_id      = device_id,
-                    base_actions   = _top.recommended_actions,
-                )
+                if _use_fast_scoring and _comp_count >= 3:
+                    # ★ 高速パス: LLM API をスキップし、ルールベースの推奨を直接返す
+                    _smart = self._fallback_wide_range_actions(
+                        _top.rule_pattern, _comp_count
+                    )
+                else:
+                    _smart = self._generate_smart_recommendations(
+                        rule_pattern   = _top.rule_pattern,
+                        affected_count = _comp_count,
+                        confidence     = _top.confidence,
+                        messages       = [m.strip() for m in msg_n.split("\n") if m.strip()],
+                        device_id      = device_id,
+                        base_actions   = _top.recommended_actions,
+                    )
                 if _smart:
                     _top.recommended_actions = _smart
             except Exception as _ra_err:
                 logger.debug(f"Smart recommendations skipped: {_ra_err}")
 
         # ★ 予兆履歴を JSON に記録（AutoTuner が参照するため）
+        # simulation 時はメモリのみ更新（ディスク書き込みスキップで高速化）
         if results:
             _top = results[0]
             import uuid
@@ -1327,7 +1348,9 @@ class DigitalTwinEngine:
             # 履歴が 500 件超えたら古いものを削除
             if len(self.history) > 500:
                 self.history = self.history[-300:]
-            self.storage.save_json_atomic("history", self.history)
+            # ★ 高速化: simulation 時はディスク書き込みをスキップ
+            if not _use_fast_scoring:
+                self.storage.save_json_atomic("history", self.history)
 
         _final_results = [
             r.to_dict(
