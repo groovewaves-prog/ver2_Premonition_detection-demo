@@ -687,6 +687,153 @@ class DigitalTwinEngine:
         # 単一/少数コンポーネント → ルール定義のbase_actionsを返す
         return base_actions
 
+    # ================================================================
+    # ★ シミュレーション用レベル対応スコアリング
+    #   LLM API を呼ばずに、劣化レベルに応じた動的な6次元スコア、
+    #   narrative、anomaly_type を生成する
+    # ================================================================
+    def _simulation_level_scoring(
+        self,
+        rule_pattern: str,
+        level: int,
+        signal_count: int,
+        affected_count: int,
+        messages: List[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        シミュレーション時のレベル対応スコアリング。
+        レベル 1-5 に応じてレーダーチャート全6軸が動的に変化し、
+        narrative（AI解説文）と anomaly_type も段階的に進化する。
+        """
+        _level = max(1, min(5, level))
+        _msgs = messages or []
+        _msg_count = len(_msgs)
+
+        # ── ルールパターン別の基本特性 ──
+        _RULE_PROFILES = {
+            "optical": {
+                "name": "光減衰",
+                "semantic_base": 0.65, "semantic_growth": 0.08,
+                "trend_base": 0.30,    "trend_growth": 0.15,
+                "volatility_base": 0.20, "volatility_growth": 0.12,
+                "history_base": 0.25,  "history_growth": 0.15,
+                "interaction_base": 0.20, "interaction_growth": 0.18,
+                "change_base": 0.05,   "change_growth": 0.04,
+            },
+            "microburst": {
+                "name": "マイクロバースト",
+                "semantic_base": 0.55, "semantic_growth": 0.09,
+                "trend_base": 0.40,    "trend_growth": 0.12,
+                "volatility_base": 0.50, "volatility_growth": 0.10,
+                "history_base": 0.30,  "history_growth": 0.12,
+                "interaction_base": 0.25, "interaction_growth": 0.16,
+                "change_base": 0.10,   "change_growth": 0.06,
+            },
+            "route_instability": {
+                "name": "経路不安定",
+                "semantic_base": 0.60, "semantic_growth": 0.08,
+                "trend_base": 0.35,    "trend_growth": 0.14,
+                "volatility_base": 0.40, "volatility_growth": 0.12,
+                "history_base": 0.20,  "history_growth": 0.14,
+                "interaction_base": 0.30, "interaction_growth": 0.15,
+                "change_base": 0.15,   "change_growth": 0.08,
+            },
+        }
+        # デフォルトプロファイル
+        _default_profile = {
+            "name": rule_pattern or "不明",
+            "semantic_base": 0.50, "semantic_growth": 0.10,
+            "trend_base": 0.30,    "trend_growth": 0.12,
+            "volatility_base": 0.30, "volatility_growth": 0.10,
+            "history_base": 0.25,  "history_growth": 0.12,
+            "interaction_base": 0.20, "interaction_growth": 0.15,
+            "change_base": 0.05,   "change_growth": 0.05,
+        }
+        _profile = _RULE_PROFILES.get(rule_pattern, _default_profile)
+        _name = _profile["name"]
+
+        # ── 6次元スコア計算: base + growth * (level-1) ──
+        def _calc(base_key: str, growth_key: str) -> float:
+            base = _profile.get(base_key, 0.30)
+            growth = _profile.get(growth_key, 0.10)
+            return min(0.99, base + growth * (_level - 1))
+
+        _semantic    = _calc("semantic_base", "semantic_growth")
+        _trend       = _calc("trend_base", "trend_growth")
+        _volatility  = _calc("volatility_base", "volatility_growth")
+        _history     = _calc("history_base", "history_growth")
+        _interaction = _calc("interaction_base", "interaction_growth")
+        _change      = _calc("change_base", "change_growth")
+
+        # シグナル数による interaction ブースト
+        if _msg_count >= 5:
+            _interaction = min(0.99, _interaction + 0.10)
+        elif _msg_count >= 3:
+            _interaction = min(0.99, _interaction + 0.05)
+
+        # affected_count による interaction ブースト
+        if affected_count >= 5:
+            _interaction = min(0.99, _interaction + 0.05)
+
+        scores = {
+            "semantic":      round(_semantic, 2),
+            "trend":         round(_trend, 2),
+            "volatility":    round(_volatility, 2),
+            "history":       round(_history, 2),
+            "interaction":   round(_interaction, 2),
+            "change_impact": round(_change, 2),
+        }
+
+        # ── 異常タイプ: レベルに応じて進化 ──
+        if _level <= 1:
+            anomaly_type = "point"
+        elif _level <= 2:
+            anomaly_type = "contextual"
+        elif _level <= 3:
+            anomaly_type = "collective" if _msg_count >= 3 else "contextual"
+        else:  # 4-5
+            anomaly_type = "cascading" if _msg_count >= 4 else "collective"
+
+        # ── ナラティブ（AI解説文）: レベル×ルール別 ──
+        _NARRATIVES = {
+            "optical": {
+                1: f"光信号レベルの微小な変動を検知。現時点では許容範囲内ですが、SFPモジュールの経年劣化の初期兆候の可能性があります。",
+                2: f"複数の光インターフェースで受信パワーの低下傾向を確認。{_msg_count}件のシグナルが閾値に接近しています。計画的な点検を推奨します。",
+                3: f"光信号劣化が加速。{_msg_count}件のインターフェースで受信パワーが警告閾値を下回りました。トランシーバモジュールの劣化が進行中です。48-72時間以内の対応を推奨します。",
+                4: f"重大な光減衰を検知。{_msg_count}件のインターフェースが危険水準に達し、リンクダウンのリスクが切迫しています。共通の筐体電源系統またはファイバー経路の障害が疑われます。緊急対応が必要です。",
+                5: f"光信号が壊滅的レベルまで劣化。{_msg_count}件のインターフェースで同時にリンクダウン寸前の状態です。筐体レベルの障害（電源・制御基板・光バックプレーン）の可能性が極めて高く、即座の対応が不可欠です。",
+            },
+            "microburst": {
+                1: f"軽微なバッファ使用率の上昇を検知。トラフィックパターンの一時的な変動の可能性があります。",
+                2: f"複数ポートでキュードロップが増加傾向。{_msg_count}件のシグナルが短時間に集中しています。QoSポリシーの確認を推奨します。",
+                3: f"マイクロバーストの頻度が増大。{_msg_count}件のインターフェースでバッファオーバーフローが発生しています。帯域飽和が進行中です。",
+                4: f"深刻なバッファ枯渇を検知。{_msg_count}件のポートで連続的なパケットドロップが発生。アプリケーションへの影響が出始めています。",
+                5: f"バッファ枯渇が全ポートに波及。サービス品質が著しく低下しており、回線増強またはトラフィック制御の緊急実施が不可欠です。",
+            },
+            "route_instability": {
+                1: f"BGPセッションで軽微な経路更新の増加を検知。通常の経路収束の範囲内ですが、監視を継続します。",
+                2: f"複数のBGPピアで経路フラップを検知。{_msg_count}件のシグナルが短時間に発生しています。ルーティングテーブルの安定性を確認してください。",
+                3: f"経路不安定が拡大。{_msg_count}件のピアで再送率が上昇し、経路収束に時間がかかっています。ネットワーク全体の経路品質が劣化中です。",
+                4: f"重大な経路障害の兆候。複数のBGPピアでネイバーダウンのリスクが切迫しており、大規模な通信断につながる恐れがあります。",
+                5: f"経路制御が崩壊寸前。BGPセッションの大部分で再送が発生し、経路テーブルの整合性が失われています。即座の経路制御介入が不可欠です。",
+            },
+        }
+        _default_narratives = {
+            1: f"{_name}に関連する微弱なシグナルを検知しました。",
+            2: f"{_name}の兆候が複数確認されています（{_msg_count}件）。",
+            3: f"{_name}が進行中です。{_msg_count}件のシグナルが警告レベルに達しています。",
+            4: f"{_name}が重大な水準に達しました。早急な対応が必要です。",
+            5: f"{_name}が壊滅的レベルです。即座の緊急対応が不可欠です。",
+        }
+        _narratives_for_rule = _NARRATIVES.get(rule_pattern, _default_narratives)
+        narrative = _narratives_for_rule.get(_level, _default_narratives.get(_level, ""))
+
+        return {
+            "scores": scores,
+            "anomaly_type": anomaly_type,
+            "narrative": narrative,
+        }
+
     def _fallback_wide_range_actions(
         self, rule_pattern: str, affected_count: int
     ) -> List[Dict[str, str]]:
@@ -1247,6 +1394,26 @@ class DigitalTwinEngine:
                     time_to_failure_hours = _ttf_hours,
                     predicted_failure_datetime = _failure_dt_str,
                 )
+                # ★ シミュレーション時: リッチな検知シグナル詳細を生成
+                if source == "simulation" and pr.reasons:
+                    import re as _re_sig
+                    _interfaces = _re_sig.findall(r'\b(?:Gi|Te|Fa|Et)\d+/\d+(?:/\d+)?', msg_n)
+                    _dbm_vals = _re_sig.findall(r'([-\d.]+)\s*dBm', msg_n)
+                    _drops = _re_sig.findall(r'drops[:\s]+(\d+)', msg_n)
+                    _msgs_lines = [m.strip() for m in msg_n.split("\n") if m.strip()]
+                    _sig_reasons = [f"pattern matched: {pr.rule_pattern}"]
+                    if _interfaces:
+                        _sig_reasons.append(f"影響インターフェース: {', '.join(set(_interfaces[:6]))} ({len(set(_interfaces))}個)")
+                    if _dbm_vals:
+                        _sig_reasons.append(f"光受信パワー: {', '.join(_dbm_vals[:3])} dBm")
+                    if _drops:
+                        _sig_reasons.append(f"キュードロップ数: {', '.join(_drops[:3])}")
+                    for sp in (getattr(rule, "semantic_phrases", []) or []):
+                        if sp and sp.lower() in msg_n.lower():
+                            _sig_reasons.append(f"semantic hit: {sp}")
+                    _sig_reasons.append(f"劣化レベル: {_level}/5 ({['微弱','注意','警戒','危険','緊急'][_level-1]})")
+                    _sig_reasons.append(f"検知シグナル数: {len(_msgs_lines)}件")
+                    pr.reasons = _sig_reasons
                 results.append(pr)
             except Exception:
                 continue
@@ -1274,7 +1441,7 @@ class DigitalTwinEngine:
             _vc_parts.append(f"last_change=({_lc_str})")
         _vendor_ctx = " | ".join(_vc_parts) if _vc_parts else None
 
-        # ★ 高速化: simulation 時は LLM API をスキップ → ルールベーススコアリング
+        # ★ 高速化: simulation 時は LLM API をスキップ → レベル対応スコアリング
         #   LLM の真価は「レポート生成」「Generate Fix」で発揮
         _use_fast_scoring = (source == "simulation")
 
@@ -1282,11 +1449,19 @@ class DigitalTwinEngine:
             _top = results[0]
             try:
                 if _use_fast_scoring:
-                    # ★ 高速パス: ルールベースのスコアリング（API呼び出しなし）
-                    _llm_result = self.llm._fallback(
-                        _top.rule_pattern, len(results), _affected_count
+                    # ★ シミュレーション高速パス: レベルに応じた動的スコア生成
+                    _sim_scores = self._simulation_level_scoring(
+                        rule_pattern   = _top.rule_pattern,
+                        level          = _level,
+                        signal_count   = len(results),
+                        affected_count = _affected_count,
+                        messages       = [m.strip() for m in msg_n.split("\n") if m.strip()],
                     )
-                    logger.debug(f"Fast scoring (simulation): {device_id}")
+                    _llm_narrative    = _sim_scores["narrative"]
+                    _llm_anomaly_type = _sim_scores["anomaly_type"]
+                    _llm_error        = ""  # シミュレーションでは「LLM不可」を表示しない
+                    _score_breakdown  = _sim_scores["scores"]
+                    logger.debug(f"Simulation scoring (level={_level}): {device_id}")
                 else:
                     # ★ 通常パス: LLM API でスコアリング
                     _llm_result = self.llm.score_alarm(
@@ -1300,22 +1475,18 @@ class DigitalTwinEngine:
                         rule_pattern   = _top.rule_pattern,
                         vendor_context = _vendor_ctx,
                     )
-                _llm_narrative    = _llm_result.scores.narrative
-                _llm_anomaly_type = _llm_result.anomaly_type_hint
-                _llm_error        = _llm_result.error
-                _score_breakdown  = {
-                    "semantic":      _llm_result.scores.semantic,
-                    "trend":         _llm_result.scores.trend,
-                    "volatility":    _llm_result.scores.volatility,
-                    "history":       _llm_result.scores.history,
-                    "interaction":   _llm_result.scores.interaction,
-                    "change_impact": _llm_result.scores.change_impact,
-                }
-                # ★ 修正: LLM スコアで confidence を ±微調整（旧公式は常に削減するバグ）
-                #   _lf = 加重平均 (0.0〜1.0)
-                #   _lf_centered = -0.5〜+0.5
-                #   調整幅: ±5% (simulation 時はスキップ)
-                if not _use_fast_scoring:
+                    _llm_narrative    = _llm_result.scores.narrative
+                    _llm_anomaly_type = _llm_result.anomaly_type_hint
+                    _llm_error        = _llm_result.error
+                    _score_breakdown  = {
+                        "semantic":      _llm_result.scores.semantic,
+                        "trend":         _llm_result.scores.trend,
+                        "volatility":    _llm_result.scores.volatility,
+                        "history":       _llm_result.scores.history,
+                        "interaction":   _llm_result.scores.interaction,
+                        "change_impact": _llm_result.scores.change_impact,
+                    }
+                    # ★ LLM スコアで confidence を ±微調整
                     _lf = (
                         _llm_result.scores.semantic      * 0.25 +
                         _llm_result.scores.interaction   * 0.25 +
@@ -1323,8 +1494,8 @@ class DigitalTwinEngine:
                         _llm_result.scores.volatility    * 0.10 +
                         _llm_result.scores.change_impact * 0.25
                     )
-                    _lf_centered = _lf - 0.50  # -0.5 〜 +0.5
-                    _adjustment = _lf_centered * 0.10  # ±5%
+                    _lf_centered = _lf - 0.50
+                    _adjustment = _lf_centered * 0.10
                     _top.confidence = min(0.99, max(0.30, _top.confidence + _adjustment))
             except Exception as _le:
                 logger.debug(f"LLM score skipped: {_le}")
