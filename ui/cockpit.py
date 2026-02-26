@@ -195,7 +195,7 @@ def _build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
     ) if reasons else rule_pattern
 
     lines = [
-        f"[RUL予測] {dev_id}で障害の前兆を検出（信頼度{confidence*100:.0f}%）。{signal_count}件の微弱シグナルを確認。",
+        f"[RUL予測] {dev_id}で障害の前兆を検出（信頼度{confidence*100:.0f}%）。{signal_count}件のシグナルを確認。",
         f"・予測障害: {pred_state}",
         f"・障害発生予測: {ttf_display}",
         f"・急性期進行: 症状発症後{ttc_min}分でサービス断に至る恐れ",
@@ -660,11 +660,22 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             if injected_info:
                 level = injected_info.get("level", 0)
                 scenario_name = injected_info.get("scenario", "")
-                st.info(
-                    f"⚠️ **予兆検知**: 現在のネットワーク状態は「正常」ですが、"
-                    f"AIが微細なシグナルから将来の障害リスクを検出しました。"
-                    f"（劣化シナリオ: {scenario_name} / レベル: {level}/5）"
-                )
+                # ★ レベルに応じた警告メッセージ（重要度が伝わるように段階的に変化）
+                _LEVEL_MESSAGES = {
+                    1: ("info",  "⚠️ **予兆検知**: 現在のネットワーク状態は「正常」ですが、AIが微弱なシグナルから将来の障害リスクの初期兆候を検出しました。"),
+                    2: ("info",  "⚠️ **予兆検知 [注意]**: AIが複数のシグナルから劣化傾向を検出しました。計画的な点検を推奨します。"),
+                    3: ("warning", "🟠 **予兆検知 [警戒]**: AIが明確な劣化の進行を検出しました。障害に至る前の予防措置が必要です。"),
+                    4: ("error", "🔴 **予兆検知 [危険]**: AIが重大な劣化を検知しました。障害発生のリスクが切迫しています。早急な対応が必要です。"),
+                    5: ("error", "🔴 **予兆検知 [緊急]**: AIが壊滅的な劣化を検知しました。サービス停止が差し迫っており、即座の緊急対応が不可欠です。"),
+                }
+                _msg_type, _msg_text = _LEVEL_MESSAGES.get(level, ("info", "⚠️ **予兆検知**: AIが将来の障害リスクを検出しました。"))
+                _full_msg = f"{_msg_text}（劣化シナリオ: {scenario_name} / レベル: {level}/5）"
+                if _msg_type == "error":
+                    st.error(_full_msg)
+                elif _msg_type == "warning":
+                    st.warning(_full_msg)
+                else:
+                    st.info(_full_msg)
             else:
                 st.info("⚠️ **予兆検知**: AIが将来の障害リスクを検出しました。")
 
