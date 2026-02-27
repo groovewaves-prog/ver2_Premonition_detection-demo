@@ -1626,7 +1626,11 @@ class DigitalTwinEngine:
             record_forecast = bool(request.get("record_forecast", True))
             forecast_ids: List[str] = []
             if record_forecast and preds:
-                fid = self._forecast_record(req=req.to_dict(), top_prediction=preds[0])
+                fid = self._forecast_record(
+                    req=req.to_dict(),
+                    top_prediction=preds[0],
+                    source=_source,  # ★ simulation/real を正しく記録
+                )
                 if fid:
                     forecast_ids.append(fid)
 
@@ -1711,6 +1715,15 @@ class DigitalTwinEngine:
             prediction_json = json.dumps(top_prediction, ensure_ascii=False)
 
             with self.storage._db_lock:
+                # ★ simulation の場合: 同一デバイス＋ルールの古い open エントリを削除
+                #   → スライダー操作で蓄積されるのを防止
+                #   → 常に最新のレベルの予測のみが残る
+                if source == "simulation":
+                    self.storage._conn.execute("""
+                        DELETE FROM forecast_ledger
+                        WHERE device_id=? AND rule_pattern=? AND source='simulation' AND status='open'
+                    """, (device_id, rule_pattern))
+
                 self.storage._conn.execute("""
                     INSERT INTO forecast_ledger
                     (forecast_id, created_at, tenant_id, device_id, rule_pattern, predicted_state,
