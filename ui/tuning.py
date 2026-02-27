@@ -7,61 +7,60 @@ import sqlite3
 import os
 
 
+# ==========================================
+# ★ 追加: Streamlitグローバルキャッシュによるエンジンの保持
+# ==========================================
+@st.cache_resource(show_spinner="AI推論エンジンを初期化中...（初回のみ数秒かかります）")
+def _get_cached_engine(site_id: str):
+    from digital_twin_pkg import DigitalTwinEngine
+    from registry import get_paths, load_topology
+
+    paths = get_paths(site_id)
+    topology = load_topology(paths.topology_path)
+    if not topology:
+        return None
+
+    children_map: dict = {}
+    for node_id, node in topology.items():
+        parent_id = (node.get('parent_id') if isinstance(node, dict)
+                     else getattr(node, 'parent_id', None))
+        if parent_id:
+            children_map.setdefault(parent_id, []).append(node_id)
+            
+    engine = DigitalTwinEngine(site_id, paths.data_dir, topology, children_map)
+    return engine
+
+
 def _get_or_init_dt_engine(site_id: str):
     """
-    DigitalTwinEngine を取得または初期化して session_state にキャッシュする。
-    例外は握り潰さず session_state["dt_engine_error_{site_id}"] に保存して
-    画面でデバッグ情報を表示できるようにする。
+    キャッシュされたエンジンを取得し、session_state にポインタを渡す（既存UIとの互換性維持）。
     """
     dt_key    = f"dt_engine_{site_id}"
     err_key   = f"dt_engine_error_{site_id}"
 
-    if dt_key in st.session_state:
+    # すでにセッションに存在すればそれを返す（高速）
+    if dt_key in st.session_state and st.session_state[dt_key] is not None:
         return st.session_state[dt_key]
 
     try:
-        # ★ digital_twin_pkg パッケージからインポート
-        from digital_twin_pkg import DigitalTwinEngine
-        from registry import get_paths, load_topology
-
-        paths    = get_paths(site_id)
-        topology = load_topology(paths.topology_path)
-        if not topology:
+        # グローバルキャッシュからエンジンを取得（初回のみ遅延インポートと重い初期化が走る）
+        engine = _get_cached_engine(site_id)
+        
+        if not engine:
             st.session_state[dt_key]  = None
             st.session_state[err_key] = "topology が読み込めませんでした。"
             return None
-
-        children_map: dict = {}
-        for node_id, node in topology.items():
-            parent_id = (node.get('parent_id') if isinstance(node, dict)
-                         else getattr(node, 'parent_id', None))
-            if parent_id:
-                children_map.setdefault(parent_id, []).append(node_id)
-
-        _llm_cfg = st.session_state.get("llm_config", {})
-        dt_engine = DigitalTwinEngine(
-            topology=topology,
-            children_map=children_map,
-            tenant_id=site_id,
-            llm_config=_llm_cfg,
-        )
-        st.session_state[dt_key]  = dt_engine
+            
+        # 取得したエンジンをセッションにセット
+        st.session_state[dt_key] = engine
         st.session_state[err_key] = None
-        return dt_engine
-
-    except ImportError as e:
-        import traceback
-        msg = f"ImportError: {e}\n\n{traceback.format_exc()}"
-        st.session_state[dt_key]  = None
-        st.session_state[err_key] = msg
-        return None
+        return engine
+        
     except Exception as e:
         import traceback
-        msg = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
         st.session_state[dt_key]  = None
-        st.session_state[err_key] = msg
+        st.session_state[err_key] = f"{e}\n{traceback.format_exc()}"
         return None
-
 
 def render_tuning_dashboard(site_id: str):
     st.subheader("🔧 Digital Twin Tuning & Audit")
@@ -194,12 +193,18 @@ def render_tuning_dashboard(site_id: str):
 
         with col_m2:
             if st.button("🧹 Cache Clear"):
-                st.cache_data.clear()
+                # グローバルキャッシュ（@st.cache_resource）をクリア
                 st.cache_resource.clear()
+                st.cache_data.clear()
+                
+                # セッションステートのポインタもクリア
                 for k in [f"dt_engine_{site_id}", f"dt_engine_error_{site_id}"]:
                     if k in st.session_state:
                         del st.session_state[k]
-                st.success("キャッシュをクリアしました。次回アクセス時に再初期化されます。")
+                        
+                st.success("キャッシュを完全にクリアしました。次回アクセス時にエンジンが再起動・再初期化されます。")
+                time.sleep(1.5)
+                st.rerun()
 
         st.divider()
         st.markdown("#### 📊 Engine Status")
