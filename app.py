@@ -6,6 +6,23 @@ from ui.dashboard import render_site_status_board, render_triage_center
 from ui.cockpit import render_incident_cockpit
 from ui.tuning import render_tuning_dashboard
 
+import logging
+import warnings
+import os
+
+# 不要な警告（Warning）を非表示にする
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# おしゃべりなAIライブラリのログ出力を「ERRORのみ」に制限する
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("chromadb").setLevel(logging.ERROR)
+logging.getLogger("torch").setLevel(logging.ERROR)
+
+# Tokenizerの並列処理に関する不要な警告を抑止
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 st.set_page_config(page_title="AIOps Cockpit", page_icon="🛡️", layout="wide")
 
 def main():
