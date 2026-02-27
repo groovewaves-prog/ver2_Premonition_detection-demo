@@ -1002,7 +1002,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     else:
                         st.write("❌ Connection Failed.")
                         status_widget.update(label="Diagnostics Failed", state="error")
-                #st.rerun()  # Disabled to prevent white screen
+                st.rerun()  # ★復活: キャッシュ実装により安全にリラン可能になったため
 
         if st.session_state.live_result:
             res = st.session_state.live_result
