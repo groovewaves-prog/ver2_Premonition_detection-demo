@@ -156,7 +156,12 @@ def _render_weak_signal_injection():
             ["Optical Decay (光減衰)", "Microburst (パケット破棄)", "Route Instability (経路揺らぎ)"],
             key="pred_scenario"
         )
-        
+
+        # コックピット側からのリセット要求があれば、スライダー描画前に0に戻す
+        if st.session_state.get("reset_pred_level"):
+            st.session_state["pred_level"] = 0
+            st.session_state["reset_pred_level"] = False
+
         degradation_level = st.slider(
             "劣化進行度",
             min_value=0, max_value=5, value=0,
