@@ -1293,8 +1293,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                 # ★ 追加: 予兆シミュレーションに対する予防措置成功時の連動処理
                                 # ==========================================
                                 if is_pred_rem:
-                                    # 1. 劣化進行度スライダーを「0」に戻し、注入シグナルをクリア
-                                    st.session_state["pred_level"] = 0
+                                    # 1. 直接代入せず、スライダーリセット用の「フラグ」を立てる
+                                    st.session_state["reset_pred_level"] = True
                                     st.session_state["injected_weak_signal"] = None
                                     
                                     # 2. 予兆ステータス履歴を自動的に「一括対応済み(mitigated)」にする
@@ -1319,6 +1319,17 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     st.session_state.verification_result = {
                                         "ping_status": "OK", "interface_status": "UP", "hardware_status": "NORMAL"
                                     }
+                                # ==========================================
+
+                                if not st.session_state.balloons_shown:
+                                    st.balloons()
+                                    st.session_state.balloons_shown = True
+                                st.success("✅ System Recovered Successfully!")
+
+                                # ★ 追加: 予兆対応の完了後、画面を再描画してスライダーを確実に0に戻す
+                                if is_pred_rem:
+                                    time.sleep(2.5)  # 成功の風船アニメーションを見せるための待機時間
+                                    st.rerun()
                                 # ==========================================
                                 if not st.session_state.balloons_shown:
                                     st.balloons()
