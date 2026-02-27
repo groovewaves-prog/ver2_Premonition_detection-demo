@@ -242,8 +242,7 @@ def _build_prevention_plan_scenario(cand: dict) -> str:
     return "\n".join(lines)
 def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict:
     """
-    ハイブリッド診断実行関数
-    本番環境移行時は、ここの中身をNetmiko等の実機接続スクリプトに差し替える。
+    ハイブリッド診断実行関数（API消費節約キャッシュ対応版）
     """
     device_id = getattr(target_node_obj, "id", "UNKNOWN") if target_node_obj else "UNKNOWN"
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -258,6 +257,19 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
     # アプローチ2: LLMによる動的シミュレーション (主軸)
     # ==========================================
     if use_llm and GENAI_AVAILABLE and is_simulating:
+        # ★ 追加: 診断結果のLLMキャッシュ（無駄なAPI消費を防ぐ）
+        _diag_cache_key = f"diag_{device_id}_{pred_scenario}_{level}"
+        if "diag_cache" not in st.session_state:
+            st.session_state.diag_cache = {}
+            
+        if _diag_cache_key in st.session_state.diag_cache:
+            # キャッシュヒット時はタイムスタンプだけ最新に書き換えて即座に返す
+            cached_res = st.session_state.diag_cache[_diag_cache_key].copy()
+            cached_res["sanitized_log"] = cached_res["sanitized_log"].replace(
+                cached_res.get("_cached_ts", ""), ts
+            )
+            return cached_res
+
         try:
             prompt = f"""
             あなたはCisco/Juniperのネットワーク機器（ID: {device_id}）です。
@@ -271,12 +283,10 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
             コードフェンス(```)は使わず、生のテキスト出力のみを返してください。
             """
             
-            # Gemini 1.5 Flash を使用して高速に生成
             cfg = st.session_state.get("llm_config", {})
             api_key = cfg.get("google_key")
             
             if api_key:
-                import google.genai as genai
                 client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
                     model='gemini-1.5-flash',
@@ -284,10 +294,19 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
                 )
                 
                 llm_log = f"[PROBE] ts={ts} (LLM Generated)\n" + response.text.strip()
-                return {"status": "SUCCESS", "sanitized_log": llm_log, "device_id": device_id}
+                result = {
+                    "status": "SUCCESS", 
+                    "sanitized_log": llm_log, 
+                    "device_id": device_id, 
+                    "_cached_ts": ts  # 置換用のタイムスタンプマーカー
+                }
+                
+                # キャッシュに保存
+                st.session_state.diag_cache[_diag_cache_key] = result
+                
+                return result
                 
         except Exception as e:
-            # LLM失敗時は下部のアプローチ1（フォールバック）へ流れる
             import logging
             logging.warning(f"LLM diagnostic generation failed: {e}. Falling back to template.")
 
@@ -333,7 +352,6 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
         lines += ["show system alarms", "No active alarms"]
 
     return {"status": "SUCCESS", "sanitized_log": "\n".join(lines), "device_id": device_id}
-
 
 # =====================================================
 # メイン描画関数
