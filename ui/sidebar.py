@@ -270,15 +270,18 @@ def _render_weak_signal_injection():
                     st.session_state["injected_weak_signal"] = None
                     return  # 早期終了
             
-            # ★ 改善: 古い予兆をクリア（重複防止）
-            # 同じデバイスの古いシミュレーション予兆を削除
+            # ★ 改善: 古い予兆をクリア（レベル変更時のみ）
+            # 同じデバイスでレベルが変わった場合のみ forecast_ledger をクリア
             _prev_injected = st.session_state.get("injected_weak_signal")
-            if _prev_injected and _prev_injected.get("device_id") == target_device:
-                # 同じデバイスで連続実行 → forecast_ledger をクリア
+            _level_changed = (
+                _prev_injected
+                and _prev_injected.get("device_id") == target_device
+                and _prev_injected.get("level") != degradation_level
+            )
+            if _level_changed:
                 dt_key = f"dt_engine_{active_site}"
                 if dt_key in st.session_state:
                     dt_engine = st.session_state[dt_key]
-                    # simulation sourceの予兆を削除
                     try:
                         if dt_engine and dt_engine.storage._conn:
                             with dt_engine.storage._db_lock:
@@ -288,7 +291,9 @@ def _render_weak_signal_injection():
                                 """, (target_device,))
                                 dt_engine.storage._conn.commit()
                     except Exception as e:
-                        pass  # エラーは無視
+                        pass
+                # ★ cockpit キャッシュもクリア（新レベルで再計算させる）
+                st.session_state.pop("dt_prediction_cache", None)
             
             st.session_state["injected_weak_signal"] = {
                 "device_id": target_device,
