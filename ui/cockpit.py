@@ -1376,28 +1376,36 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     # ★ コンポーネント名抽出関数
                     import re
                     def _extract_component(message: str) -> str:
-                        """ログメッセージからコンポーネント名を抽出"""
+                        """ログメッセージからコンポーネント名を抽出（複数対応版）"""
                         if not message:
                             return ""
                         
-                        # インターフェース名（Gi, Te, ge など）
+                        # 1. インターフェース名の抽出（すべて探し出す）
+                        interfaces = []
                         interface_patterns = [
-                            (r'(Gi\d+/\d+/\d+)', lambda m: m.group(1)),
-                            (r'(Te\d+/\d+/\d+)', lambda m: m.group(1)),
-                            (r'(ge-\d+/\d+/\d+)', lambda m: m.group(1)),
-                            (r'(Ethernet\d+/\d+/\d+)', lambda m: m.group(1)),
+                            r'(Gi\d+/\d+/\d+)', r'(Te\d+/\d+/\d+)', 
+                            r'(ge-\d+/\d+/\d+)', r'(Ethernet\d+/\d+/\d+)'
                         ]
-                        for pattern, formatter in interface_patterns:
-                            match = re.search(pattern, message)
-                            if match:
-                                return formatter(match)
+                        for pattern in interface_patterns:
+                            matches = re.findall(pattern, message)
+                            interfaces.extend(matches)
+                            
+                        # インターフェースが見つかった場合
+                        if interfaces:
+                            # 順番を保ったまま重複を排除
+                            unique_ifs = list(dict.fromkeys(interfaces))
+                            if len(unique_ifs) == 1:
+                                return unique_ifs[0]
+                            else:
+                                # 複数ある場合は「〇〇 ほか計Xポート」と表記
+                                return f"{unique_ifs[0]} ほか計{len(unique_ifs)}ポート"
                         
-                        # BGP peer (IP address)
+                        # 2. BGP peer (IP address)
                         ip_match = re.search(r'(?:peer|neighbor)\s+(\d+\.\d+\.\d+\.\d+)', message, re.IGNORECASE)
                         if ip_match:
                             return f"Peer {ip_match.group(1)}"
                         
-                        # AS番号
+                        # 3. AS番号
                         as_match = re.search(r'\(AS(\d+)\)', message)
                         if as_match:
                             return f"AS{as_match.group(1)}"
