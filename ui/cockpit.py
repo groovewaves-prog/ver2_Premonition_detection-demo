@@ -1368,51 +1368,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 if _open_preds:
                     st.markdown("---")
                     st.markdown("##### 📜 予兆ステータス履歴")
-                    st.caption(
-                        f"対象機器 `{_oc_device}` の未対応予兆: **{len(_open_preds)}件**  \n"
-                        f"💡 類似予兆はグループ化されています。一括操作も可能です。"
-                    )
                     
-                    # ★ コンポーネント名抽出関数
-                    import re
-                    def _extract_component(message: str) -> str:
-                        """ログメッセージからコンポーネント名を抽出（複数対応版）"""
-                        if not message:
-                            return ""
-                        
-                        # 1. インターフェース名の抽出（すべて探し出す）
-                        interfaces = []
-                        interface_patterns = [
-                            r'(Gi\d+/\d+/\d+)', r'(Te\d+/\d+/\d+)', 
-                            r'(ge-\d+/\d+/\d+)', r'(Ethernet\d+/\d+/\d+)'
-                        ]
-                        for pattern in interface_patterns:
-                            matches = re.findall(pattern, message)
-                            interfaces.extend(matches)
-                            
-                        # インターフェースが見つかった場合
-                        if interfaces:
-                            # 順番を保ったまま重複を排除
-                            unique_ifs = list(dict.fromkeys(interfaces))
-                            if len(unique_ifs) == 1:
-                                return unique_ifs[0]
-                            else:
-                                # 複数ある場合は「〇〇 ほか計Xポート」と表記
-                                return f"{unique_ifs[0]} ほか計{len(unique_ifs)}ポート"
-                        
-                        # 2. BGP peer (IP address)
-                        ip_match = re.search(r'(?:peer|neighbor)\s+(\d+\.\d+\.\d+\.\d+)', message, re.IGNORECASE)
-                        if ip_match:
-                            return f"Peer {ip_match.group(1)}"
-                        
-                        # 3. AS番号
-                        as_match = re.search(r'\(AS(\d+)\)', message)
-                        if as_match:
-                            return f"AS{as_match.group(1)}"
-                        
-                        return ""
-                    
-                    # ★ 予兆をルールパターンごとにグループ化
                     from collections import defaultdict
                     from datetime import datetime
                     
@@ -1421,38 +1377,40 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                         _rule = _fp.get("rule_pattern", "不明")
                         grouped_preds[_rule].append(_fp)
                     
-                    # グループごとに表示
                     for _rule_pattern, _pred_group in grouped_preds.items():
                         _group_size = len(_pred_group)
                         
-                        # グループ統計情報
+                        # ★ 賢いタイトル生成: レベル(件数)に応じて真因タイトルを動的に変更
+                        _incident_name = selected_incident_candidate.get('predicted_state') or selected_incident_candidate.get('label', '').replace('🔮 [予兆] ', '')
+                        if not _incident_name or _incident_name == '不明':
+                            if _group_size <= 2:
+                                _name_map = {
+                                    "optical": "光モジュール(SFP)単体劣化の疑い",
+                                    "microburst": "特定ポートのトラフィックバースト/バッファ溢れ",
+                                    "route_instability": "特定BGPピアの経路不安定"
+                                }
+                            else:
+                                _name_map = {
+                                    "optical": "共通ハードウェア/基板モジュール劣化の疑い",
+                                    "microburst": "ファブリック輻輳/内部共有バッファ枯渇の疑い",
+                                    "route_instability": "ルーターCPU高負荷/ルーティングプロセス異常の疑い"
+                                }
+                            _incident_name = _name_map.get(_rule_pattern, f"異常シグナル検知 ({_rule_pattern})")
+
+                        # 統計情報の計算
                         _confidences = [float(p.get("confidence", 0.0)) for p in _pred_group]
-                        _avg_conf = sum(_confidences) / len(_confidences) if _confidences else 0.0
-                        _max_conf = max(_confidences) if _confidences else 0.0
-                        
-                        # ★ simulation かどうかを判定（sourceフィールドで識別）
                         _is_sim = any(p.get("source") == "simulation" for p in _pred_group)
-                        # simulation の場合は最新（=最高）の確信度を表示、real の場合は平均
-                        _display_conf = _max_conf if _is_sim else _avg_conf
-                        _conf_label = "確信度" if _is_sim else "平均信頼度"
+                        _display_conf = max(_confidences) if _is_sim else (sum(_confidences) / len(_confidences) if _confidences else 0.0)
                         
-                        # 最古と最新の検出時刻（Unix timestamp → 人間可読）
                         _timestamps = []
                         for p in _pred_group:
-                            _created_raw = p.get("created_at", 0)
                             try:
-                                _ts = float(_created_raw)
-                                _timestamps.append(_ts)
-                            except (ValueError, TypeError):
+                                _timestamps.append(float(p.get("created_at", 0)))
+                            except:
                                 pass
                         
                         if _timestamps:
-                            _oldest_ts = min(_timestamps)
                             _newest_ts = max(_timestamps)
-                            _oldest_dt = datetime.fromtimestamp(_oldest_ts).strftime("%m/%d %H:%M")
-                            _newest_dt = datetime.fromtimestamp(_newest_ts).strftime("%m/%d %H:%M")
-                            
-                            # 相対時間計算（最新の検出からの経過時間）
                             _elapsed_sec = time.time() - _newest_ts
                             if _elapsed_sec < 3600:
                                 _relative = f"{int(_elapsed_sec / 60)}分前"
@@ -1461,136 +1419,56 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                             else:
                                 _relative = f"{int(_elapsed_sec / 86400)}日前"
                         else:
-                            _oldest_dt = "不明"
-                            _newest_dt = "不明"
-                            _relative = ""
-                        
-                        # グループヘッダー（折りたたみ可能）
-                        with st.expander(
-                            f"🔖 {_rule_pattern}  ({_group_size}件 | {_conf_label}: {_display_conf*100:.0f}% | 最新: {_relative})",
-                            expanded=(_group_size <= 3)  # 3件以下は自動展開
-                        ):
+                            _relative = "不明"
+
+                        # ── インシデントカード（証拠リスト型）の描画 ──
+                        with st.container(border=True):
                             st.markdown(
-                                f"<div style='background:#F5F5F5;padding:6px 10px;border-radius:4px;margin-bottom:8px;'>"
-                                f"<small>📅 検出期間: {_oldest_dt} 〜 {_newest_dt}</small>"
+                                f"<div style='margin-bottom: 12px;'>"
+                                f"<span style='font-size: 1.1em; font-weight: bold; color: #D32F2F;'>🚨 インシデント：{_incident_name}</span><br>"
+                                f"<span style='color: #666; font-size: 0.9em;'>信頼度: <b>{_display_conf*100:.0f}%</b> ｜ 最新検知: {_relative} ｜ 影響シグナル: <b>{_group_size}件</b></span>"
                                 f"</div>",
                                 unsafe_allow_html=True
                             )
                             
-                            # 一括操作ボタン
-                            _bulk_col1, _bulk_col2, _bulk_col3 = st.columns([1, 1, 2])
-                            with _bulk_col1:
-                                if st.button(
-                                    f"✅ 一括対応済み ({_group_size}件)",
-                                    key=f"bulk_handled_{_rule_pattern[:20]}",
-                                    help=f"{_group_size}件の予兆をまとめて対応済みにします",
-                                    use_container_width=True
-                                ):
-                                    _success_count = 0
-                                    for _fp in _pred_group:
-                                        _fid = _fp.get("forecast_id", "")
-                                        r = dt_engine.forecast_register_outcome(
-                                            _fid, "mitigated",
-                                            note=f"一括対応済み登録: {_rule_pattern} (device={_oc_device})"
-                                        )
-                                        if r.get("ok"):
-                                            _success_count += 1
-                                    st.success(f"✅ {_success_count}件を対応済みとして登録しました")
-                                    st.rerun()
-                            
-                            with _bulk_col2:
-                                if st.button(
-                                    f"❌ 一括誤検知 ({_group_size}件)",
-                                    key=f"bulk_false_{_rule_pattern[:20]}",
-                                    help=f"{_group_size}件の予兆をまとめて誤検知にします",
-                                    use_container_width=True
-                                ):
-                                    _success_count = 0
-                                    for _fp in _pred_group:
-                                        _fid = _fp.get("forecast_id", "")
-                                        r = dt_engine.forecast_register_outcome(
-                                            _fid, "false_alarm",
-                                            note=f"一括誤検知登録: {_rule_pattern} (device={_oc_device})"
-                                        )
-                                        if r.get("ok"):
-                                            _success_count += 1
-                                    st.info(f"❌ {_success_count}件を誤検知として登録しました")
-                                    st.rerun()
-                            
-                            st.markdown("---")
-                            
-                            # 個別の予兆詳細（必要に応じて確認）
-                            for idx, _fp in enumerate(_pred_group, 1):
-                                _fid = _fp.get("forecast_id", "")
-                                _conf = float(_fp.get("confidence", 0.0))
-                                _created_raw = _fp.get("created_at", 0)
-                                _ttf_hours = _fp.get("time_to_failure_hours", 0)
-                                _failure_dt = _fp.get("predicted_failure_datetime", "")
-                                _source_msg = _fp.get("message", "")  # input_jsonから抽出したメッセージ
-                                
-                                # ★ コンポーネント名を抽出（#1の代わりに表示）
-                                _component = _extract_component(_source_msg)
-                                if _component:
-                                    _display_id = _component
-                                else:
-                                    _display_id = f"#{idx}"
-                                
-                                # 検出時刻を人間可読化
-                                try:
-                                    _created_ts = float(_created_raw)
-                                    _created_readable = datetime.fromtimestamp(_created_ts).strftime("%Y-%m-%d %H:%M:%S")
-                                except (ValueError, TypeError):
-                                    _created_readable = str(_created_raw)
-                                
-                                with st.container():
+                            # 証拠シグナルのリスト表示（全ポートの生ログを展開）
+                            with st.expander(f"🔍 証拠シグナル一覧（検知ログ詳細）", expanded=True):
+                                for _fp in _pred_group:
+                                    try:
+                                        _created_ts = float(_fp.get("created_at", 0))
+                                        _dt_str = datetime.fromtimestamp(_created_ts).strftime("%m/%d %H:%M:%S")
+                                    except:
+                                        _dt_str = "不明"
+                                    _msg = _fp.get("message", "ログ内容なし")
                                     st.markdown(
-                                        f"<div style='background:#FAFAFA;border-left:2px solid #CCC;"
-                                        f"padding:6px 10px;margin:4px 0;border-radius:3px;'>"
-                                        f"<small><b>{_display_id}</b> | 検出: {_created_readable} | 信頼度: {_conf*100:.0f}%</small>",
+                                        f"<div style='font-family: monospace; font-size: 0.85em; background: #F8F9FA; padding: 4px 8px; margin-bottom: 4px; border-left: 3px solid #FFC107;'>"
+                                        f"<span style='color: #888;'>[{_dt_str}]</span> {_msg}"
+                                        f"</div>",
                                         unsafe_allow_html=True
                                     )
-                                    if _ttf_hours > 0:
-                                        if _ttf_hours >= 24:
-                                            ttf_display = f"障害予測: {_ttf_hours // 24}日後"
-                                            if _failure_dt:
-                                                ttf_display += f" ({_failure_dt})"
-                                        else:
-                                            ttf_display = f"障害予測: {_ttf_hours}時間後"
-                                        st.markdown(f"<small>⏰ {ttf_display}</small>", unsafe_allow_html=True)
-                                    st.markdown("</div>", unsafe_allow_html=True)
-                                    
-                                    # 個別ボタン（必要に応じて）
-                                    _ind_col1, _ind_col2, _ind_spacer = st.columns([1, 1, 2])
-                                    with _ind_col1:
-                                        if st.button(
-                                            "✅",
-                                            key=f"ind_handled_{_fid[:8]}",
-                                            help="この予兆のみ対応済み",
-                                            use_container_width=True
-                                        ):
-                                            r = dt_engine.forecast_register_outcome(
-                                                _fid, "mitigated",
-                                                note=f"個別対応済み: {_rule_pattern} (device={_oc_device})"
-                                            )
-                                            if r.get("ok"):
-                                                st.success(f"✅ 登録完了")
-                                                st.rerun()
-                                    
-                                    with _ind_col2:
-                                        if st.button(
-                                            "❌",
-                                            key=f"ind_false_{_fid[:8]}",
-                                            help="この予兆のみ誤検知",
-                                            use_container_width=True
-                                        ):
-                                            r = dt_engine.forecast_register_outcome(
-                                                _fid, "false_alarm",
-                                                note=f"個別誤検知: {_rule_pattern} (device={_oc_device})"
-                                            )
-                                            if r.get("ok"):
-                                                st.info(f"❌ 登録完了")
-                                                st.rerun()
 
+                            # インシデント単位でのアクションボタン
+                            st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
+                            _btn_col1, _btn_col2 = st.columns(2)
+                            with _btn_col1:
+                                if st.button(f"✅ このインシデントを対応済みにする", key=f"bulk_handled_{_rule_pattern}", use_container_width=True):
+                                    _cnt = 0
+                                    for p in _pred_group:
+                                        r = dt_engine.forecast_register_outcome(p.get("forecast_id", ""), "mitigated", note="インシデント単位で対応済み")
+                                        if r.get("ok"): _cnt += 1
+                                    st.success(f"✅ {_cnt}件のシグナルを対応済みとしてクローズしました")
+                                    time.sleep(1)
+                                    st.rerun()
+                            
+                            with _btn_col2:
+                                if st.button(f"❌ 誤検知として学習させる", key=f"bulk_false_{_rule_pattern}", use_container_width=True):
+                                    _cnt = 0
+                                    for p in _pred_group:
+                                        r = dt_engine.forecast_register_outcome(p.get("forecast_id", ""), "false_alarm", note="インシデント単位で誤検知学習")
+                                        if r.get("ok"): _cnt += 1
+                                    st.info(f"❌ {_cnt}件のシグナルを誤検知としてAIに学習させました")
+                                    time.sleep(1)
+                                    st.rerun()
 
         else:
             # prob <= 0.6 or no candidate
