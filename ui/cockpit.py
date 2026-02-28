@@ -1489,17 +1489,29 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                         # =========================================================
 
                         # ── インシデントカード（証拠リスト型）の描画 ──
-                        with st.container(border=True):
+                        # インシデント全体を折りたたみ（Expander）にする
+                        _expander_title = f"🚨 インシデント：{_incident_name} （信頼度: {_display_conf*100:.0f}% ｜ 影響シグナル: {_total_signals}件）"
+                        
+                        # expanded=True で最初は開いておく設定（お好みで False に変更可能です）
+                        with st.expander(_expander_title, expanded=True):
                             st.markdown(
-                                f"<div style='margin-bottom: 12px;'>"
-                                f"<span style='font-size: 1.1em; font-weight: bold; color: #D32F2F;'>🚨 インシデント：{_incident_name}</span><br>"
-                                f"<span style='color: #666; font-size: 0.9em;'>信頼度: <b>{_display_conf*100:.0f}%</b> ｜ 最新検知: {_relative} ｜ 影響シグナル: <b>{_total_signals}件</b></span>"
+                                f"<div style='margin-bottom: 8px; color: #666; font-size: 0.9em;'>"
+                                f"最新検知: {_relative}"
                                 f"</div>",
                                 unsafe_allow_html=True
                             )
                             
-                            # 証拠シグナルのリスト表示（重複排除済みのリストを描画）
-                            with st.expander(f"🔍 証拠シグナル一覧（検知ログ詳細）", expanded=True):
+                            st.markdown("**🔍 証拠シグナル一覧（検知ログ詳細）**")
+                            
+                            # ★ 修正: ログ件数が多い場合はスクロール可能なコンテナ（高さ固定）にする
+                            _box_height = 250 if _total_signals > 4 else None
+                            
+                            if _box_height:
+                                scroll_container = st.container(height=_box_height, border=True)
+                            else:
+                                scroll_container = st.container(border=True)
+                                
+                            with scroll_container:
                                 for _entry_html in _unique_log_entries:
                                     st.markdown(
                                         f"<div style='font-family: monospace; font-size: 0.85em; background: #F8F9FA; padding: 4px 8px; margin-bottom: 4px; border-left: 3px solid #FFC107; word-break: break-all;'>"
