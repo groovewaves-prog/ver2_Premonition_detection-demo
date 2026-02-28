@@ -1441,17 +1441,10 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     _incident_name = f"異常シグナル検知 ({_rule_pattern})"
                         # =========================================================
 
-                        # 統計情報と、実際のシグナル件数の計算
+                        # 統計情報の計算
                         _confidences = [float(p.get("confidence", 0.0)) for p in _pred_group]
                         _is_sim = any(p.get("source") == "simulation" for p in _pred_group)
                         _display_conf = max(_confidences) if _is_sim else (sum(_confidences) / len(_confidences) if _confidences else 0.0)
-                        
-                        # ★ 修正: バッチ化されたログの「実際の行数」を正確にカウントする
-                        _total_signals = 0
-                        for p in _pred_group:
-                            _raw_msg = p.get("message", "")
-                            _total_signals += len([line for line in _raw_msg.split('\n') if line.strip()])
-                        _total_signals = _total_signals or 1
                         
                         _timestamps = []
                         for p in _pred_group:
@@ -1472,6 +1465,29 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                         else:
                             _relative = "不明"
 
+                        # =========================================================
+                        # ★ 修正: ページリロード等によるDBの重複レコードを排除し、ユニークなログだけを抽出
+                        # =========================================================
+                        _unique_log_entries = []
+                        for _fp in _pred_group:
+                            try:
+                                _created_ts = float(_fp.get("created_at", 0))
+                                _dt_str = datetime.fromtimestamp(_created_ts).strftime("%m/%d %H:%M:%S")
+                            except:
+                                _dt_str = "不明"
+                                
+                            _raw_msg = _fp.get("message", "ログ内容なし")
+                            _log_lines = [line.strip() for line in _raw_msg.split('\n') if line.strip()]
+                            
+                            for _line in _log_lines:
+                                # タイムスタンプとログ内容のペアで一意性（ユニーク）を担保
+                                _entry_html = f"<span style='color: #888;'>[{_dt_str}]</span> {_line}"
+                                if _entry_html not in _unique_log_entries:
+                                    _unique_log_entries.append(_entry_html)
+                                    
+                        _total_signals = len(_unique_log_entries) or 1
+                        # =========================================================
+
                         # ── インシデントカード（証拠リスト型）の描画 ──
                         with st.container(border=True):
                             st.markdown(
@@ -1482,26 +1498,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                 unsafe_allow_html=True
                             )
                             
-                            # 証拠シグナルのリスト表示（ログを改行で分割し、1行ずつ独立して描画）
+                            # 証拠シグナルのリスト表示（重複排除済みのリストを描画）
                             with st.expander(f"🔍 証拠シグナル一覧（検知ログ詳細）", expanded=True):
-                                for _fp in _pred_group:
-                                    try:
-                                        _created_ts = float(_fp.get("created_at", 0))
-                                        _dt_str = datetime.fromtimestamp(_created_ts).strftime("%m/%d %H:%M:%S")
-                                    except:
-                                        _dt_str = "不明"
-                                    
-                                    _raw_msg = _fp.get("message", "ログ内容なし")
-                                    # 改行コードで分割し、空行を除外
-                                    _log_lines = [line.strip() for line in _raw_msg.split('\n') if line.strip()]
-                                    
-                                    for _line in _log_lines:
-                                        st.markdown(
-                                            f"<div style='font-family: monospace; font-size: 0.85em; background: #F8F9FA; padding: 4px 8px; margin-bottom: 4px; border-left: 3px solid #FFC107; word-break: break-all;'>"
-                                            f"<span style='color: #888;'>[{_dt_str}]</span> {_line}"
-                                            f"</div>",
-                                            unsafe_allow_html=True
-                                        )
+                                for _entry_html in _unique_log_entries:
+                                    st.markdown(
+                                        f"<div style='font-family: monospace; font-size: 0.85em; background: #F8F9FA; padding: 4px 8px; margin-bottom: 4px; border-left: 3px solid #FFC107; word-break: break-all;'>"
+                                        f"{_entry_html}"
+                                        f"</div>",
+                                        unsafe_allow_html=True
+                                    )
 
                             # インシデント単位でのアクションボタン
                             st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
