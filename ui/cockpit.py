@@ -640,21 +640,28 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             analysis_results.append(_dp)
 
     # =====================================================
-    # ★ デバイス変更検知: 予兆シミュ対象が変わったらレポートをリセット
+    # ★ シミュレーション状態の変更検知: 予兆設定が変わったら各種レポート・診断結果をリセット
     # =====================================================
-    _sim_device_now = (_injected.get("device_id") if _injected else None)
-    _sim_device_key = f"dt_last_sim_device_{site_id}"
-    _sim_device_prev = st.session_state.get(_sim_device_key)
-    if _sim_device_now != _sim_device_prev:
+    _sim_state_now = f"{_injected.get('device_id')}_{_injected.get('scenario')}_{_injected.get('level')}" if _injected else None
+    _sim_state_key = f"dt_last_sim_state_{site_id}"
+    _sim_state_prev = st.session_state.get(_sim_state_key)
+    
+    if _sim_state_now != _sim_state_prev:
         st.session_state.generated_report   = None
         st.session_state.remediation_plan   = None
         st.session_state.verification_log   = None
+        
+        # ★ 追加: Auto-Diagnosticsの結果（古いターミナルログ）も画面から消去する
+        st.session_state.live_result        = None
+        st.session_state.verification_result = None
+        
         # レポートキャッシュも予兆系のエントリだけ削除
         _keys_to_del = [k for k in st.session_state.get("report_cache", {})
                         if "analyst" in k or "remediation" in k]
         for _k in _keys_to_del:
             st.session_state.report_cache.pop(_k, None)
-        st.session_state[_sim_device_key] = _sim_device_now
+            
+        st.session_state[_sim_state_key] = _sim_state_now
 
     # =====================================================
     # KPIメトリクス
@@ -1529,18 +1536,20 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     for p in _pred_group:
                                         r = dt_engine.forecast_register_outcome(p.get("forecast_id", ""), "mitigated", note="インシデント単位で対応済み")
                                         if r.get("ok"): _cnt += 1
-                                    st.success(f"✅ {_cnt}件のシグナルを対応済みとしてクローズしました")
-                                    time.sleep(1)
-                                    st.rerun()
-                            
-                            with _btn_col2:
-                                if st.button(f"❌ 誤検知として学習させる", key=f"bulk_false_{_rule_pattern}", use_container_width=True):
-                                    _cnt = 0
-                                    for p in _pred_group:
-                                        r = dt_engine.forecast_register_outcome(p.get("forecast_id", ""), "false_alarm", note="インシデント単位で誤検知学習")
-                                        if r.get("ok"): _cnt += 1
-                                    st.info(f"❌ {_cnt}件のシグナルを誤検知としてAIに学習させました")
-                                    time.sleep(1)
+                                        
+                                    # ==========================================
+                                    # ★ 追加: 画面を復旧状態（レベル0）に完全リセットする連動機能
+                                    # ==========================================
+                                    st.session_state["reset_pred_level"] = True
+                                    st.session_state["injected_weak_signal"] = None
+                                    st.session_state.live_result = None
+                                    st.session_state.verification_result = None
+                                    st.session_state.generated_report = None
+                                    st.session_state.remediation_plan = None
+                                    # ==========================================
+                                        
+                                    st.success(f"✅ {_cnt}件のシグナルをクローズし、システムを正常状態に復旧しました")
+                                    time.sleep(1.5)
                                     st.rerun()
                         
         else:
