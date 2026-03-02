@@ -354,6 +354,30 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
     return {"status": "SUCCESS", "sanitized_log": "\n".join(lines), "device_id": device_id}
 
 # =====================================================
+# ★ 爆速起動仕様: 重たいAIエンジンのグローバルキャッシュ
+# =====================================================
+@st.cache_resource(show_spinner="🧠 LogicalRCAエンジンをロード中...")
+def _get_cached_logical_rca(_topology):
+    from inference_engine import LogicalRCA
+    return LogicalRCA(_topology)
+
+@st.cache_resource(show_spinner="🧠 Digital Twin Engine (GNN/VectorDB) をロード中...")
+def _get_cached_dt_engine(site_id: str, _topology):
+    # 遅延インポート（Lazy Loading）で起動時のモタつきを解消
+    from digital_twin_pkg import DigitalTwinEngine as _DTE
+    _children_map: dict = {}
+    for _nid, _n in _topology.items():
+        _pid = (_n.get('parent_id') if isinstance(_n, dict)
+                else getattr(_n, 'parent_id', None))
+        if _pid:
+            _children_map.setdefault(_pid, []).append(_nid)
+    return _DTE(
+        topology=_topology,
+        children_map=_children_map,
+        tenant_id=site_id,
+    )
+
+# =====================================================
 # メイン描画関数
 # =====================================================
 def render_incident_cockpit(site_id: str, api_key: Optional[str]):
@@ -406,10 +430,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 ))
 
     # LogicalRCA エンジン
-    engine_key = f"engine_{site_id}"
-    if engine_key not in st.session_state.logic_engines:
-        st.session_state.logic_engines[engine_key] = LogicalRCA(topology)
-    engine = st.session_state.logic_engines[engine_key]
+    engine = _get_cached_logical_rca(topology)
 
     if alarms:
         analysis_results = engine.analyze(alarms)
@@ -424,33 +445,18 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         }]
 
     # =====================================================
-    # ★ Phase1: DigitalTwinEngine.predict_api() 接続
-    # シミュレーション注入 OR 正常シナリオで dt_engine を呼ぶ
+    # ★ Phase1: DigitalTwinEngine.predict_api() 接続 (爆速キャッシュ版)
     # =====================================================
-    dt_key     = f"dt_engine_{site_id}"
     dt_err_key = f"dt_engine_error_{site_id}"
-    dt_engine  = st.session_state.get(dt_key)
-    if dt_engine is None and not st.session_state.get(dt_err_key):
+    dt_engine  = None
+    
+    if not st.session_state.get(dt_err_key):
         try:
-            from digital_twin_pkg import DigitalTwinEngine as _DTE
-            _children_map: dict = {}
-            for _nid, _n in topology.items():
-                _pid = (_n.get('parent_id') if isinstance(_n, dict)
-                        else getattr(_n, 'parent_id', None))
-                if _pid:
-                    _children_map.setdefault(_pid, []).append(_nid)
-            # DTE 初期化: API キーを環境変数から自動取得
-            dt_engine = _DTE(
-                topology=topology,
-                children_map=_children_map,
-                tenant_id=site_id,
-            )
-            st.session_state[dt_key]     = dt_engine
-            st.session_state[dt_err_key] = None
+            # キャッシュされたエンジンを一瞬で呼び出す
+            dt_engine = _get_cached_dt_engine(site_id, topology)
         except Exception as _dte_err:
             import traceback as _tb
             st.session_state[dt_err_key] = f"{type(_dte_err).__name__}: {_dte_err}\n{_tb.format_exc()}"
-            dt_engine = None
 
     # DTE 初期化エラーをユーザに表示
     _dte_error = st.session_state.get(dt_err_key)
