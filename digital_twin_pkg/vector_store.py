@@ -115,7 +115,17 @@ class VectorStore:
         self._collection = None
         self._ready = False
 
-        if not HAS_CHROMADB:
+        # =========================================================
+        # ★ 修正: クラスが呼び出された瞬間に初めて ChromaDB を読み込む（完全遅延ロード）
+        # =========================================================
+        try:
+            import chromadb
+            from chromadb.config import Settings as ChromaSettings
+            _has_chroma = True
+        except ImportError:
+            _has_chroma = False
+
+        if not _has_chroma:
             logger.warning("VectorStore: chromadb unavailable — no-op mode")
             return
 
