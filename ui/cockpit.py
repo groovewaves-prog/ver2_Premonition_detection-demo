@@ -245,27 +245,32 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
     """
     ハイブリッド診断実行関数（圧倒的リアル化・完全遅延ロードキャッシュ対応版・フル機能維持）
     """
-    device_id = getattr(target_node_obj, "id", "UNKNOWN") if target_node_obj else "UNKNOWN"
+    # 1. ターゲットデバイスIDの確実な取得
+    device_id = getattr(target_node_obj, "id", None) if target_node_obj else None
+    if not device_id or device_id == "SYSTEM":
+        inj = st.session_state.get("injected_weak_signal")
+        if inj and inj.get("device_id"):
+            device_id = inj.get("device_id")
+        else:
+            device_id = "L1_WAN_ROUTER_01"  # 最終フォールバック
+            
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 注入された予兆（劣化）シグナルの確認
+    # 2. 状態の判定
     injected = st.session_state.get("injected_weak_signal")
-    # ★修正: level=0(正常)でも、デバイスIDが一致すればシミュレーション対象として扱う
-    is_simulating = bool(injected and injected.get("device_id") == device_id)
-    level = injected.get("level", 0) if is_simulating else 0
-    pred_scenario = injected.get("scenario", "") if is_simulating else ""
+    level = injected.get("level", 0) if injected else 0
+    pred_scenario = injected.get("scenario", "") if injected else ""
 
     # ==========================================
     # アプローチ2: LLMによる動的シミュレーション (主軸)
     # ==========================================
-    if use_llm and GENAI_AVAILABLE and is_simulating:
-        # 診断結果のLLMキャッシュ（無駄なAPI消費を防ぐ）
-        _diag_cache_key = f"diag_{device_id}_{pred_scenario}_{level}"
+    if use_llm and GENAI_AVAILABLE:
+        # キャッシュキーにレベルを含め、状態ごとの生ログを保持
+        _diag_cache_key = f"diag_{device_id}_{scenario}_{pred_scenario}_{level}"
         if "diag_cache" not in st.session_state:
             st.session_state.diag_cache = {}
             
         if _diag_cache_key in st.session_state.diag_cache:
-            # キャッシュヒット時はタイムスタンプだけ最新に書き換えて返す
             cached_res = st.session_state.diag_cache[_diag_cache_key].copy()
             cached_res["sanitized_log"] = cached_res["sanitized_log"].replace(
                 cached_res.get("_cached_ts", ""), ts
@@ -273,33 +278,37 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
             return cached_res
 
         try:
-            # ★修正: 状態を自然言語で明確に定義し、リアルな出力を強制する
-            if level == 0:
-                state_desc = "ネットワークは完全に正常稼働（エラーなし、ロス0%、温度正常）しています。"
+            # 状態を自然言語で明確に定義
+            if scenario != "正常稼働":
+                state_desc = f"現在、ネットワーク全体で「{scenario}」という障害が発生しています。"
+            elif level == 0:
+                state_desc = "ネットワークは完全に正常稼働しています。"
             elif level == 5:
-                state_desc = f"「{pred_scenario}」の深刻な劣化（レベル5/5）が起きており、Pingロスやエラーが多発しています。"
+                state_desc = f"「{pred_scenario}」の深刻な劣化（レベル5/5）が起きています。"
             else:
-                state_desc = f"「{pred_scenario}」の劣化兆候（レベル{level}/5）が検知されていますが、Pingはギリギリ通っています。"
+                state_desc = f"「{pred_scenario}」の微細な劣化兆候（レベル{level}/5）が検知されています。"
 
             prompt = f"""
             あなたはCisco/Juniper等の実在するネットワーク機器（ホスト名: {device_id}）です。
             現在、{state_desc}
             管理者がターミナルでトラブルシューティングを行っています。実際の機器が出力するような、極めてリアルで生々しいターミナル出力（生ログ）を生成してください。
             
-            【必須で含めるコマンドと出力要件】
-            1. `{device_id}# ping 8.8.8.8`
-               - レベル0ならパケットロス0% (!!!!!)。レベル5ならロスを表現 (..!!!等)。
-            2. `{device_id}# show ip interface brief` または `show interfaces`
-               - インターフェース名と、リンクの「UP/DOWN」状態を必ず明記すること（パーサーがUP/DOWNを読み取ります。レベル0ならUP/UP）。
-            3. `{device_id}# show environment` (またはハードウェア状態確認)
-               - Temp(温度), Fan(ファン), Power(電源) のステータス(NORMAL / WARNING 等)を含めること。
-            4. 劣化原因（{pred_scenario}）に直結する詳細確認コマンド
-               - 例: 光減衰なら `show interfaces transceiver detail` 等。レベルに応じた数値をリアルに出力する。レベル0なら完全な正常値。
+            【必須で含めるコマンドと出力要件（※ログ監視パーサーが読み取るため絶対遵守）】
+            1. `{device_id}# ping 8.8.8.8 repeat 5`
+               - レベル0や正常時はパケットロス0% (!!!!!)。障害時やレベル5ならロスを表現 (..!!!等)。
+            2. `{device_id}# show ip interface brief` 
+               - インターフェース名と状態を必ず出力すること。
+               - 正常時は必ず `GigabitEthernet0/0/0   10.1.1.1   YES NVRAM  up    up` のように「up」を含めること。
+            3. `{device_id}# show environment` (または show chassis hardware)
+               - Temp(温度), Fan(ファン), Power(電源) のステータスを必ず出力すること。
+               - 正常時は必ず `NORMAL` または `OK` というキーワードを含めること（例: `Fan 1: NORMAL`）。
+               - 異常がある場合は `WARNING` や `FAIL` を含めること。
+            4. 劣化原因（{pred_scenario}）または障害に直結する詳細確認コマンド
+               - 光減衰なら `show interfaces transceiver detail` 等。レベルに応じた数値をリアルに出力する。
             
             【出力ルール】
-            ・各コマンドの前には必ずプロンプト `{device_id}# ` を付けること。
             ・コードフェンス(```)は絶対に使わず、ターミナルに表示されるテキストそのままを出力すること。
-            ・MACアドレスやuptime、ダミーのIPなどを適度に散りばめて生々しくする（機密情報は `***` でサニタイズされた体裁でOK）。
+            ・MACアドレスやuptime、ダミーのIPなどを適度に散りばめて生々しくする（機密情報は `***` でサニタイズされた体裁）。
             """
             
             cfg = st.session_state.get("llm_config", {})
@@ -328,17 +337,53 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
             logging.warning(f"LLM diagnostic generation failed: {e}. Falling back to template.")
 
     # ==========================================
-    # アプローチ1: テンプレートによるフォールバック (予備)
+    # アプローチ1: テンプレートによるフォールバック
     # ==========================================
     _p = f"{device_id}#"
     
-    # ★修正: LLMが失敗した場合でも、シミュレーション用ログはリアルに寄せる
-    if is_simulating:
-        lines = [
-            f"[SYSTEM AUTO-DIAGNOSTICS] (Template Fallback)",
-            f"Target Device: {device_id}",
-            f"Timestamp: {ts} UTC",
-            "==================================================",
+    lines = [
+        f"[SYSTEM AUTO-DIAGNOSTICS] (Template Fallback)",
+        f"Target Device: {device_id}",
+        f"Timestamp: {ts} UTC",
+        "=================================================="
+    ]
+
+    recovered_devices = st.session_state.get("recovered_devices") or {}
+    recovered_map = st.session_state.get("recovered_scenario_map") or {}
+
+    if recovered_devices.get(device_id) and recovered_map.get(device_id) == scenario:
+        lines += [
+            f"{_p} show system alarms", "No active alarms", 
+            f"{_p} ping 8.8.8.8 repeat 5", "Success rate is 100 percent (5/5)", 
+            f"{_p} show ip interface brief", "GigabitEthernet0/0/0 up up",
+            f"{_p} show environment", "Fan: NORMAL, Temp: NORMAL, Power: NORMAL"
+        ]
+        return {"status": "SUCCESS", "sanitized_log": "\n".join(lines), "device_id": device_id}
+
+    if scenario != "正常稼働":
+        if "WAN" in scenario:
+            lines += [
+                f"{_p} show ip interface brief", "GigabitEthernet0/0 down down", 
+                f"{_p} show ip bgp summary", "Neighbor 203.0.113.2 Idle", 
+                f"{_p} ping 203.0.113.2 repeat 5", "Success rate is 0 percent (0/5)",
+                f"{_p} show environment", "Fan: NORMAL, Temp: NORMAL, Power: NORMAL"
+            ]
+        elif "FW" in scenario:
+            lines += [
+                f"{_p} ping 8.8.8.8 repeat 5", "Success rate is 100 percent (5/5)", 
+                f"{_p} show ip interface brief", "GigabitEthernet0/0/0 up up",
+                f"{_p} show chassis cluster status", "Redundancy group 0: degraded", "control link: down", "fabric link: up",
+                f"{_p} show environment", "Fan: NORMAL, Temp: NORMAL, Power: WARNING"
+            ]
+        else:
+            lines += [
+                f"{_p} ping 8.8.8.8 repeat 5", "Success rate is 100 percent (5/5)", 
+                f"{_p} show ip interface brief", "GigabitEthernet0/0/0 down down",
+                f"{_p} show environment", "Fan: FAIL, Temperature: HIGH, Power: NORMAL"
+            ]
+    else:
+        # 正常時 or 予兆注入時
+        lines += [
             f"{_p} ping 8.8.8.8 repeat 5",
             "Type escape sequence to abort.",
             "Sending 5, 100-byte ICMP Echos to 8.8.8.8, timeout is 2 seconds:",
@@ -360,31 +405,6 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
                 lines += [f"{_p} show hardware internal buffer", f"  Queue Drops: {level * 200} drops/sec (WARNING)"]
             elif "Route" in pred_scenario:
                 lines += [f"{_p} show ip bgp summary", f"  BGP Flaps: {level * 500} times/hour (WARNING)"]
-        return {"status": "SUCCESS", "sanitized_log": "\n".join(lines), "device_id": device_id}
-
-    # ─── ⚠️ここから下は元の重要ロジックを完全復元（消さない） ───
-    lines = [
-        f"[PROBE] ts={ts} (Template Fallback)",
-        f"[PROBE] target_device={device_id}",
-        ""
-    ]
-
-    recovered_devices = st.session_state.get("recovered_devices") or {}
-    recovered_map = st.session_state.get("recovered_scenario_map") or {}
-
-    if recovered_devices.get(device_id) and recovered_map.get(device_id) == scenario:
-        lines += ["show system alarms", "No active alarms", "ping 8.8.8.8 repeat 5", "Success rate is 100 percent (5/5)", "show ip interface brief", "Status up up"]
-        return {"status": "SUCCESS", "sanitized_log": "\n".join(lines), "device_id": device_id}
-
-    if "WAN全回線断" in scenario or "[WAN]" in scenario:
-        lines += ["show ip interface brief", "GigabitEthernet0/0 down down", "show ip bgp summary",
-                  "Neighbor 203.0.113.2 Idle", "ping 203.0.113.2 repeat 5", "Success rate is 0 percent (0/5)"]
-    elif "FW片系障害" in scenario or "[FW]" in scenario:
-        lines += ["show chassis cluster status", "Redundancy group 0: degraded", "control link: down", "fabric link: up"]
-    elif "L2SW" in scenario:
-        lines += ["show environment", "Fan: FAIL", "Temperature: HIGH", "show interface status", "Uplink: flapping"]
-    else:
-        lines += ["show system alarms", "No active alarms", "ping 8.8.8.8 repeat 5", "Success rate is 100 percent (5/5)", "show ip interface brief", "Status up up"]
 
     return {"status": "SUCCESS", "sanitized_log": "\n".join(lines), "device_id": device_id}
 
@@ -1059,12 +1079,16 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 with st.status("Agent Operating...", expanded=True) as status_widget:
                     st.write("🔌 Connecting to device...")
                     
-                    # ★ 修正: インシデントがない(SYSTEM)場合、サイドバーで選択中のデバイスを強制的にターゲットにする
+                    # ★ 修正: インシデントがない(SYSTEM)場合、サイドバーやトポロジから確実にデバイスIDを取得する
                     _diag_target_id = target_device_id
                     if _diag_target_id == "SYSTEM" or not _diag_target_id:
-                        _injected_info = st.session_state.get("injected_weak_signal")
-                        if _injected_info and _injected_info.get("device_id"):
-                            _diag_target_id = _injected_info.get("device_id")
+                        _inj = st.session_state.get("injected_weak_signal")
+                        if _inj and _inj.get("device_id"):
+                            _diag_target_id = _inj.get("device_id")
+                        else:
+                            # 最終手段としてトポロジからルーターを1台選ぶ
+                            _first_router = next((k for k, v in topology.items() if "ROUTER" in k.upper()), None)
+                            _diag_target_id = _first_router if _first_router else list(topology.keys())[0]
                             
                     target_node_obj = topology.get(_diag_target_id) if _diag_target_id else None
                     
@@ -1079,7 +1103,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     else:
                         st.write("❌ Connection Failed.")
                         status_widget.update(label="Diagnostics Failed", state="error")
-                st.rerun()  # ★復活: キャッシュ実装により安全にリラン可能になったため
+                st.rerun()
 
         if st.session_state.live_result:
             res = st.session_state.live_result
