@@ -632,7 +632,11 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         for _dev_id, (_msgs_list, _src) in _grouped.items():
             try:
                 _combined_msg = "\n".join(_msgs_list)
-                _cache_key = f"{_dev_id}|{_sim_level}|{hash(_combined_msg[:200])}"
+                
+                # =========================================================
+                # ★修正: キャッシュキーの先頭に "v2_" を付けて、過去の古い記憶を強制リセット
+                # =========================================================
+                _cache_key = f"v2_{_dev_id}|{_sim_level}|{hash(_combined_msg[:200])}"
 
                 # キャッシュチェック
                 _cached = st.session_state[_ck_pred_cache].get(_cache_key)
@@ -660,7 +664,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 _preds_returned = _resp.get("predictions", []) if _resp.get("ok") else []
                 
                 # =========================================================
-                # ★修正1: LLMが結果を返さなかった場合の強制フォールバック
+                # LLMが結果を返さなかった場合の強制フォールバック
                 # =========================================================
                 if not _preds_returned and _src == "simulation":
                     _sim_scenario = _injected.get("scenario", "異常")
@@ -679,7 +683,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     }]
 
                 # =========================================================
-                # ★修正2: 【真のAI動的生成】ハードコードを排除し、GeminiにJSONで作らせる
+                # 【真のAI動的生成】ハードコードを排除し、GeminiにJSONで作らせる
                 # =========================================================
                 if _src == "simulation" and _injected:
                     for _p in _preds_returned:
@@ -689,6 +693,12 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                             if api_key and GENAI_AVAILABLE:
                                 try:
                                     import json as _json
+                                    
+                                    # =========================================================
+                                    # ★修正: APIキーを明示的にセット（これがないと裏側で通信エラーになり失敗する）
+                                    # =========================================================
+                                    genai.configure(api_key=api_key)
+                                    
                                     _prompt = f"""
                                     あなたは熟練のネットワークAIOpsエンジニアです。
                                     以下のシステムログから、直ちに実行すべき初動調査コマンドと推奨アクションを、重要度が高い順に【最大3つまで】JSON形式で出力してください。
@@ -722,7 +732,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     logging.warning(f"Dynamic action generation failed: {e}")
 
                         # =========================================================
-                        # ★修正3: ソートバグの完全修正（優先度順に強制並び替え）
+                        # ソートバグの完全修正（優先度順に強制並び替え）
                         # =========================================================
                         _priority_map = {"high": 0, "medium": 1, "low": 2}
                         _p.get("recommended_actions", []).sort(
