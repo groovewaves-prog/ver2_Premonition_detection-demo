@@ -103,8 +103,18 @@ DEFAULT_RULES = [
                         "steps": "1. show spanning-tree でループポートを特定\n2. interface shutdown コマンドで遮断\n3. ループ原因を調査後に復旧"}
                    ]),
 
-    # 5. Resource / Generic
-    EscalationRule("memory_leak", ["memory usage high", "malloc fail"], 
+    # 5. Resource / Generic — Memory Leak
+    #   ★ semantic_phrases はシミュレーションが生成する実際のログに合わせる:
+    #     %SYS-4-MEMORY_WARN:  → "memory usage", "memory_warn", "memory leak"
+    #     %PLATFORM-3-ELEMENT_WARNING: Used Memory value → "used memory"
+    #     %SYS-2-MALLOCFAIL:  → "mallocfail"
+    EscalationRule("memory_leak", [
+                       "memory usage",   # "High memory usage detected" にマッチ
+                       "memory leak",    # "Potential memory leak." にマッチ
+                       "mallocfail",     # "%SYS-2-MALLOCFAIL" にマッチ
+                       "memory_warn",    # "%SYS-4-MEMORY_WARN" にマッチ
+                       "used memory",    # "Used Memory value 84%" にマッチ
+                   ], 
                    "メモリ枯渇によるシステムクラッシュ", 180, 336, 0.85, "Software/Resource", 0.38,
                    requires_trend=True, trend_metric_regex=r"usage (\d+)%", trend_min_slope=1.0, 
                    metric_name="memory_usage_pct",
