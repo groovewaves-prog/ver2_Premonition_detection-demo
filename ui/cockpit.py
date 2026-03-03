@@ -406,8 +406,10 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
                 lines += [f"{_p} show interfaces transceiver detail", f"  Te0/0/1 Rx Power: {-23.0 - (level * 0.4):.1f} dBm (WARNING)"]
             elif "Microburst" in pred_scenario:
                 lines += [f"{_p} show hardware internal buffer", f"  Queue Drops: {level * 200} drops/sec (WARNING)"]
-            elif "Route" in pred_scenario:
-                lines += [f"{_p} show ip bgp summary", f"  BGP Flaps: {level * 500} times/hour (WARNING)"]
+            elif "Memory" in pred_scenario:
+                # レベルが上がるごとに空きメモリが減っていく様子を表現
+                free_mem = max(10, 800 - (level * 150))
+                lines += [f"{_p} show processes memory", f"  Processor Pool Total: 8192M  Free: {free_mem}M (WARNING)"]
 
     return {"status": "SUCCESS", "sanitized_log": "\n".join(lines), "device_id": device_id}
 
