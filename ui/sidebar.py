@@ -153,7 +153,7 @@ def _render_weak_signal_injection():
         
         scenario_type = st.selectbox(
             "劣化シナリオ",
-            ["Optical Decay (光減衰)", "Microburst (パケット破棄)", "Route Instability (経路揺らぎ)"],
+            ["Optical Decay (光減衰)", "Microburst (パケット破棄)", "Memory Leak (メモリリーク)"],
             key="pred_scenario"
         )
 
@@ -230,30 +230,26 @@ def _render_weak_signal_injection():
                                f"queue drops {drops+100}/sec. output drops increasing.")
                         log_messages.append(_msg)
 
-            elif "Route" in scenario_type:
-                bgp_peers = [
-                    ("10.1.1.1", "AS65001"),
-                    ("10.1.1.2", "AS65002"),
-                    ("10.1.1.3", "AS65003"),
-                    ("10.1.1.4", "AS65004"),
-                    ("10.2.1.1", "AS65010"),
-                ]
+            elif "Memory" in scenario_type:
+                base_mem = 8192
                 
-                num_affected = min(degradation_level, len(bgp_peers))
-                selected_peers = _rng_local.sample(bgp_peers, num_affected)
-                
-                updates = degradation_level * 500
-                
-                for i, (peer_ip, peer_as) in enumerate(selected_peers):
-                    if i == 0 or degradation_level >= 3:
-                        _msg = (f"BGP-5-NEIGHBOR: bgp neighbor {peer_ip} ({peer_as}) route updates {updates}/min. "
-                               f"route instability warning detected.")
-                        log_messages.append(_msg)
+                # ループを使ってレベル数とぴったりのログ件数を生成
+                while len(log_messages) < degradation_level:
+                    i = len(log_messages)
+                    # レベルが上がるほど空きメモリが減っていく計算
+                    free_mem = max(128, base_mem - (degradation_level * 1200) + (i * 100))
                     
-                    if (i == 1 or degradation_level >= 4) and len(log_messages) < degradation_level:
-                        _msg = (f"%BGP-4-INSTABILITY: route instability detected on peer {peer_ip} ({peer_as}). "
-                               f"retransmission rate increasing. neighbor down risk.")
-                        log_messages.append(_msg)
+                    if i % 3 == 0:
+                        _msg = (f"%SYS-4-MEMORY_WARN: High memory usage detected. "
+                               f"Processor Pool Free: {free_mem}M. Potential memory leak.")
+                    elif i % 3 == 1:
+                        _msg = (f"%PLATFORM-3-ELEMENT_WARNING: Used Memory value {80 + degradation_level*2}% "
+                               f"exceeds warning threshold. System instability risk.")
+                    else:
+                        _msg = (f"%SYS-2-MALLOCFAIL: Memory allocation of 65536 bytes failed. "
+                               f"Pool: Processor, Free: {free_mem}M.")
+                        
+                    log_messages.append(_msg)
         
         
         # Session State に保存
