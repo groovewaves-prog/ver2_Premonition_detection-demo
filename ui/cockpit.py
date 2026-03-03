@@ -732,8 +732,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     ]
                                     """
                                     
-                                    # ★ gemma-3-4b-it または gemini-2.0-flash-exp を指定
-                                    _model = genai.GenerativeModel('gemini-2.0-flash-exp') 
+                                    # ★ gemma-3-4b-it または Gemma-3-12b-it を指定
+                                    _model = genai.GenerativeModel('Gemma-3-4b-it') 
                                     _response = _model.generate_content(_prompt)
                                     
                                     _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
@@ -1308,7 +1308,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     api_key=api_key,
                                     max_retries=2,
                                     backoff=3,
-
+                                    model_name="gemma-3-12b-it", # ★追加
                                 ):
                                     full_text += chunk
                                     placeholder.markdown(full_text)
@@ -1420,7 +1420,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     api_key=api_key,
                                     max_retries=2,
                                     backoff=3,
-
+                                    model_name="gemma-3-12b-it", # ★追加
                                 ):
                                     remediation_text += chunk
                                     placeholder.markdown(remediation_text)
@@ -1618,7 +1618,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                         """
                                         
                                         # LLMによる動的命名の実行（エラーの元だったimport文は除去済み）
-                                        _model = genai.GenerativeModel('gemini-1.5-flash')
+                                        _model = genai.GenerativeModel('Gemma-3-4b-it')
                                         _response = _model.generate_content(_prompt)
                                         
                                         _learned_title = _response.text.strip()
@@ -1800,7 +1800,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
             if st.session_state.chat_session is None and api_key and GENAI_AVAILABLE:
                 genai.configure(api_key=api_key)
-                model_obj = genai.GenerativeModel("gemini-2.0-flash-exp")  # ★ 高推論能力モデル
+                model_obj = genai.GenerativeModel("Gemma-3-4b-it")  # ★ 高推論能力モデル
                 st.session_state.chat_session = model_obj.start_chat(history=[])
 
             tab1, tab2 = st.tabs(["💬 会話", "📝 履歴"])
