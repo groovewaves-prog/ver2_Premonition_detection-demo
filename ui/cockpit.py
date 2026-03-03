@@ -633,12 +633,12 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             try:
                 _combined_msg = "\n".join(_msgs_list)
                 
-                _cache_key = f"v3_{_dev_id}|{_sim_level}|{hash(_combined_msg[:200])}"
+                # ★ v4に変更し、古い記憶を再度強制リセット
+                _cache_key = f"v4_{_dev_id}|{_sim_level}|{hash(_combined_msg[:200])}"
 
                 # キャッシュチェック
                 _cached = st.session_state[_ck_pred_cache].get(_cache_key)
                 if _cached is not None:
-                    # キャッシュヒット → predict_api をスキップ
                     for _p in _cached:
                         _p["is_prediction"] = True
                         if not any(d.get("id") == _dev_id for d in dt_predictions):
@@ -660,9 +660,6 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 
                 _preds_returned = _resp.get("predictions", []) if _resp.get("ok") else []
                 
-                # =========================================================
-                # LLMが結果を返さなかった場合の強制フォールバック
-                # =========================================================
                 if not _preds_returned and _src == "simulation":
                     _sim_scenario = _injected.get("scenario", "異常")
                     _preds_returned = [{
@@ -680,7 +677,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     }]
 
                 # =========================================================
-                # 【真のAI動的生成】Markdownフェンス除去付きの堅牢版
+                # 【真のAI動的生成】究極のJSON抽出 ＆ エラー強制表示版
                 # =========================================================
                 if _src == "simulation" and _injected:
                     for _p in _preds_returned:
@@ -699,37 +696,44 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     【対象ログ】
                                     {_combined_msg[:1000]}
 
-                                    【出力JSONフォーマット（必ず以下のキー構造の配列にすること）】
+                                    【出力JSONフォーマット】
+                                    必ず以下のキー構造のJSON配列（リスト）のみを出力してください。他の文章やMarkdownブロックは一切不要です。
                                     [
                                       {{
                                         "title": "アクションのタイトル",
                                         "effect": "この手順で得られる効果",
-                                        "priority": "high",  // high, medium, low のいずれか
+                                        "priority": "high",
                                         "rationale": "なぜこの手順が必要かのプロ視点の根拠",
                                         "steps": "具体的な手順やコマンド (改行は \\n を使用)"
                                       }}
                                     ]
-                                    ※解説やMarkdownのコードブロック(```json)は一切含めず、純粋なJSON配列のみをテキストで出力してください。
                                     """
                                     
-                                    # バージョン非互換エラーを防ぐため generation_config を削除し、標準で呼び出す
                                     _model = genai.GenerativeModel('gemini-1.5-flash')
                                     _response = _model.generate_content(_prompt)
                                     
-                                    # ★ AIがつけてしまった ```json 等の装飾を強制的に剥がす
-                                    _raw_text = _response.text.strip()
-                                    _raw_text = _re.sub(r'^```(?:json)?\s*', '', _raw_text, flags=_re.IGNORECASE)
-                                    _raw_text = _re.sub(r'\s*```$', '', _raw_text)
+                                    # ★ 余計な文章を無視して、JSON配列「[ ... ]」の部分だけを強引にくり抜く最強の正規表現
+                                    _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
                                     
-                                    _dynamic_actions = _json.loads(_raw_text)
-                                    
-                                    if isinstance(_dynamic_actions, list) and len(_dynamic_actions) > 0:
-                                        _p["recommended_actions"] = _dynamic_actions[:3]
+                                    if _match:
+                                        _json_str = _match.group(0)
+                                        _dynamic_actions = _json.loads(_json_str)
+                                        if isinstance(_dynamic_actions, list) and len(_dynamic_actions) > 0:
+                                            _p["recommended_actions"] = _dynamic_actions[:3]
+                                    else:
+                                        raise ValueError("AIの回答からJSON配列が見つかりませんでした。")
+                                        
                                 except Exception as e:
-                                    import logging
-                                    logging.warning(f"Dynamic action generation failed: {e}")
-                                    # ★ なぜ失敗したか画面上で一目でわかるように通知を出す
-                                    st.toast(f"⚠️ 復旧プランのAI動的生成に失敗: {type(e).__name__}", icon="⚠️")
+                                    # ★ エラーが起きた場合、握りつぶさずに「推奨アクション」の画面に直接エラー内容を表示させる
+                                    _err_msg = str(e)
+                                    _raw_resp = getattr(_response, "text", "レスポンスなし") if '_response' in locals() else "未実行"
+                                    _p["recommended_actions"] = [{
+                                        "title": f"⚠️ 動的生成エラー: {type(e).__name__}",
+                                        "effect": "システムエラーにより生成中断",
+                                        "priority": "high",
+                                        "rationale": f"エラー詳細: {_err_msg}",
+                                        "steps": f"【AIの生の回答】\n{_raw_resp}"
+                                    }]
 
                         # =========================================================
                         # ソートバグの完全修正（優先度順に強制並び替え）
