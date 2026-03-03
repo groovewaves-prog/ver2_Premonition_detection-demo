@@ -660,7 +660,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 _preds_returned = _resp.get("predictions", []) if _resp.get("ok") else []
                 
                 # =========================================================
-                # ★修正1: LLMが「まだ正常」と判断して結果を返さなかった場合の強制フォールバック
+                # ★修正1: LLMが結果を返さなかった場合の強制フォールバック
                 # =========================================================
                 if not _preds_returned and _src == "simulation":
                     _sim_scenario = _injected.get("scenario", "異常")
@@ -679,39 +679,55 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     }]
 
                 # =========================================================
-                # ★修正2: 新規シナリオ（Memory Leak等）で汎用アクションが返るバグを防ぐ専用アクション注入
+                # ★修正2: 【真のAI動的生成】ハードコードを排除し、GeminiにJSONで作らせる
                 # =========================================================
                 if _src == "simulation" and _injected:
-                    _sim_scenario = _injected.get("scenario", "")
                     for _p in _preds_returned:
                         _actions = _p.get("recommended_actions", [])
-                        # アクションが1つしかない（汎用フォールバック）か、空の場合に上書き
+                        # アクションが1つしかない（汎用フォールバック）か、空の場合に動的生成
                         if not _actions or len(_actions) <= 1:
-                            if "Memory" in _sim_scenario:
-                                _p["recommended_actions"] = [
-                                    {
-                                        "title": "プロセスメモリ消費状況の特定 (最優先)",
-                                        "effect": "リーク原因プロセスの特定",
-                                        "priority": "high",
-                                        "rationale": "High memory usageが連続検知されています。特定プロセスによるメモリリークの疑いが濃厚です。",
-                                        "steps": "1. show processes memory sorted\n2. メモリ消費上位プロセスの特定\n3. show memory allocating-process totals"
-                                    },
-                                    {
-                                        "title": "バッファ・セッション状態の確認",
-                                        "effect": "パケットドロップ等の二次被害予測",
-                                        "priority": "medium",
-                                        "rationale": "メモリ枯渇により、新規TCPセッションやルーティングテーブルの確保に失敗するリスクがあります。",
-                                        "steps": "1. show buffers\n2. show tcp statistics\n3. show ip bgp summary (BGPフラップ兆候確認)"
-                                    },
-                                    {
-                                        "title": "OS再起動およびバージョンアップ計画",
-                                        "effect": "メモリ解放と恒久対応",
-                                        # レベル4以上になると優先度がHighに上がるギミック
-                                        "priority": "high" if _sim_level >= 4 else "low",
-                                        "rationale": f"レベル{_sim_level}の深刻なメモリ枯渇状態。OSの既知バグの可能性が高いため、暫定対応としての再起動が必要です。",
-                                        "steps": "1. 現在の設定を保存 (write memory)\n2. メンテナンスウィンドウでの再起動 (reload)\n3. 安定版OSへのアップデート計画策定"
-                                    }
-                                ]
+                            if api_key and GENAI_AVAILABLE:
+                                try:
+                                    import json as _json
+                                    _prompt = f"""
+                                    あなたは熟練のネットワークAIOpsエンジニアです。
+                                    以下のシステムログから、直ちに実行すべき初動調査コマンドと推奨アクションを、重要度が高い順に【最大3つまで】JSON形式で出力してください。
+
+                                    【対象ログ】
+                                    {_combined_msg[:1000]}
+
+                                    【出力JSONフォーマット（このキー構造に厳密に従うこと）】
+                                    [
+                                      {{
+                                        "title": "アクションのタイトル (例: プロセスメモリ消費状況の特定)",
+                                        "effect": "この手順で得られる効果",
+                                        "priority": "high",  // high, medium, low のいずれか
+                                        "rationale": "なぜこの手順が必要かのプロ視点の根拠",
+                                        "steps": "具体的な手順やコマンド (改行は \\n を使用)"
+                                      }}
+                                    ]
+                                    """
+                                    # JSON出力を強制するコンフィグを追加してハルシネーションを防止
+                                    _model = genai.GenerativeModel(
+                                        'gemini-1.5-flash', 
+                                        generation_config={"response_mime_type": "application/json"}
+                                    )
+                                    _response = _model.generate_content(_prompt)
+                                    _dynamic_actions = _json.loads(_response.text)
+                                    
+                                    if isinstance(_dynamic_actions, list) and len(_dynamic_actions) > 0:
+                                        _p["recommended_actions"] = _dynamic_actions[:3]
+                                except Exception as e:
+                                    import logging
+                                    logging.warning(f"Dynamic action generation failed: {e}")
+
+                        # =========================================================
+                        # ★修正3: ソートバグの完全修正（優先度順に強制並び替え）
+                        # =========================================================
+                        _priority_map = {"high": 0, "medium": 1, "low": 2}
+                        _p.get("recommended_actions", []).sort(
+                            key=lambda x: _priority_map.get(str(x.get("priority", "")).lower(), 3)
+                        )
 
                 _preds_to_cache = []
                 for _p in _preds_returned:
