@@ -174,12 +174,7 @@ class VectorStore:
         incident_id: Optional[str] = None,
         created_at: Optional[float] = None,
     ) -> Optional[str]:
-        """
-        予兆予測結果を 1 件ベクトルストアに登録する。
-
-        Returns:
-            incident_id (str) or None if failed
-        """
+        """予兆予測結果を 1 件ベクトルストアに登録する。"""
         if not self._ready:
             return None
 
@@ -188,6 +183,7 @@ class VectorStore:
         sb = score_breakdown or {}
 
         metadata = {
+            "tenant_id":      self.tenant_id,  # ★追加: どの拠点の事例かを記録
             "device_id":      device_id,
             "rule_pattern":   rule_pattern,
             "confidence":     float(confidence),
@@ -195,7 +191,6 @@ class VectorStore:
             "anomaly_type":   anomaly_type,
             "outcome":        outcome,
             "created_at":     float(ts),
-            # スコア内訳（ChromaDB metadata はフラット key-value のみ）
             "score_semantic":    float(sb.get("semantic", 0.0)),
             "score_trend":       float(sb.get("trend", 0.0)),
             "score_volatility":  float(sb.get("volatility", 0.0)),
@@ -224,38 +219,32 @@ class VectorStore:
         alarm_text: str,
         n_results: int = 5,
         min_similarity: float = 0.3,
+        resolved_only: bool = False,  # ★追加: 解決済み事例のみを抽出するフラグ
     ) -> List[Dict[str, Any]]:
-        """
-        alarm_text に意味的に類似した過去インシデントを検索する。
-
-        Returns:
-            list of dict:
-                - text: str
-                - similarity: float (0-1, 高いほど類似)
-                - outcome: str
-                - vendor_context: str
-                - created_at: float (epoch)
-                - device_id: str
-                - rule_pattern: str
-                - incident_id: str
-        """
         if not self._ready:
-            return []
+            return[]
 
         try:
             count = self._collection.count()
             if count == 0:
-                return []
-            # n_results がコレクション件数を超えないように
+                return[]
+            
             actual_n = min(n_results, count)
+            
+            # ★追加: ChromaDB のフィルタリング機能(where句)で成功事例のみを絞り込む
+            where_clause = None
+            if resolved_only:
+                where_clause = {"outcome": {"$in": ["mitigated", "confirmed_incident"]}}
+                
             results = self._collection.query(
                 query_texts=[alarm_text],
                 n_results=actual_n,
                 include=["documents", "metadatas", "distances"],
+                where=where_clause  # ★フィルタ適用
             )
         except Exception as e:
             logger.error(f"VectorStore.search_similar_alarms failed: {e}")
-            return []
+            return[]
 
         # ChromaDB cosine distance → similarity (1 - distance)
         out: List[Dict[str, Any]] = []
