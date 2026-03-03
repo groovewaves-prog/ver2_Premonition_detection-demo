@@ -661,14 +661,13 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 
                 # =========================================================
                 # ★修正1: LLMが「まだ正常」と判断して結果を返さなかった場合の強制フォールバック
-                # これにより、レベル1でも確実に右パネルとUIを描画させる
                 # =========================================================
                 if not _preds_returned and _src == "simulation":
                     _sim_scenario = _injected.get("scenario", "異常")
                     _preds_returned = [{
                         "label": f"🔮 [予兆] {_sim_scenario} の初期兆候",
                         "predicted_state": _sim_scenario,
-                        "prob": min(0.65 + (_sim_level * 0.05), 0.99), # 右パネル表示条件(0.6)を確実に超えさせる
+                        "prob": min(0.65 + (_sim_level * 0.05), 0.99),
                         "confidence": min(0.65 + (_sim_level * 0.05), 0.99),
                         "prediction_timeline": "1〜3日",
                         "prediction_affected_count": 2,
@@ -676,10 +675,43 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                         "prediction_time_to_failure_hours": max(72 - (_sim_level * 12), 2),
                         "rule_pattern": f"{_sim_scenario}_Auto",
                         "reasons": _msgs_list,
-                        "recommended_actions": [
-                            {"title": "詳細ログの確認", "effect": "原因特定", "priority": "medium", "steps": "show logging\nshow processes memory"}
-                        ]
+                        "recommended_actions": []
                     }]
+
+                # =========================================================
+                # ★修正2: 新規シナリオ（Memory Leak等）で汎用アクションが返るバグを防ぐ専用アクション注入
+                # =========================================================
+                if _src == "simulation" and _injected:
+                    _sim_scenario = _injected.get("scenario", "")
+                    for _p in _preds_returned:
+                        _actions = _p.get("recommended_actions", [])
+                        # アクションが1つしかない（汎用フォールバック）か、空の場合に上書き
+                        if not _actions or len(_actions) <= 1:
+                            if "Memory" in _sim_scenario:
+                                _p["recommended_actions"] = [
+                                    {
+                                        "title": "プロセスメモリ消費状況の特定 (最優先)",
+                                        "effect": "リーク原因プロセスの特定",
+                                        "priority": "high",
+                                        "rationale": "High memory usageが連続検知されています。特定プロセスによるメモリリークの疑いが濃厚です。",
+                                        "steps": "1. show processes memory sorted\n2. メモリ消費上位プロセスの特定\n3. show memory allocating-process totals"
+                                    },
+                                    {
+                                        "title": "バッファ・セッション状態の確認",
+                                        "effect": "パケットドロップ等の二次被害予測",
+                                        "priority": "medium",
+                                        "rationale": "メモリ枯渇により、新規TCPセッションやルーティングテーブルの確保に失敗するリスクがあります。",
+                                        "steps": "1. show buffers\n2. show tcp statistics\n3. show ip bgp summary (BGPフラップ兆候確認)"
+                                    },
+                                    {
+                                        "title": "OS再起動およびバージョンアップ計画",
+                                        "effect": "メモリ解放と恒久対応",
+                                        # レベル4以上になると優先度がHighに上がるギミック
+                                        "priority": "high" if _sim_level >= 4 else "low",
+                                        "rationale": f"レベル{_sim_level}の深刻なメモリ枯渇状態。OSの既知バグの可能性が高いため、暫定対応としての再起動が必要です。",
+                                        "steps": "1. 現在の設定を保存 (write memory)\n2. メンテナンスウィンドウでの再起動 (reload)\n3. 安定版OSへのアップデート計画策定"
+                                    }
+                                ]
 
                 _preds_to_cache = []
                 for _p in _preds_returned:
@@ -701,7 +733,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                         st.session_state[_ck_pred_cache].pop(_old_k, None)
 
             except Exception as _pred_err:
-                logger.warning(f"predict_api failed for {_dev_id}: {_pred_err}")
+                import logging
+                logging.warning(f"predict_api failed for {_dev_id}: {_pred_err}")
 
         # ── 自動 outcome 登録 ──────────────────────────────
         # Execute 成功済みデバイス → MITIGATED（競合状態に関わらず有効）
