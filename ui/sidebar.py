@@ -59,16 +59,26 @@ def render_sidebar():
                             "予兆シミュレーションを自動的にクリアしました。"
                         )
                     
-                    # キャッシュクリア
-                    keys_to_remove = [k for k in list(st.session_state.report_cache.keys()) if site_id in k]
+                    # ==========================================================
+                    # ★修正: キャッシュとセッションステートの完全クリア
+                    # ==========================================================
+                    # 1. レポートキャッシュのクリア
+                    keys_to_remove =[k for k in list(st.session_state.report_cache.keys()) if site_id in k]
                     for k in keys_to_remove:
                         del st.session_state.report_cache[k]
-                    if st.session_state.active_site == site_id:
+                    
+                    # 2. 予測APIキャッシュのクリア（古い予兆が画面に残るのを防ぐ）
+                    if "dt_prediction_cache" in st.session_state:
+                        st.session_state.dt_prediction_cache.clear()
+                    
+                    # 3. アクティブな画面のステートリセット
+                    if st.session_state.get("active_site") == site_id:
                         st.session_state.generated_report = None
                         st.session_state.remediation_plan = None
-                        st.session_state.messages = []
+                        st.session_state.messages =[]
                         st.session_state.chat_session = None
                         st.session_state.live_result = None
+                        st.session_state.verification_result = None
                     
                     # ★ 重要：セッションステート変更後は必ず rerun
                     st.rerun()
