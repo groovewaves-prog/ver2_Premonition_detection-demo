@@ -29,6 +29,21 @@ from .graph import render_topology_graph
 # =====================================================
 # ヘルパー関数
 # =====================================================
+
+def _compute_topo_hash(topology: dict) -> str:
+    """トポロジーの構成変更を検知するための軽量ハッシュを計算"""
+    try:
+        keys = sorted(list(topology.keys()))
+        state = []
+        for k in keys:
+            node = topology[k]
+            pid = node.get('parent_id') if isinstance(node, dict) else getattr(node, 'parent_id', None)
+            rg = node.get('redundancy_group') if isinstance(node, dict) else getattr(node, 'redundancy_group', None)
+            state.append(f"{k}|{pid}|{rg}")
+        return hashlib.md5(",".join(state).encode()).hexdigest()
+    except Exception:
+        return str(time.time())
+
 def _hash_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
 
@@ -43,12 +58,11 @@ def _pick_first(mapping: dict, keys: list, default: str = "") -> str:
             pass
     return default
 
-
 def _build_ci_context_for_chat(topology: dict, target_node_id: str) -> dict:
     """
     チャット用CIコンテキストを構築。
     対象ノードのmetadata・config に加え、
-    トポロジーJSONの親子関係・冗長グループ・隣接デバイス情報も含める。
+    JSONの親子関係・冗長グループ・隣接デバイス情報も含める。
     """
     node = topology.get(target_node_id)
     if node and hasattr(node, 'metadata'):
@@ -513,7 +527,7 @@ def _get_cached_logical_rca(_topology):
     return LogicalRCA(_topology)
 
 @st.cache_resource(show_spinner="🧠 Digital Twin Engine (GNN/VectorDB) をロード中...")
-def _get_cached_dt_engine(site_id: str, _topology):
+def _get_cached_dt_engine(site_id: str, topo_hash: str, _topology):
     # 遅延インポート（Lazy Loading）で起動時のモタつきを解消
     from digital_twin_pkg import DigitalTwinEngine as _DTE
     _children_map: dict = {}
@@ -603,8 +617,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     
     if not st.session_state.get(dt_err_key):
         try:
-            # キャッシュされたエンジンを一瞬で呼び出す
-            dt_engine = _get_cached_dt_engine(site_id, topology)
+            # ★修正: トポロジーハッシュを計算してキャッシュキーに含める
+            current_topo_hash = _compute_topo_hash(topology)
+            dt_engine = _get_cached_dt_engine(site_id, current_topo_hash, topology)
         except Exception as _dte_err:
             import traceback as _tb
             st.session_state[dt_err_key] = f"{type(_dte_err).__name__}: {_dte_err}\n{_tb.format_exc()}"
