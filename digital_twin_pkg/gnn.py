@@ -129,10 +129,15 @@ class GNNPredictionEngine:
             return None
         
         # ========================================================
-        # ★推論の効率化: グラフ構造のキャッシュ
-        # ネットワークの形(エッジ)は変わらないため、初回のみ計算する
+        # ★追加: 構成変更の自動検知（デバイス構成や繋がりを文字列化して比較）
         # ========================================================
-        if self._cached_topology_structure is None:
+        current_topo_state = str(list(self.topology.keys())) + str(self.children_map)
+        
+        # ★修正: キャッシュが空、または「構成が変わった」と検知した場合に再計算
+        if self._cached_topology_structure is None or getattr(self, '_last_topo_state', '') != current_topo_state:
+            
+            logger.info("Topology change detected or cache empty. Rebuilding GNN graph structure...")
+            
             device_ids = list(self.topology.keys())
             device_to_idx = {dev_id: idx for idx, dev_id in enumerate(device_ids)}
             
@@ -161,7 +166,6 @@ class GNNPredictionEngine:
                         redundant_edges.append([members[i], members[j]])
                         redundant_edges.append([members[j], members[i]])
             
-            # エッジが0本の場合のエラー防止用ダミーエッジ
             if not depends_edges: depends_edges = [[0, 0]]
             if not redundant_edges: redundant_edges = [[0, 0]]
             
@@ -171,6 +175,8 @@ class GNNPredictionEngine:
                 'depends_on': torch.tensor(depends_edges, dtype=torch.long).t().contiguous(),
                 'redundant_with': torch.tensor(redundant_edges, dtype=torch.long).t().contiguous()
             }
+            # ★追加: 最新の構成状態を記憶
+            self._last_topo_state = current_topo_state
         
         cache = self._cached_topology_structure
         device_ids = cache['device_ids']
