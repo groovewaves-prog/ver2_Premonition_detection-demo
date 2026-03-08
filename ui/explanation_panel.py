@@ -159,10 +159,61 @@ def render_explanation_panel(
             svg = build_radar_svg(score_breakdown, size=440)
             st.markdown(svg, unsafe_allow_html=True)
 
+        # ── ChiGAD スペクトル分析（ウェーブレットフィルタ） ──
+        spectral = explanation.get("spectral_scores")
+        if spectral:
+            _render_spectral_bar(spectral)
+
         # ── 類似インシデント（ChromaDB があれば） ──
         alarm_text = pred_item.get("alarm_text", "")
         if dt_engine is not None and alarm_text:
             _render_similar_incidents(dt_engine, alarm_text)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ChiGAD スペクトル分析バー
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _render_spectral_bar(spectral: Dict[str, float]) -> None:
+    """ChiGADウェーブレットフィルタによる周波数帯域別の異常スコアを可視化"""
+    anomaly_score = spectral.get("anomaly_spectral_score", 0.5)
+    low_e = spectral.get("low_freq_energy", 0.0)
+    high_e = spectral.get("high_freq_energy", 0.0)
+    total = low_e + high_e if (low_e + high_e) > 0 else 1.0
+    low_pct = low_e / total * 100
+    high_pct = high_e / total * 100
+
+    # 異常度に応じた色
+    if anomaly_score >= 0.7:
+        bar_color = "#B71C1C"
+        status = "高周波優勢 — 異常信号が強い"
+    elif anomaly_score >= 0.4:
+        bar_color = "#E65100"
+        status = "混在 — 要注意"
+    else:
+        bar_color = "#1B5E20"
+        status = "低周波優勢 — 正常パターン"
+
+    st.markdown(
+        f"<div style='margin:8px 0;padding:8px 12px;background:#F5F5F5;border-radius:6px;"
+        f"border-left:3px solid {bar_color};'>"
+        f"<div style='font-size:11px;color:#616161;margin-bottom:4px;'>"
+        f"📊 ChiGAD スペクトル分析（ウェーブレットフィルタ）</div>"
+        # スタックバー
+        f"<div style='display:flex;height:18px;border-radius:9px;overflow:hidden;"
+        f"background:#E0E0E0;margin-bottom:4px;'>"
+        f"<div style='width:{low_pct:.0f}%;background:#42A5F5;'></div>"
+        f"<div style='width:{high_pct:.0f}%;background:{bar_color};'></div>"
+        f"</div>"
+        f"<div style='display:flex;justify-content:space-between;font-size:10px;'>"
+        f"<span style='color:#42A5F5;'>低周波（正常パターン）{low_pct:.0f}%</span>"
+        f"<span style='color:{bar_color};'>高周波（異常信号）{high_pct:.0f}%</span>"
+        f"</div>"
+        f"<div style='font-size:11px;margin-top:4px;color:{bar_color};font-weight:bold;'>"
+        f"異常スペクトルスコア: {anomaly_score:.2f} — {status}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
