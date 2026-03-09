@@ -359,12 +359,15 @@ def _render_degradation_chart_svg(
 # メイン描画関数
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def render_stream_controls(device_options: list, site_id: str):
+def render_stream_controls(target_device: str, scenario_key: str, site_id: str):
     """
-    サイドバーまたはメインエリアにストリーム制御UIを描画。
+    サイドバーにストリーム制御UIを描画。
 
-    device_options: [(device_id, display_label), ...]
+    対象デバイスとシナリオは共通設定から受け取る。
+    開始レベルと速度はストリーム固有の設定。
     """
+    from ui.shared_sim_config import scenario_key_to_display
+
     sim = _get_simulator()
     is_running = sim is not None and sim.is_started and not sim.is_complete
 
@@ -375,7 +378,11 @@ def render_stream_controls(device_options: list, site_id: str):
         )
 
         if is_running:
-            st.warning(f"🔄 ストリーム実行中: {sim.sequence.pattern} on {sim.device_id}")
+            start_lvl = getattr(sim, 'start_level', 1)
+            st.warning(
+                f"🔄 ストリーム実行中: {sim.sequence.pattern} on {sim.device_id}"
+                f" (開始L{start_lvl})"
+            )
             col_stop, col_info = st.columns([1, 2])
             with col_stop:
                 if st.button("⏹ 停止", key="stream_stop", type="primary"):
@@ -386,23 +393,25 @@ def render_stream_controls(device_options: list, site_id: str):
                 st.caption(f"経過: {elapsed:.0f}s / {sim.total_duration_sec:.0f}s")
             return
 
-        # --- 新規ストリーム設定 ---
-        if not device_options:
-            device_options = [("WAN_ROUTER_01", "WAN_ROUTER_01")]
+        # --- 共通設定の参照表示 ---
+        scenario_display = scenario_key_to_display(scenario_key)
+        st.info(f"🎯 **{target_device}** | {scenario_display}")
 
-        target_device = st.selectbox(
-            "対象デバイス",
-            [d[0] for d in device_options],
-            format_func=lambda x: next((d[1] for d in device_options if d[0] == x), x),
-            key="stream_target"
-        )
-
-        scenarios = get_available_scenarios()
-        scenario_key = st.selectbox(
-            "劣化シナリオ",
-            list(scenarios.keys()),
-            format_func=lambda k: scenarios[k],
-            key="stream_scenario"
+        # --- 開始レベルスライダー（連続劣化ストリーム固有） ---
+        _LEVEL_LABELS = {
+            1: "L1: 初期劣化",
+            2: "L2: 劣化進行",
+            3: "L3: 警戒域",
+            4: "L4: 危険域",
+            5: "L5: 障害直前",
+        }
+        start_level = st.slider(
+            "開始レベル",
+            min_value=1, max_value=5, value=1,
+            help="どのレベルからストリームを開始するかを指定します。"
+                 "予兆シミュレーションで確認したレベルから開始すると効果的です。",
+            key="stream_start_level",
+            format_func=lambda x: _LEVEL_LABELS.get(x, f"L{x}"),
         )
 
         speed = st.select_slider(
@@ -416,10 +425,11 @@ def render_stream_controls(device_options: list, site_id: str):
 
         # プレビュー情報
         seq = DEGRADATION_SEQUENCES[scenario_key]
-        total_sec = sum(s.duration_sec / speed for s in seq.stages)
+        active_stages = [s for s in seq.stages if s.level >= start_level]
+        total_sec = sum(s.duration_sec / speed for s in active_stages)
         st.info(
             f"📊 **{seq.metric_name}**: {seq.normal_value} → {seq.failure_value} {seq.metric_unit}  \n"
-            f"⏱ 所要時間: **{total_sec:.0f}秒**（{len(seq.stages)}ステージ）"
+            f"⏱ L{start_level}→L5: **{total_sec:.0f}秒**（{len(active_stages)}ステージ）"
         )
 
         if st.button("▶ ストリーム開始", key="stream_start", type="primary"):
@@ -429,6 +439,7 @@ def render_stream_controls(device_options: list, site_id: str):
                 device_id=target_device,
                 interfaces=interfaces,
                 speed_multiplier=speed,
+                start_level=start_level,
             )
             sim.start()
             _save_simulator(sim)
@@ -459,9 +470,11 @@ def render_stream_dashboard():
     is_complete = sim.is_complete
 
     # ── ヘッダー ──
+    start_lvl = getattr(sim, 'start_level', 1)
     status_color = "#D32F2F" if current_level >= 4 else "#FF9800" if current_level >= 2 else "#4CAF50"
     status_text = "完了" if is_complete else f"Level {current_level}/5"
     status_icon = "✅" if is_complete else "🔴" if current_level >= 4 else "🟠" if current_level >= 2 else "🟢"
+    start_info = f" (開始L{start_lvl})" if start_lvl > 1 else ""
 
     st.markdown(
         f"### 📡 連続劣化モニタリング  \n"
@@ -469,14 +482,17 @@ def render_stream_dashboard():
         f"border-radius:10px;font-size:13px;'>"
         f"{status_icon} {status_text}</span>"
         f"<span style='color:#666;font-size:13px;margin-left:12px;'>"
-        f"{seq.pattern.upper()} | {sim.device_id}</span>",
+        f"{seq.pattern.upper()} | {sim.device_id}{start_info}</span>",
         unsafe_allow_html=True,
     )
 
     with st.container(border=True):
-        # ── 1. ステージタイムライン ──
-        stages_info = [{"label": s.label} for s in seq.stages]
-        timeline_svg = _render_timeline_svg(current_level, progress, stages_info)
+        # ── 1. ステージタイムライン（アクティブステージのみ表示）──
+        active_stages = [s for s in seq.stages if s.level >= start_lvl]
+        stages_info = [{"label": s.label} for s in active_stages]
+        # current_level を active_stages 内での相対位置に変換
+        relative_level = max(0, current_level - start_lvl + 1) if current_level >= start_lvl else 0
+        timeline_svg = _render_timeline_svg(relative_level, progress, stages_info)
         st.markdown(timeline_svg, unsafe_allow_html=True)
 
         st.markdown("---")

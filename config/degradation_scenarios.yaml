@@ -1,0 +1,256 @@
+# config/degradation_scenarios.yaml
+# 劣化シナリオ定義ファイル
+#
+# Phase 1: optical, microburst, memory_leak（実装済み）
+# Phase 2: cpu_overload, link_flapping, bgp_instability, power_thermal（将来追加）
+#
+# 新しいシナリオを追加するには、このファイルにエントリを追加するだけで
+# Pythonコードの変更なしに利用可能になります。
+
+scenarios:
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Phase 1: 実装済みシナリオ
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  optical:
+    display_name: "Optical Decay (光減衰進行)"
+    display_name_short: "Optical Decay (光減衰)"
+    category: "Hardware/Optical"
+    metric_name: "Rx Power"
+    metric_unit: "dBm"
+    normal_value: -8.0
+    failure_value: -25.0
+    default_interfaces: ["Gi0/0/1", "Gi0/0/2", "Te1/0/1"]
+    enabled: true
+    phase: 1
+    stages:
+      - level: 1
+        label: "初期劣化"
+        duration_sec: 10.0
+        metric_value: -18.5
+        severity: "WARNING"
+        color: "#FFC107"
+        alarm_templates:
+          - "%TRANSCEIVER-4-THRESHOLD_VIOLATION: Rx Power {value:.1f} dBm on {intf} (optical signal degrading). transceiver rx power below threshold."
+      - level: 2
+        label: "劣化進行"
+        duration_sec: 8.0
+        metric_value: -20.2
+        severity: "WARNING"
+        color: "#FF9800"
+        alarm_templates:
+          - "%TRANSCEIVER-4-THRESHOLD_VIOLATION: Rx Power {value:.1f} dBm on {intf} (optical signal degrading). transceiver rx power below threshold."
+          - "%OPTICAL-3-SIGNAL_WARN: optical signal level degrading on {intf}. light level {value:.1f} dBm. transceiver rx power loss detected."
+      - level: 3
+        label: "警戒域"
+        duration_sec: 6.0
+        metric_value: -22.0
+        severity: "WARNING"
+        color: "#FF5722"
+        alarm_templates:
+          - "%TRANSCEIVER-3-THRESHOLD_VIOLATION: Rx Power {value:.1f} dBm on {intf} (CRITICAL). transceiver rx power below threshold."
+          - "%OPTICAL-3-SIGNAL_WARN: optical signal level degrading on {intf}. light level {alt_value:.1f} dBm. transceiver rx power loss detected."
+          - "%LINK-3-UPDOWN: Interface {intf}, changed state to down (intermittent)"
+      - level: 4
+        label: "危険域"
+        duration_sec: 5.0
+        metric_value: -23.5
+        severity: "CRITICAL"
+        color: "#D32F2F"
+        alarm_templates:
+          - "%TRANSCEIVER-2-THRESHOLD_VIOLATION: Rx Power {value:.1f} dBm on {intf} (CRITICAL). transceiver rx power critical low."
+          - "%OPTICAL-2-SIGNAL_FAIL: optical signal LOSS on {intf}. light level {value:.1f} dBm."
+          - "%LINK-3-UPDOWN: Interface {intf}, changed state to down"
+          - "%LINEPROTO-5-UPDOWN: Line protocol on Interface {intf}, changed state to down"
+      - level: 5
+        label: "障害直前"
+        duration_sec: 3.0
+        metric_value: -25.0
+        severity: "CRITICAL"
+        color: "#B71C1C"
+        alarm_templates:
+          - "%TRANSCEIVER-1-THRESHOLD_VIOLATION: Rx Power {value:.1f} dBm on {intf} (EMERGENCY). transceiver FAILURE imminent."
+          - "%OPTICAL-1-SIGNAL_FAIL: optical signal LOSS on {intf}. NO LIGHT DETECTED."
+          - "%LINK-2-UPDOWN: Interface {intf}, changed state to down (PERMANENT)"
+          - "%LINEPROTO-2-UPDOWN: Line protocol on Interface {intf}, changed state to down"
+          - "%SYS-1-LINK_FAIL: Multiple interface failures detected. Cascade risk HIGH."
+
+  microburst:
+    display_name: "Microburst (パケット破棄増加)"
+    display_name_short: "Microburst (パケット破棄)"
+    category: "Network/QoS"
+    metric_name: "Queue Drops"
+    metric_unit: "drops/s"
+    normal_value: 0.0
+    failure_value: 5000.0
+    default_interfaces: ["Gi0/1/0", "Gi0/1/1", "Gi0/1/2"]
+    enabled: true
+    phase: 1
+    stages:
+      - level: 1
+        label: "初期兆候"
+        duration_sec: 8.0
+        metric_value: 200.0
+        severity: "WARNING"
+        color: "#FFC107"
+        alarm_templates:
+          - "%HARDWARE-3-ASIC_ERROR: asic_error queue drops detected on {intf} (Count: {value:.0f}). output drops on burst traffic."
+      - level: 2
+        label: "バースト増加"
+        duration_sec: 7.0
+        metric_value: 600.0
+        severity: "WARNING"
+        color: "#FF9800"
+        alarm_templates:
+          - "%HARDWARE-3-ASIC_ERROR: asic_error queue drops detected on {intf} (Count: {value:.0f}). output drops on burst traffic."
+          - "%QOS-4-BUFFER: buffer overflow risk on {intf}. queue drops {value:.0f}/sec. output drops increasing."
+      - level: 3
+        label: "バッファ圧迫"
+        duration_sec: 5.0
+        metric_value: 1500.0
+        severity: "WARNING"
+        color: "#FF5722"
+        alarm_templates:
+          - "%HARDWARE-2-ASIC_ERROR: asic_error queue drops CRITICAL on {intf} (Count: {value:.0f}). buffer near exhaustion."
+          - "%QOS-3-POLICER: Traffic policing activated on {intf}. drops {value:.0f}/sec."
+          - "%PLATFORM-3-ELEMENT_WARNING: High CPU usage during burst processing."
+      - level: 4
+        label: "バッファ枯渇"
+        duration_sec: 4.0
+        metric_value: 3000.0
+        severity: "CRITICAL"
+        color: "#D32F2F"
+        alarm_templates:
+          - "%HARDWARE-1-ASIC_ERROR: asic_error CRITICAL on {intf}. Buffer EXHAUSTED (Count: {value:.0f})."
+          - "%QOS-2-BUFFER_EXHAUSTED: ALL buffers consumed on {intf}. Packet loss imminent."
+          - "%PLATFORM-2-ELEMENT_CRITICAL: System stability at risk. Memory pressure HIGH."
+          - "%SYS-3-CPUHOG: CPU utilization exceeded threshold during burst."
+      - level: 5
+        label: "サービス断"
+        duration_sec: 3.0
+        metric_value: 5000.0
+        severity: "CRITICAL"
+        color: "#B71C1C"
+        alarm_templates:
+          - "%HARDWARE-0-ASIC_FAIL: ASIC failure on {intf}. ALL packets dropped."
+          - "%QOS-1-BUFFER_FAIL: Buffer allocation failure. Service DISRUPTED."
+          - "%LINK-2-UPDOWN: Interface {intf}, changed state to down (buffer exhaustion)"
+          - "%SYS-1-SERVICE_DISRUPTED: Service disruption detected. Multiple interfaces affected."
+          - "%PLATFORM-1-CRASH_IMMINENT: System crash risk. Emergency action required."
+
+  memory_leak:
+    display_name: "Memory Leak (メモリ枯渇進行)"
+    display_name_short: "Memory Leak (メモリリーク)"
+    category: "Software/Resource"
+    metric_name: "Memory Usage"
+    metric_unit: "%"
+    normal_value: 45.0
+    failure_value: 98.0
+    default_interfaces: ["System"]
+    enabled: true
+    phase: 1
+    stages:
+      - level: 1
+        label: "使用率上昇"
+        duration_sec: 12.0
+        metric_value: 72.0
+        severity: "WARNING"
+        color: "#FFC107"
+        alarm_templates:
+          - "%SYS-4-MEMORY_WARN: High memory usage detected. Processor Pool Free: {free}M. Potential memory leak."
+      - level: 2
+        label: "リーク加速"
+        duration_sec: 10.0
+        metric_value: 80.0
+        severity: "WARNING"
+        color: "#FF9800"
+        alarm_templates:
+          - "%SYS-4-MEMORY_WARN: High memory usage detected. Processor Pool Free: {free}M. Potential memory leak."
+          - "%PLATFORM-3-ELEMENT_WARNING: Used Memory value {value:.0f}% exceeds warning threshold. System instability risk."
+      - level: 3
+        label: "高使用率"
+        duration_sec: 8.0
+        metric_value: 88.0
+        severity: "WARNING"
+        color: "#FF5722"
+        alarm_templates:
+          - "%SYS-3-MEMORY_CRITICAL: Memory usage {value:.0f}%. Free: {free}M. Process instability likely."
+          - "%PLATFORM-2-ELEMENT_CRITICAL: Used Memory value {value:.0f}% exceeds critical threshold."
+          - "%SYS-3-CPUHOG: CPU utilization high due to memory pressure. GC cycles increasing."
+      - level: 4
+        label: "枯渇域"
+        duration_sec: 6.0
+        metric_value: 94.0
+        severity: "CRITICAL"
+        color: "#D32F2F"
+        alarm_templates:
+          - "%SYS-2-MALLOCFAIL: Memory allocation of 65536 bytes failed. Pool: Processor, Free: {free}M."
+          - "%SYS-2-MEMORY_CRITICAL: Memory usage {value:.0f}%. System UNSTABLE."
+          - "%PLATFORM-1-ELEMENT_CRITICAL: Used Memory value {value:.0f}%. CRASH imminent."
+          - "%SYS-2-WATCHDOG: Process restart triggered by memory exhaustion."
+      - level: 5
+        label: "クラッシュ直前"
+        duration_sec: 4.0
+        metric_value: 98.0
+        severity: "CRITICAL"
+        color: "#B71C1C"
+        alarm_templates:
+          - "%SYS-1-MALLOCFAIL: CRITICAL memory allocation failure. Pool: Processor EMPTY."
+          - "%SYS-0-MEMORY_EXHAUSTED: ALL memory pools exhausted. System CRASH imminent."
+          - "%PLATFORM-0-CRASH: System crash due to memory exhaustion. Reboot required."
+          - "%SYS-1-SERVICE_DISRUPTED: Multiple services failed. Emergency reload needed."
+          - "%SYS-0-FATAL: Unrecoverable memory state. Automatic reload in 60 seconds."
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Phase 2: 将来追加シナリオ（enabled: false）
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  cpu_overload:
+    display_name: "CPU Overload (CPU過負荷)"
+    display_name_short: "CPU Overload (CPU過負荷)"
+    category: "Software/Resource"
+    metric_name: "CPU Usage"
+    metric_unit: "%"
+    normal_value: 15.0
+    failure_value: 99.0
+    default_interfaces: ["System"]
+    enabled: false
+    phase: 2
+    stages: []  # Phase 2で定義
+
+  link_flapping:
+    display_name: "Link Flapping (リンクフラッピング)"
+    display_name_short: "Link Flapping (リンク不安定)"
+    category: "Physical/Link"
+    metric_name: "Flap Count"
+    metric_unit: "flaps/min"
+    normal_value: 0.0
+    failure_value: 30.0
+    default_interfaces: ["Gi0/0/1", "Gi0/0/2"]
+    enabled: false
+    phase: 2
+    stages: []
+
+  bgp_instability:
+    display_name: "BGP Instability (BGP不安定)"
+    display_name_short: "BGP Instability (BGP不安定)"
+    category: "Protocol/Routing"
+    metric_name: "BGP Flaps"
+    metric_unit: "flaps/hr"
+    normal_value: 0.0
+    failure_value: 50.0
+    default_interfaces: ["BGP-Peer-1", "BGP-Peer-2"]
+    enabled: false
+    phase: 2
+    stages: []
+
+  power_thermal:
+    display_name: "Power/Thermal (電源/温度異常)"
+    display_name_short: "Power/Thermal (電源/温度)"
+    category: "Hardware/Environment"
+    metric_name: "Temperature"
+    metric_unit: "C"
+    normal_value: 35.0
+    failure_value: 85.0
+    default_interfaces: ["PSU-1", "PSU-2", "FAN-1"]
+    enabled: false
+    phase: 2
+    stages: []
