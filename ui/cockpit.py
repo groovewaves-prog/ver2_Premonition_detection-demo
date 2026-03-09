@@ -26,6 +26,15 @@ from utils.llm_helper import get_rate_limiter, generate_content_with_retry
 from verifier import verify_log_content
 from .graph import render_topology_graph
 
+
+def _st_html(html: str) -> None:
+    """SVG/HTMLをStreamlitで描画する (st.html 優先、フォールバック: unsafe_allow_html)。"""
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
+
+
 # =====================================================
 # ヘルパー関数
 # =====================================================
@@ -1080,23 +1089,21 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     # ── ヘッダー: 機器名 + 予兆種別 ──────────────
                     _crit_badge = "🔴 CRITICAL" if criticality == "critical" else "🟠 STANDARD"
                     _src_badge  = "🔬 シミュ" if source == "simulation" else "📡 実測"
-                    st.markdown(
+                    _st_html(
                         f"<div style='background:#FFF8E1;border-left:4px solid #FFB300;"
                         f"padding:8px 12px;border-radius:4px;margin-bottom:8px;'>"
                         f"<b>📍 {pred_item['id']}</b>"
                         f"<span style='float:right;font-size:11px;color:#BF360C;'>"
-                        f"{_crit_badge} {_src_badge}</span></div>",
-                        unsafe_allow_html=True
+                        f"{_crit_badge} {_src_badge}</span></div>"
                     )
 
                     # ── 確信度 + タイムライン ─────────────────────
-                    st.markdown(
+                    _st_html(
                         f"<div style='text-align:center;padding:8px 0;'>"
                         f"<span style='font-size:40px;font-weight:bold;color:#E65100;'>"
                         f"{prob_pct}</span>"
                         f"<br><span style='color:#666;font-size:13px;'>"
-                        f"障害発生確信度</span></div>",
-                        unsafe_allow_html=True
+                        f"障害発生確信度</span></div>"
                     )
 
                     # ── RUL予測詳細カード ─────────────────────────────
@@ -1112,7 +1119,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     else:
                         ttf_display = "<span style='color:#d32f2f'>障害が切迫</span>"
                     
-                    st.markdown(
+                    _st_html(
                         f"<div style='background:#FFF3E0;border-radius:6px;"
                         f"padding:10px 12px;margin:6px 0;font-size:13px;'>"
                         f"<b>🔮 予測障害:</b> {pred_label}<br>"
@@ -1122,8 +1129,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                            if ttc_min > 0 else "<span style='color:#d32f2f'>不明</span>")
                         + (f"<br><b>📡 影響範囲:</b> 配下 <b>{pred_affected}台</b> 通信断リスク"
                            if pred_affected > 0 else "")
-                        + f"</div>",
-                        unsafe_allow_html=True
+                        + f"</div>"
                     )
 
                     # ── 検知シグナル ───────────────────────────────
@@ -1165,7 +1171,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     _icon = '🟢'
                                     _priority_label = '補助'
                                 
-                                st.markdown(
+                                _st_html(
                                     f"<div style='background:{_bg_color};padding:10px 12px;"
                                     f"border-left:4px solid {_border_color};border-radius:4px;"
                                     f"margin:8px 0;font-size:13px;'>"
@@ -1181,8 +1187,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     + (f"<div style='background:white;padding:6px;border-radius:3px;"
                                        f"margin-top:6px;font-size:11px;color:#424242;white-space:pre-wrap;'>"
                                        f"<b>📋 手順:</b><br>{_steps}</div>" if _steps else "")
-                                    + "</div>",
-                                    unsafe_allow_html=True
+                                    + "</div>"
                                 )
                     else:
                         st.caption("推奨アクションなし")
@@ -1506,7 +1511,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 # 急性期進行表示
                 ttc_display = f"症状発症後 <b>{ttc_min}分後</b>" if ttc_min > 0 else f"<b>{timeline}</b>"
                 
-                st.markdown(f"""
+                _st_html(f"""
                 <div style="background-color:#fff3e0;padding:10px;border-radius:5px;border:1px solid #ff9800;color:#e65100;margin-bottom:10px;">
                     <strong>🔮 Digital Twin 未来予測 (Predictive Maintenance)</strong><br>
                     <b>{selected_incident_candidate['id']}</b> で障害の兆候を検出しました。<br>
@@ -1516,15 +1521,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     ・推奨: メンテナンスウィンドウでの予防交換/対応<br>
                     (信頼度: <span style="font-size:1.2em;font-weight:bold;">{selected_incident_candidate['prob']*100:.0f}%</span>)
                 </div>
-                """, unsafe_allow_html=True)
+                """)
             else:
-                st.markdown(f"""
+                _st_html(f"""
                 <div style="background-color:#e8f5e9;padding:10px;border-radius:5px;border:1px solid #4caf50;color:#2e7d32;margin-bottom:10px;">
                     <strong>✅ AI Analysis Completed</strong><br>
                     特定された原因 <b>{selected_incident_candidate['id']}</b> に対する復旧手順が利用可能です。<br>
                     (リスクスコア: <span style="font-size:1.2em;font-weight:bold;">{selected_incident_candidate['prob']*100:.0f}</span>)
                 </div>
-                """, unsafe_allow_html=True)
+                """)
 
             # ★ Generate Fix ボタン（remediation_plan 未生成時のみ表示）
             if st.session_state.remediation_plan is None:
@@ -1846,34 +1851,32 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                         
                         # expanded=True で最初は開いておく設定（お好みで False に変更可能です）
                         with st.expander(_expander_title, expanded=True):
-                            st.markdown(
+                            _st_html(
                                 f"<div style='margin-bottom: 8px; color: #666; font-size: 0.9em;'>"
                                 f"最新検知: {_relative}"
-                                f"</div>",
-                                unsafe_allow_html=True
+                                f"</div>"
                             )
-                            
+
                             st.markdown("**🔍 証拠シグナル一覧（検知ログ詳細）**")
-                            
+
                             # ★ 修正: ログ件数が多い場合はスクロール可能なコンテナ（高さ固定）にする
                             _box_height = 250 if _total_signals > 4 else None
-                            
+
                             if _box_height:
                                 scroll_container = st.container(height=_box_height, border=True)
                             else:
                                 scroll_container = st.container(border=True)
-                                
+
                             with scroll_container:
                                 for _entry_html in _unique_log_entries:
-                                    st.markdown(
+                                    _st_html(
                                         f"<div style='font-family: monospace; font-size: 0.85em; background: #F8F9FA; padding: 4px 8px; margin-bottom: 4px; border-left: 3px solid #FFC107; word-break: break-all;'>"
                                         f"{_entry_html}"
-                                        f"</div>",
-                                        unsafe_allow_html=True
+                                        f"</div>"
                                     )
 
                             # インシデント単位でのアクションボタン
-                            st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
+                            _st_html("<div style='margin-top: 12px;'></div>")
                             _btn_col1, _btn_col2 = st.columns(2)
                             with _btn_col1:
                                 if st.button(f"✅ このインシデントを対応済みにする", key=f"bulk_handled_{_rule_pattern}", use_container_width=True):
@@ -1903,20 +1906,20 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 device_id = selected_incident_candidate.get('id', '')
                 score = selected_incident_candidate['prob'] * 100
                 if device_id == "SYSTEM" and score == 0:
-                    st.markdown("""
+                    _st_html("""
                     <div style="background-color:#e8f5e9;padding:10px;border-radius:5px;border:1px solid #4caf50;color:#2e7d32;margin-bottom:10px;">
                         <strong>✅ 正常稼働中</strong><br>
                         現在、ネットワークは正常に稼働しています。対応が必要なインシデントはありません。
                     </div>
-                    """, unsafe_allow_html=True)
+                    """)
                 else:
-                    st.markdown(f"""
+                    _st_html(f"""
                     <div style="background-color:#fff3e0;padding:10px;border-radius:5px;border:1px solid #ff9800;color:#e65100;margin-bottom:10px;">
                         <strong>⚠️ 監視中</strong><br>
                         対象: <b>{device_id}</b><br>
                         (リスクスコア: {score:.0f} - 60以上で自動修復を推奨)
                     </div>
-                    """, unsafe_allow_html=True)
+                    """)
 
         # ============================================
         # C. Chat with AI Agent（Expander形式・旧UI復元）

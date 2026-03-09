@@ -13,6 +13,14 @@ from typing import Any, Dict, List, Optional
 import streamlit as st
 
 
+def _st_html(html: str) -> None:
+    """SVG/HTMLをStreamlitで描画する (st.html 優先、フォールバック: unsafe_allow_html)。"""
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 定数
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -133,7 +141,7 @@ def render_explanation_panel(
     with st.expander(f"🔬 AI証拠パネル  [{badge_label}]", expanded=expanded):
 
         # ── 異常種別バッジ ──
-        st.markdown(
+        _st_html(
             f"<div style='margin-bottom:8px;'>"
             f"<span style='background:{badge_color};color:white;padding:3px 10px;"
             f"border-radius:12px;font-size:11px;font-weight:bold;'>"
@@ -142,8 +150,7 @@ def render_explanation_panel(
             f"{atype_info['desc']}</span>"
             + (f"<br><span style='color:#9E9E9E;font-size:10px;'>"
                f"⚠️ LLM利用不可（フォールバックスコア）</span>" if llm_error else "")
-            + "</div>",
-            unsafe_allow_html=True,
+            + "</div>"
         )
 
         # ── LLM narrative ──
@@ -157,7 +164,7 @@ def render_explanation_panel(
         # ── レーダーチャート（★拡大版: 440px）──
         if score_breakdown:
             svg = build_radar_svg(score_breakdown, size=440)
-            st.markdown(svg, unsafe_allow_html=True)
+            _st_html(svg)
 
         # ── ChiGAD スペクトル分析（ウェーブレットフィルタ） ──
         spectral = explanation.get("spectral_scores")
@@ -194,7 +201,7 @@ def _render_spectral_bar(spectral: Dict[str, float]) -> None:
         bar_color = "#1B5E20"
         status = "低周波優勢 — 正常パターン"
 
-    st.markdown(
+    _st_html(
         f"<div style='margin:8px 0;padding:8px 12px;background:#F5F5F5;border-radius:6px;"
         f"border-left:3px solid {bar_color};'>"
         f"<div style='font-size:11px;color:#616161;margin-bottom:4px;'>"
@@ -211,8 +218,7 @@ def _render_spectral_bar(spectral: Dict[str, float]) -> None:
         f"</div>"
         f"<div style='font-size:11px;margin-top:4px;color:{bar_color};font-weight:bold;'>"
         f"異常スペクトルスコア: {anomaly_score:.2f} — {status}</div>"
-        f"</div>",
-        unsafe_allow_html=True,
+        f"</div>"
     )
 
 
@@ -274,7 +280,7 @@ def _render_similar_incidents(dt_engine: Any, alarm_text: str) -> None:
                 )
                 vc = r.get("vendor_context", "")
                 text = r.get("text", "")
-                st.markdown(
+                _st_html(
                     f"<div style='border-left:3px solid {color};padding:6px 10px;"
                     f"margin-bottom:6px;background:#FAFAFA;border-radius:0 4px 4px 0;font-size:12px;'>"
                     f"<span style='background:{color};color:white;padding:1px 6px;"
@@ -284,8 +290,7 @@ def _render_similar_incidents(dt_engine: Any, alarm_text: str) -> None:
                     + (f"<br><span style='color:#78909C;font-size:11px;'>🔧 {vc}</span>" if vc else "")
                     + f"<br><span style='color:#424242;margin-top:3px;display:block;'>"
                     f"{text[:120]}{'...' if len(text) > 120 else ''}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
+                    f"</div>"
                 )
     except Exception as e:
         import logging

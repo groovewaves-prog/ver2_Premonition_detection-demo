@@ -23,6 +23,18 @@ from digital_twin_pkg.alarm_stream import (
 logger = logging.getLogger(__name__)
 
 
+def _st_html(html: str) -> None:
+    """SVG/HTMLをStreamlitで描画する。
+
+    st.html() (Streamlit ≥1.33) を優先し、
+    フォールバックとして st.markdown(unsafe_allow_html=True) を使う。
+    """
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # セッションステート管理
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -492,14 +504,13 @@ def render_stream_dashboard():
     status_icon = "✅" if is_complete else "🔴" if current_level >= 4 else "🟠" if current_level >= 2 else "🟢"
     start_info = f" (開始L{start_lvl})" if start_lvl > 1 else ""
 
-    st.markdown(
-        f"### 📡 連続劣化モニタリング  \n"
+    _st_html(
+        f"<h3 style='margin:0 0 8px 0;'>📡 連続劣化モニタリング</h3>"
         f"<span style='background:{status_color};color:white;padding:2px 10px;"
         f"border-radius:10px;font-size:13px;'>"
         f"{status_icon} {status_text}</span>"
         f"<span style='color:#666;font-size:13px;margin-left:12px;'>"
-        f"{seq.pattern.upper()} | {sim.device_id}{start_info}</span>",
-        unsafe_allow_html=True,
+        f"{seq.pattern.upper()} | {sim.device_id}{start_info}</span>"
     )
 
     with st.container(border=True):
@@ -509,7 +520,7 @@ def render_stream_dashboard():
         # current_level を active_stages 内での相対位置に変換
         relative_level = max(0, current_level - start_lvl + 1) if current_level >= start_lvl else 0
         timeline_svg = _render_timeline_svg(relative_level, progress, stages_info)
-        st.markdown(timeline_svg, unsafe_allow_html=True)
+        _st_html(timeline_svg)
 
         st.markdown("---")
 
@@ -525,7 +536,7 @@ def render_stream_dashboard():
                 unit=seq.metric_unit,
                 label=seq.metric_name,
             )
-            st.markdown(gauge_svg, unsafe_allow_html=True)
+            _st_html(gauge_svg)
 
         with col_kpi1:
             st.metric(
@@ -561,7 +572,7 @@ def render_stream_dashboard():
             metric_unit=seq.metric_unit,
             total_duration=sim.total_duration_sec,
         )
-        st.markdown(chart_svg, unsafe_allow_html=True)
+        _st_html(chart_svg)
 
         st.markdown("---")
 
@@ -586,7 +597,7 @@ def render_stream_dashboard():
                     extra_count = len(ev.messages) - 1
                     extra_line = f"<br><span style='color:#999;font-size:10px;'>+ {extra_count} more alerts</span>"
 
-                st.markdown(
+                _st_html(
                     f"<div style='border-left:3px solid {border_color};padding:4px 8px;"
                     f"margin:3px 0;font-size:12px;background:#FAFAFA;border-radius:2px;'>"
                     f"<span style='color:#999;'>[{time_display}]</span> "
@@ -594,8 +605,7 @@ def render_stream_dashboard():
                     f"<span style='color:#333;'>L{ev.level}</span> "
                     f"<code style='font-size:11px;'>{msg_display}</code>"
                     f"{extra_line}"
-                    f"</div>",
-                    unsafe_allow_html=True,
+                    f"</div>"
                 )
 
             if len(events) > 5:
