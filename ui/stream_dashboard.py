@@ -398,6 +398,7 @@ def render_stream_controls(target_device: str, scenario_key: str, site_id: str):
         st.info(f"🎯 **{target_device}** | {scenario_display}")
 
         # --- 開始レベルスライダー（連続劣化ストリーム固有） ---
+        _LEVEL_OPTIONS = [1, 2, 3, 4, 5]
         _LEVEL_LABELS = {
             1: "L1: 初期劣化",
             2: "L2: 劣化進行",
@@ -405,13 +406,14 @@ def render_stream_controls(target_device: str, scenario_key: str, site_id: str):
             4: "L4: 危険域",
             5: "L5: 障害直前",
         }
-        start_level = st.slider(
+        start_level = st.select_slider(
             "開始レベル",
-            min_value=1, max_value=5, value=1,
+            options=_LEVEL_OPTIONS,
+            value=1,
+            format_func=lambda x: _LEVEL_LABELS.get(x, f"L{x}"),
             help="どのレベルからストリームを開始するかを指定します。"
                  "予兆シミュレーションで確認したレベルから開始すると効果的です。",
             key="stream_start_level",
-            format_func=lambda x: _LEVEL_LABELS.get(x, f"L{x}"),
         )
 
         speed = st.select_slider(
