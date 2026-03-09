@@ -578,8 +578,15 @@ def render_stream_dashboard():
         # 呼び出し元で time.sleep + st.rerun を実行
         return True  # "需要リフレッシュ"
 
-    # 完了時
+    # 完了時: 結果を保持し、「試験終了」ボタンで手動クリア
     st.success("✅ 劣化シミュレーション完了。全ステージのデータがforecast_ledgerに記録されました。")
+
+    col_end, col_spacer = st.columns([1, 3])
+    with col_end:
+        if st.button("🏁 試験終了", key="stream_end", type="primary"):
+            _clear_simulator()
+            st.rerun()
+
     return False
 
 

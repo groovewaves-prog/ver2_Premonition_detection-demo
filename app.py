@@ -36,10 +36,12 @@ def main():
     active_site = st.session_state.get("active_site")
     
     if active_site:
-        # ストリームダッシュボード（実行中のみ表示）
+        # ストリームダッシュボード（実行中 + 完了後も「試験終了」まで表示）
         sim = _get_simulator()
-        stream_active = sim is not None and sim.is_started and not sim.is_complete
-        if stream_active:
+        stream_visible = sim is not None and sim.is_started
+        stream_running = stream_visible and not sim.is_complete
+        needs_refresh = False
+        if stream_visible:
             needs_refresh = render_stream_dashboard()
 
         tab_ops, tab_tune = st.tabs(["🚀 Incident Cockpit", "🔧 Digital Twin Tuning"])
@@ -49,7 +51,7 @@ def main():
             render_tuning_dashboard(active_site)
 
         # ストリーム実行中: 自動リフレッシュ
-        if stream_active and needs_refresh:
+        if stream_running and needs_refresh:
             time.sleep(2)
             st.rerun()
     else:
