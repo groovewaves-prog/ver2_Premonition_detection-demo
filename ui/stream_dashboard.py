@@ -82,9 +82,8 @@ def _render_metric_gauge_svg(
         color = "#D32F2F"  # 赤
         status = "危険"
 
-    # アーク角度計算 (半円: -90° to 90°)
-    angle = -90 + (normalized * 180)
-    rad = math.radians(angle)
+    # アーク角度計算 (半円: 左端=π=正常, 右端=0=障害)
+    rad = math.pi * (1.0 - normalized)
     cx, cy = width / 2, height - 30
     radius = min(width, height) * 0.45
     needle_x = cx + radius * 0.85 * math.cos(rad)
