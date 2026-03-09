@@ -30,19 +30,11 @@ from .graph import render_topology_graph
 # ヘルパー関数
 # =====================================================
 
+from ui.engine_cache import compute_topo_hash, get_cached_dt_engine, get_dt_engine_for_site
+
 def _compute_topo_hash(topology: dict) -> str:
-    """トポロジーの構成変更を検知するための軽量ハッシュを計算"""
-    try:
-        keys = sorted(list(topology.keys()))
-        state = []
-        for k in keys:
-            node = topology[k]
-            pid = node.get('parent_id') if isinstance(node, dict) else getattr(node, 'parent_id', None)
-            rg = node.get('redundancy_group') if isinstance(node, dict) else getattr(node, 'redundancy_group', None)
-            state.append(f"{k}|{pid}|{rg}")
-        return hashlib.md5(",".join(state).encode()).hexdigest()
-    except Exception:
-        return str(time.time())
+    """後方互換ラッパー → engine_cache.compute_topo_hash に委譲"""
+    return compute_topo_hash(topology)
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
@@ -560,21 +552,9 @@ def _get_cached_logical_rca(_topology):
     from inference_engine import LogicalRCA
     return LogicalRCA(_topology)
 
-@st.cache_resource(show_spinner="🧠 Digital Twin Engine (GNN/VectorDB) をロード中...")
 def _get_cached_dt_engine(site_id: str, topo_hash: str, _topology):
-    # 遅延インポート（Lazy Loading）で起動時のモタつきを解消
-    from digital_twin_pkg import DigitalTwinEngine as _DTE
-    _children_map: dict = {}
-    for _nid, _n in _topology.items():
-        _pid = (_n.get('parent_id') if isinstance(_n, dict)
-                else getattr(_n, 'parent_id', None))
-        if _pid:
-            _children_map.setdefault(_pid, []).append(_nid)
-    return _DTE(
-        topology=_topology,
-        children_map=_children_map,
-        tenant_id=site_id,
-    )
+    """後方互換ラッパー → engine_cache.get_cached_dt_engine に委譲"""
+    return get_cached_dt_engine(site_id, topo_hash, _topology)
 
 # =====================================================
 # メイン描画関数

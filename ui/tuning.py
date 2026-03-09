@@ -6,88 +6,30 @@ import pandas as pd
 import sqlite3
 import os
 import time
-import hashlib
 
-# ==========================================
-# ★ 追加: Streamlitグローバルキャッシュによるエンジンの保持
-# ==========================================
-
-def _compute_topo_hash(topology: dict) -> str:
-    """トポロジーの構成変更を検知するための軽量ハッシュを計算"""
-    try:
-        keys = sorted(list(topology.keys()))
-        state = []
-        for k in keys:
-            node = topology[k]
-            pid = node.get('parent_id') if isinstance(node, dict) else getattr(node, 'parent_id', None)
-            rg = node.get('redundancy_group') if isinstance(node, dict) else getattr(node, 'redundancy_group', None)
-            state.append(f"{k}|{pid}|{rg}")
-        return hashlib.md5(",".join(state).encode()).hexdigest()
-    except Exception:
-        return str(time.time())
-
-@st.cache_resource(show_spinner="AI推論エンジンを初期化中...（初回のみ数秒かかります）")
-def _get_cached_engine(site_id: str, topo_hash: str):  # ★修正: topo_hash を追加
-    from digital_twin_pkg import DigitalTwinEngine
-    from registry import get_paths, load_topology
-
-    paths = get_paths(site_id)
-    topology = load_topology(paths.topology_path)
-    if not topology:
-        return None
-
-    children_map: dict = {}
-    for node_id, node in topology.items():
-        parent_id = (node.get('parent_id') if isinstance(node, dict)
-                     else getattr(node, 'parent_id', None))
-        if parent_id:
-            children_map.setdefault(parent_id, []).append(node_id)
-            
-    # ★ 修正: 古い paths.data_dir を削除し、最新の引数仕様（キーワード引数）に合わせる
-    engine = DigitalTwinEngine(
-        topology=topology,
-        children_map=children_map,
-        tenant_id=site_id
-    )
-    return engine
+from ui.engine_cache import get_dt_engine_for_site
 
 
 def _get_or_init_dt_engine(site_id: str):
-    """
-    キャッシュされたエンジンを取得し、session_state にポインタを渡す（既存UIとの互換性維持）。
-    """
-    dt_key    = f"dt_engine_{site_id}"
-    err_key   = f"dt_engine_error_{site_id}"
+    """共通キャッシュ (engine_cache) 経由で DigitalTwinEngine を取得する。"""
+    dt_key = f"dt_engine_{site_id}"
+    err_key = f"dt_engine_error_{site_id}"
 
-    # すでにセッションに存在すればそれを返す（高速）
     if dt_key in st.session_state and st.session_state[dt_key] is not None:
         return st.session_state[dt_key]
 
     try:
-        # ★修正: ロードしたトポロジからハッシュを計算して渡す
-        from registry import get_paths, load_topology
-        paths = get_paths(site_id)
-        current_topo = load_topology(paths.topology_path)
-        if current_topo:
-            current_topo_hash = _compute_topo_hash(current_topo)
-        else:
-            current_topo_hash = "empty"
-
-        engine = _get_cached_engine(site_id, current_topo_hash)
-        
+        engine = get_dt_engine_for_site(site_id)
         if not engine:
-            st.session_state[dt_key]  = None
+            st.session_state[dt_key] = None
             st.session_state[err_key] = "topology が読み込めませんでした。"
             return None
-            
-        # 取得したエンジンをセッションにセット
         st.session_state[dt_key] = engine
         st.session_state[err_key] = None
         return engine
-        
     except Exception as e:
         import traceback
-        st.session_state[dt_key]  = None
+        st.session_state[dt_key] = None
         st.session_state[err_key] = f"{e}\n{traceback.format_exc()}"
         return None
 
@@ -347,3 +289,107 @@ def _render_gnn_training_tab(site_id: str, dt_engine):
             )
         else:
             st.error("学習に失敗しました。ログを確認してください。")
+
+    # ── 蓄積データによるファインチューニング ──
+    st.divider()
+    _render_finetune_section(dt_engine)
+
+
+def _render_finetune_section(dt_engine):
+    """蓄積データ（ストリーム劣化シミュレーション結果）でGNNをファインチューニングするUI"""
+    st.markdown("#### 📦 蓄積データでファインチューニング")
+    st.caption(
+        "連続劣化ストリームの実行結果から蓄積された学習データを使い、"
+        "GNNモデルを追加学習します。合成データのみの学習より、"
+        "実際の劣化パターンに適応したモデルになります。"
+    )
+
+    from digital_twin_pkg.gnn_trainer import (
+        list_training_sessions,
+        finetune_gnn,
+        GNN_TRAINING_DIR,
+    )
+    from digital_twin_pkg.gnn import HAS_PYTORCH_GEOMETRIC
+
+    sessions = list_training_sessions()
+
+    if not sessions:
+        st.info(
+            "📭 蓄積データがありません。\n\n"
+            "連続劣化ストリームを実行・完了すると、自動的にGNN学習データが "
+            f"`{GNN_TRAINING_DIR}/` に保存されます。"
+        )
+        return
+
+    st.success(f"📂 **{len(sessions)} セッション**が利用可能")
+
+    # セッション一覧
+    with st.expander("蓄積セッション一覧", expanded=False):
+        for i, s in enumerate(sessions[:20]):
+            parts = s.replace(".json", "").split("_")
+            scenario = parts[0] if parts else "?"
+            st.caption(f"{i+1}. `{s}` ({scenario})")
+        if len(sessions) > 20:
+            st.caption(f"... 他 {len(sessions) - 20} セッション")
+
+    if not HAS_PYTORCH_GEOMETRIC:
+        st.error("PyTorch Geometric が必要です。")
+        return
+
+    # ファインチューニングパラメータ
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        ft_epochs = st.number_input(
+            "エポック数 (FT)", min_value=10, max_value=100, value=40, step=10,
+            key="ft_epochs",
+        )
+    with col_f2:
+        ft_lr = st.select_slider(
+            "学習率 (FT)",
+            options=[0.0001, 0.0003, 0.0005, 0.001],
+            value=0.0005,
+            key="ft_lr",
+        )
+
+    if st.button("🔄 蓄積データでファインチューニング", type="secondary"):
+        topology = dt_engine.topology
+        children_map = dt_engine.children_map
+
+        progress_bar = st.progress(0, text="蓄積データを読み込み中...")
+
+        def on_ft_progress(epoch, total, loss):
+            progress_bar.progress(epoch / total, text=f"FT Epoch {epoch}/{total} | Loss: {loss:.4f}")
+
+        with st.spinner("ファインチューニング実行中..."):
+            result = finetune_gnn(
+                topology=topology,
+                children_map=children_map,
+                session_files=sessions,
+                epochs=int(ft_epochs),
+                lr=float(ft_lr),
+                progress_callback=on_ft_progress,
+            )
+
+        if result:
+            progress_bar.progress(1.0, text="完了!")
+            st.success(
+                f"✅ **ファインチューニング完了** | "
+                f"最良Loss: {result['best_loss']:.4f} | "
+                f"ストリームデータ: {result['stream_samples']}件 | "
+                f"合成データ: {result['synthetic_samples']}件 | "
+                f"所要時間: {result['elapsed_sec']:.1f}秒"
+            )
+
+            if result.get('loss_history'):
+                loss_df = pd.DataFrame({
+                    "epoch": list(range(1, len(result['loss_history']) + 1)),
+                    "loss": result['loss_history']
+                })
+                st.line_chart(loss_df, x="epoch", y="loss", height=250)
+
+            st.info(
+                "💡 「🧹 Cache Clear」（Maintenanceタブ）を実行して"
+                "エンジンを再初期化するとモデルが反映されます。"
+            )
+        else:
+            st.error("ファインチューニングに失敗しました。")
