@@ -27,10 +27,15 @@ from verifier import verify_log_content
 from .graph import render_topology_graph
 
 
-def _st_html(html: str) -> None:
-    """SVG/HTMLをStreamlitで描画する (st.html 優先、フォールバック: unsafe_allow_html)。"""
-    if hasattr(st, "html"):
-        st.html(html)
+def _st_html(html: str, height: int = 0) -> None:
+    """SVG/HTMLをStreamlitで描画する。
+
+    height > 0: st.components.v1.html() で明示的高さ指定（SVG用）。
+    height == 0: st.markdown(unsafe_allow_html=True)（通常HTML用）。
+    """
+    if height > 0:
+        import streamlit.components.v1 as components
+        components.html(html, height=height, scrolling=False)
     else:
         st.markdown(html, unsafe_allow_html=True)
 

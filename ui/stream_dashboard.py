@@ -23,14 +23,17 @@ from digital_twin_pkg.alarm_stream import (
 logger = logging.getLogger(__name__)
 
 
-def _st_html(html: str) -> None:
+def _st_html(html: str, height: int = 0) -> None:
     """SVG/HTMLをStreamlitで描画する。
 
-    st.html() (Streamlit ≥1.33) を優先し、
-    フォールバックとして st.markdown(unsafe_allow_html=True) を使う。
+    height > 0 の場合: st.components.v1.html() で明示的高さを指定（SVG用）。
+    height == 0 の場合: st.markdown(unsafe_allow_html=True) を使用（通常HTML用）。
+
+    st.html() は iframe でSVG高さが自動計算されないため使用しない。
     """
-    if hasattr(st, "html"):
-        st.html(html)
+    if height > 0:
+        import streamlit.components.v1 as components
+        components.html(html, height=height, scrolling=False)
     else:
         st.markdown(html, unsafe_allow_html=True)
 
@@ -520,7 +523,7 @@ def render_stream_dashboard():
         # current_level を active_stages 内での相対位置に変換
         relative_level = max(0, current_level - start_lvl + 1) if current_level >= start_lvl else 0
         timeline_svg = _render_timeline_svg(relative_level, progress, stages_info)
-        _st_html(timeline_svg)
+        _st_html(timeline_svg, height=100)
 
         st.markdown("---")
 
@@ -536,7 +539,7 @@ def render_stream_dashboard():
                 unit=seq.metric_unit,
                 label=seq.metric_name,
             )
-            _st_html(gauge_svg)
+            _st_html(gauge_svg, height=190)
 
         with col_kpi1:
             st.metric(
@@ -572,7 +575,7 @@ def render_stream_dashboard():
             metric_unit=seq.metric_unit,
             total_duration=sim.total_duration_sec,
         )
-        _st_html(chart_svg)
+        _st_html(chart_svg, height=260)
 
         st.markdown("---")
 
