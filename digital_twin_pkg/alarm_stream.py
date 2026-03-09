@@ -488,9 +488,45 @@ class AlarmStreamSimulator:
         # メトリクス履歴を実時間に変換
         sim_history = self.get_metric_history()
         real_history: List[Tuple[float, float]] = []
+
+        # L5 のメトリクスを補間するための準備:
+        # L5 の metric_value は failure_value と同一のため、対数チャート上で
+        # 障害線 (base_ttf) より手前にメトリクスが障害値に達して見える。
+        # → L5 区間内のメトリクスを、直前レベルの値から failure_value へ
+        #   位置に応じて線形補間し、障害線位置でちょうど到達するようにする。
+        last_stage = active_stages[-1] if active_stages else None
+        l5_real_start = level_real_start.get(5, base_ttf)
+        # L5 直前のメトリクス値（L4 の metric_value、または直前データポイントの値）
+        pre_l5_metric = None
+        if last_stage and last_stage.level == 5 and len(active_stages) >= 2:
+            pre_l5_metric = active_stages[-2].metric_value
+        elif last_stage and last_stage.level == 5 and self.start_level == 5:
+            # L5 開始の場合、初期値を使用
+            if self.start_level > 1:
+                pre_l5_metric = self.sequence.stages[self.start_level - 2].metric_value
+            else:
+                pre_l5_metric = self.sequence.normal_value
+
         for elapsed_sec, metric_val in sim_history:
             real_h = sim_to_real(elapsed_sec)
+
+            # L5 区間のメトリクス補間
+            if (pre_l5_metric is not None
+                    and last_stage is not None
+                    and last_stage.level == 5
+                    and real_h >= l5_real_start - 0.01):
+                l5_span = base_ttf - l5_real_start
+                if l5_span > 0:
+                    frac_in_l5 = min(1.0, (real_h - l5_real_start) / l5_span)
+                    metric_val = pre_l5_metric + frac_in_l5 * (
+                        self.sequence.failure_value - pre_l5_metric
+                    )
+
             real_history.append((real_h, metric_val))
+
+        # シミュレーション完了時: 障害線位置に最終点を追加
+        if self.is_complete:
+            real_history.append((base_ttf, self.sequence.failure_value))
 
         return real_history, x_start_hours, x_end_hours
 
