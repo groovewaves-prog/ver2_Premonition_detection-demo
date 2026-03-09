@@ -78,14 +78,35 @@ def _register_events_to_chromadb(
     engine: Any,
     result: Dict[str, Any],
 ) -> int:
-    """ストリームイベントをChromaDBに登録"""
+    """ストリームイベントをChromaDBに補完登録する。
+
+    predict_api 経由で既に登録済みのイベントは情報が豊富（予測結果含む）
+    なので、ここでは predict_api で未処理だったイベントのみを登録する。
+    ID に 'stream_' prefix を使い、upsert で冪等性を保証。
+    """
     added = 0
     vs = getattr(engine, "vector_store", None)
     if vs is None or not getattr(vs, "is_ready", False):
         result["errors"].append("ChromaDB not available")
         return 0
 
-    for ev in events:
+    # 既に登録済みのデバイス+パターンの件数を確認
+    existing_count = 0
+    try:
+        collection = getattr(vs, "_collection", None)
+        if collection:
+            existing = collection.get(
+                where={"device_id": sim.device_id},
+                include=[],
+            )
+            existing_count = len(existing.get("ids", []))
+    except Exception:
+        pass
+
+    # predict_api が処理済みのイベント数分はスキップ
+    events_to_add = events[existing_count:] if existing_count > 0 else events
+
+    for ev in events_to_add:
         try:
             primary_msg = ev.messages[0] if ev.messages else ""
             if not primary_msg:
