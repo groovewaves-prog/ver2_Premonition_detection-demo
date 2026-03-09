@@ -202,6 +202,7 @@ class AlarmStreamSimulator:
         device_id: str,
         interfaces: Optional[List[str]] = None,
         speed_multiplier: float = 1.0,
+        start_level: int = 1,
     ):
         if scenario_key not in DEGRADATION_SEQUENCES:
             raise ValueError(f"Unknown scenario: {scenario_key}. Available: {list(DEGRADATION_SEQUENCES.keys())}")
@@ -210,6 +211,7 @@ class AlarmStreamSimulator:
         self.device_id = device_id
         self.interfaces = interfaces or ["Gi0/0/1"]
         self.speed_multiplier = speed_multiplier
+        self.start_level = max(1, min(5, start_level))
 
         self._start_time: Optional[float] = None
         self._last_emitted_idx: int = -1
@@ -220,11 +222,12 @@ class AlarmStreamSimulator:
         self._precompute_events()
 
     def _precompute_events(self):
-        """全ステージのイベントを事前計算"""
-        total_duration = sum(s.duration_sec / self.speed_multiplier for s in self.sequence.stages)
+        """全ステージのイベントを事前計算（start_level 以降のみ）"""
+        active_stages = [s for s in self.sequence.stages if s.level >= self.start_level]
+        total_duration = sum(s.duration_sec / self.speed_multiplier for s in active_stages)
         cumulative_time = 0.0
 
-        for stage in self.sequence.stages:
+        for stage in active_stages:
             duration = stage.duration_sec / self.speed_multiplier
             # 各ステージ内で2-3回のアラーム発火タイミングを生成
             num_ticks = min(len(stage.alarm_templates), 3)
@@ -356,8 +359,14 @@ class AlarmStreamSimulator:
     def get_metric_history(self) -> List[Tuple[float, float]]:
         """(elapsed_sec, metric_value) のリストを返す（チャート用）"""
         events = self.get_all_events_until_now()
-        # 正常値を先頭に追加
-        history = [(0.0, self.sequence.normal_value)]
+        # 開始レベルに応じた初期値を先頭に追加
+        if self.start_level > 1:
+            # 開始レベルの1つ前のステージのメトリクス値を初期値にする
+            prev_stage = self.sequence.stages[self.start_level - 2]
+            initial_value = prev_stage.metric_value
+        else:
+            initial_value = self.sequence.normal_value
+        history = [(0.0, initial_value)]
         for ev in events:
             history.append((ev.elapsed_sec, ev.metric_value))
         return history
@@ -376,6 +385,7 @@ class AlarmStreamSimulator:
             "device_id": self.device_id,
             "interfaces": self.interfaces,
             "speed_multiplier": self.speed_multiplier,
+            "start_level": self.start_level,
             "start_time": self._start_time,
             "last_emitted_idx": self._last_emitted_idx,
         }
@@ -388,6 +398,7 @@ class AlarmStreamSimulator:
             device_id=state["device_id"],
             interfaces=state.get("interfaces", ["Gi0/0/1"]),
             speed_multiplier=state.get("speed_multiplier", 1.0),
+            start_level=state.get("start_level", 1),
         )
         sim._start_time = state.get("start_time")
         sim._last_emitted_idx = state.get("last_emitted_idx", -1)
