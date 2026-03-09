@@ -418,12 +418,18 @@ class AlarmStreamSimulator:
             history.append((ev.elapsed_sec, v))
         return history
 
-    def get_realtime_metric_history(self) -> Tuple[List[Tuple[float, float]], float]:
-        """(real_hours_from_start, metric_value) のリストと total_hours を返す。
+    def get_realtime_metric_history(self) -> Tuple[List[Tuple[float, float]], float, float]:
+        """(real_hours, metric_value) のリストと (x_start_hours, x_end_hours) を返す。
 
         シミュレーション経過秒を、RUL 減衰モデルに基づく実時間（時間単位）に変換する。
         各ステージの実時間上の幅は _DETERMINISTIC_DECAY から算出:
           Level N の到達時刻 = base_ttf * (1 - decay[N])
+
+        戻り値:
+          (history, x_start_hours, x_end_hours)
+          - history: [(real_hours, metric_value), ...]
+          - x_start_hours: X軸表示開始 (start_level の到達時刻)
+          - x_end_hours: X軸表示終了 (障害発生時刻 = base_ttf)
         """
         base_ttf = SCENARIO_BASE_TTF_HOURS.get(self.sequence.pattern, 336)
 
@@ -444,11 +450,10 @@ class AlarmStreamSimulator:
         for s in active_stages:
             sim_stage_starts[s.level] = cum
             cum += s.duration_sec / self.speed_multiplier
-        sim_total = cum  # total simulation seconds
 
         # 実時間上の表示範囲
-        real_start_hours = level_real_start.get(self.start_level, 0.0)
-        real_total_hours = base_ttf  # 障害発生時刻
+        x_start_hours = level_real_start.get(self.start_level, 0.0)
+        x_end_hours = base_ttf  # 障害発生時刻
 
         # シミュレーション秒 → 実時間(時間) への変換
         def sim_to_real(elapsed_sec: float) -> float:
@@ -487,7 +492,7 @@ class AlarmStreamSimulator:
             real_h = sim_to_real(elapsed_sec)
             real_history.append((real_h, metric_val))
 
-        return real_history, real_total_hours
+        return real_history, x_start_hours, x_end_hours
 
     def get_latest_messages(self) -> List[str]:
         """最新イベントのメッセージを返す"""
