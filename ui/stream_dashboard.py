@@ -323,12 +323,13 @@ def _render_degradation_chart_svg(
         f'<text x="{width - margin_right + 2}" y="{fy + 3}" font-size="9" fill="#D32F2F">障害</text>'
     )
 
-    # 危険域の塗りつぶし
+    # 危険域の塗りつぶし（障害値付近の15%帯）
+    danger_band = abs(failure_value - normal_value) * 0.15
     if failure_value > normal_value:
         danger_y1 = to_svg_y(failure_value)
-        danger_y2 = to_svg_y(failure_value * 0.85)
+        danger_y2 = to_svg_y(failure_value - danger_band)
     else:
-        danger_y1 = to_svg_y(failure_value * 0.85)
+        danger_y1 = to_svg_y(failure_value + danger_band)
         danger_y2 = to_svg_y(failure_value)
     svg_parts.append(
         f'<rect x="{margin_left}" y="{min(danger_y1, danger_y2)}" '
