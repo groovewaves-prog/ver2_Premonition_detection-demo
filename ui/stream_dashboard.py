@@ -282,9 +282,7 @@ def _render_degradation_chart_svg(
     use_realtime = realtime_history is not None and x_range_hours > 0
     history = realtime_history if use_realtime else metric_history
 
-    # 実時間モードでは表示範囲に応じてチャート幅を調整
-    if use_realtime and x_range_hours >= 48:
-        width = max(700, min(1400, int(x_range_hours / 24 * 120)))
+    # 対数スケールでは幅の拡張は不要（長い期間も圧縮される）
 
     margin_left = 60
     margin_right = 80 if use_realtime else 30
@@ -303,12 +301,19 @@ def _render_degradation_chart_svg(
     y_range = y_max - y_min
 
     if use_realtime:
-        # X軸右端に障害ラベル分の余白を確保 (表示範囲の5%分)
-        display_padding = x_range_hours * 0.05
-        display_x_end = realtime_x_end + display_padding
+        # ── 対数スケール: RUL (残り時間) の log で初期を圧縮、後半を拡大 ──
+        # position = 1 - log(RUL + 1) / log(max_RUL + 1)
+        # → 左端: t=x_start (RUL=max) → pos=0
+        # → 右端: t=x_end   (RUL=0)   → pos=1
+        max_rul = x_range_hours
+        log_denom = math.log(max_rul + 1)
+        # チャート描画域の95%をデータ用、残り5%を障害ラベル余白に
+        data_chart_w = chart_w * 0.95
 
         def to_svg_x(t):
-            return margin_left + ((t - realtime_x_start) / max(display_x_end - realtime_x_start, 0.1)) * chart_w
+            rul = max(realtime_x_end - t, 0)
+            pos = 1.0 - math.log(rul + 1) / log_denom
+            return margin_left + pos * data_chart_w
     else:
         def to_svg_x(t):
             return margin_left + (t / max(total_duration, 0.1)) * chart_w
@@ -334,28 +339,27 @@ def _render_degradation_chart_svg(
             f'font-size="10" fill="#999">{gv:.1f}</text>'
         )
 
-    # --- X軸: 実時間モードではレベル到達日時を目盛りに表示 ---
+    # --- X軸: 実時間モードではレベル到達位置 + 残り日数を表示 ---
     if use_realtime and sim_start_dt:
         base_ttf = SCENARIO_BASE_TTF_HOURS.get(scenario_key, 336)
         tick_levels = list(range(start_level, 6))
         for lvl in tick_levels:
             decay = _DETERMINISTIC_DECAY.get(lvl, 0.50)
             real_h = base_ttf * (1.0 - decay)
-            # 表示範囲外はスキップ
             if real_h < realtime_x_start - 0.01:
                 continue
             sx = to_svg_x(real_h)
-            tick_dt = sim_start_dt + timedelta(hours=real_h)
-            label = f"L{lvl}"
-            if x_range_hours < 48:
-                dt_str = tick_dt.strftime("%-m/%-d %H:%M")
+            # RUL ベースのラベル: "L1 (14日後)" or "L5 (5h後)"
+            rul_h = max(0, int(base_ttf * decay))
+            if rul_h >= 24:
+                rul_str = f"{rul_h // 24}日後"
             else:
-                dt_str = tick_dt.strftime("%-m/%-d")
+                rul_str = f"{rul_h}h後"
+            label = f"L{lvl}"
             svg_parts.append(
                 f'<line x1="{sx}" y1="{margin_top}" x2="{sx}" y2="{margin_top + chart_h}" '
                 f'stroke="#E0E0E0" stroke-width="1" stroke-dasharray="3,3"/>'
             )
-            # start_level の目盛りが左端マージンに重なる場合は text-anchor を start に
             anchor = "start" if abs(sx - margin_left) < 20 else "middle"
             svg_parts.append(
                 f'<text x="{sx}" y="{margin_top + chart_h + 13}" text-anchor="{anchor}" '
@@ -363,9 +367,9 @@ def _render_degradation_chart_svg(
             )
             svg_parts.append(
                 f'<text x="{sx}" y="{margin_top + chart_h + 25}" text-anchor="{anchor}" '
-                f'font-size="9" fill="#999">{dt_str}</text>'
+                f'font-size="9" fill="#999">({rul_str})</text>'
             )
-        # 障害発生線 (X軸右端付近)
+        # 障害発生線
         fx = to_svg_x(base_ttf)
         fail_dt = sim_start_dt + timedelta(hours=base_ttf)
         fail_dt_str = fail_dt.strftime("%-m/%-d %H:%M")
@@ -470,7 +474,7 @@ def _render_degradation_chart_svg(
     if use_realtime:
         svg_parts.append(
             f'<text x="{width / 2}" y="{height - 3}" text-anchor="middle" '
-            f'font-size="10" fill="#999">予測タイムライン（日付）</text>'
+            f'font-size="10" fill="#999">予測タイムライン（対数スケール）</text>'
         )
     else:
         svg_parts.append(
