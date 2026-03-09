@@ -389,8 +389,17 @@ class AlarmStreamSimulator:
         else:
             initial_value = self.sequence.normal_value
         history = [(0.0, initial_value)]
+        # failure_value をハードリミットとして適用
+        fail_val = self.sequence.failure_value
+        norm_val = self.sequence.normal_value
+        degrading = fail_val < norm_val
         for ev in events:
-            history.append((ev.elapsed_sec, ev.metric_value))
+            v = ev.metric_value
+            if degrading:
+                v = max(v, fail_val)
+            else:
+                v = min(v, fail_val)
+            history.append((ev.elapsed_sec, v))
         return history
 
     def get_latest_messages(self) -> List[str]:

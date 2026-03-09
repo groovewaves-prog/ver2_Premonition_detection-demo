@@ -270,11 +270,14 @@ def _render_degradation_chart_svg(
     chart_w = width - margin_left - margin_right
     chart_h = height - margin_top - margin_bottom
 
-    # Y軸レンジ
-    all_vals = [v for _, v in metric_history] + [normal_value, failure_value]
-    y_min = min(all_vals) - abs(max(all_vals) - min(all_vals)) * 0.1
-    y_max = max(all_vals) + abs(max(all_vals) - min(all_vals)) * 0.1
-    y_range = y_max - y_min if abs(y_max - y_min) > 0.001 else 1.0
+    # Y軸レンジ: normal_value ～ failure_value を基準に 10% パディング
+    base_min = min(normal_value, failure_value)
+    base_max = max(normal_value, failure_value)
+    base_range = base_max - base_min if abs(base_max - base_min) > 0.001 else 1.0
+    padding = base_range * 0.08
+    y_min = base_min - padding
+    y_max = base_max + padding
+    y_range = y_max - y_min
 
     def to_svg_x(t):
         return margin_left + (t / max(total_duration, 0.1)) * chart_w
