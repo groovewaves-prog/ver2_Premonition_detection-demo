@@ -262,8 +262,8 @@ def _render_degradation_chart_svg(
     metric_name: str,
     metric_unit: str,
     total_duration: float,
-    width: int = 700,
-    height: int = 250,
+    width: int = 900,
+    height: int = 320,
     *,
     realtime_history: Optional[List[Tuple[float, float]]] = None,
     realtime_x_start: float = 0.0,
@@ -336,53 +336,73 @@ def _render_degradation_chart_svg(
         )
         svg_parts.append(
             f'<text x="{margin_left - 5}" y="{gy + 4}" text-anchor="end" '
-            f'font-size="10" fill="#999">{gv:.1f}</text>'
+            f'font-size="11" fill="#999">{gv:.1f}</text>'
         )
 
     # --- X軸: 実時間モードではレベル到達位置 + 残り日数を表示 ---
     if use_realtime and sim_start_dt:
         base_ttf = SCENARIO_BASE_TTF_HOURS.get(scenario_key, 336)
         tick_levels = list(range(start_level, 6))
+        # ティック位置を事前計算し、重なりを防止
+        tick_items = []
         for lvl in tick_levels:
             decay = _DETERMINISTIC_DECAY.get(lvl, 0.50)
             real_h = base_ttf * (1.0 - decay)
             if real_h < realtime_x_start - 0.01:
                 continue
             sx = to_svg_x(real_h)
-            # RUL ベースのラベル: "L1 (14日後)" or "L5 (5h後)"
             rul_h = max(0, int(base_ttf * decay))
             if rul_h >= 24:
                 rul_str = f"{rul_h // 24}日後"
             else:
                 rul_str = f"{rul_h}h後"
+            tick_items.append((lvl, sx, rul_str))
+
+        # 隣接ティック間が min_gap px 未満の場合、RULラベルを省略
+        min_gap = 40
+        for idx, (lvl, sx, rul_str) in enumerate(tick_items):
             label = f"L{lvl}"
+            # グリッド線は常に描画
             svg_parts.append(
                 f'<line x1="{sx}" y1="{margin_top}" x2="{sx}" y2="{margin_top + chart_h}" '
                 f'stroke="#E0E0E0" stroke-width="1" stroke-dasharray="3,3"/>'
             )
             anchor = "start" if abs(sx - margin_left) < 20 else "middle"
+            # レベルラベルは常に表示
             svg_parts.append(
-                f'<text x="{sx}" y="{margin_top + chart_h + 13}" text-anchor="{anchor}" '
-                f'font-size="9" font-weight="bold" fill="#666">{label}</text>'
+                f'<text x="{sx}" y="{margin_top + chart_h + 14}" text-anchor="{anchor}" '
+                f'font-size="10" font-weight="bold" fill="#666">{label}</text>'
             )
-            svg_parts.append(
-                f'<text x="{sx}" y="{margin_top + chart_h + 25}" text-anchor="{anchor}" '
-                f'font-size="9" fill="#999">({rul_str})</text>'
-            )
+            # 隣接ティックとの間隔が狭い場合は RUL サブラベルを省略
+            show_rul = True
+            if idx > 0:
+                prev_sx = tick_items[idx - 1][1]
+                if abs(sx - prev_sx) < min_gap:
+                    show_rul = False
+            if idx < len(tick_items) - 1:
+                next_sx = tick_items[idx + 1][1]
+                if abs(next_sx - sx) < min_gap:
+                    show_rul = False
+            if show_rul:
+                svg_parts.append(
+                    f'<text x="{sx}" y="{margin_top + chart_h + 27}" text-anchor="{anchor}" '
+                    f'font-size="9" fill="#999">({rul_str})</text>'
+                )
+
         # 障害発生線
         fx = to_svg_x(base_ttf)
         fail_dt = sim_start_dt + timedelta(hours=base_ttf)
         fail_dt_str = fail_dt.strftime("%-m/%-d %H:%M")
         svg_parts.append(
             f'<line x1="{fx}" y1="{margin_top}" x2="{fx}" y2="{margin_top + chart_h}" '
-            f'stroke="#D32F2F" stroke-width="1.5" stroke-dasharray="4,2"/>'
+            f'stroke="#D32F2F" stroke-width="2" stroke-dasharray="5,3"/>'
         )
         svg_parts.append(
-            f'<text x="{fx + 3}" y="{margin_top + chart_h + 13}" text-anchor="start" '
-            f'font-size="9" font-weight="bold" fill="#D32F2F">障害</text>'
+            f'<text x="{fx + 4}" y="{margin_top + chart_h + 14}" text-anchor="start" '
+            f'font-size="10" font-weight="bold" fill="#D32F2F">障害</text>'
         )
         svg_parts.append(
-            f'<text x="{fx + 3}" y="{margin_top + chart_h + 25}" text-anchor="start" '
+            f'<text x="{fx + 4}" y="{margin_top + chart_h + 27}" text-anchor="start" '
             f'font-size="9" fill="#D32F2F">{fail_dt_str}</text>'
         )
         # 現在時刻マーカー
@@ -402,7 +422,7 @@ def _render_degradation_chart_svg(
     )
     svg_parts.append(
         f'<text x="{margin_left + 3}" y="{ny - 4}" text-anchor="start" '
-        f'font-size="9" fill="#4CAF50">正常 ({normal_value:.1f})</text>'
+        f'font-size="10" fill="#4CAF50">正常 ({normal_value:.1f})</text>'
     )
 
     # 障害ライン (Y)
@@ -413,7 +433,7 @@ def _render_degradation_chart_svg(
     )
     svg_parts.append(
         f'<text x="{margin_left + 3}" y="{fy - 4}" text-anchor="start" '
-        f'font-size="9" fill="#D32F2F">障害 ({failure_value:.1f})</text>'
+        f'font-size="10" fill="#D32F2F">障害 ({failure_value:.1f})</text>'
     )
 
     # 危険域の塗りつぶし（障害値付近の15%帯）
@@ -458,15 +478,22 @@ def _render_degradation_chart_svg(
             last_t, last_v = history[-1]
             lx = to_svg_x(last_t)
             ly = to_svg_y(last_v)
-            # 右端に近い場合はラベルを左に表示
-            if lx > width - margin_right - 80:
+            # 障害線との距離を考慮してラベル位置を決定
+            # use_realtime 時は障害線位置と比較
+            near_failure_line = False
+            if use_realtime:
+                _fail_x = to_svg_x(realtime_x_end)
+                near_failure_line = abs(lx - _fail_x) < 100
+            near_right_edge = lx > width - margin_right - 80
+            if near_failure_line or near_right_edge:
+                # 障害線/右端に近い → 左上にオフセットして表示
                 svg_parts.append(
-                    f'<text x="{lx - 8}" y="{ly - 8}" text-anchor="end" font-size="12" '
+                    f'<text x="{lx - 10}" y="{ly - 16}" text-anchor="end" font-size="13" '
                     f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
                 )
             else:
                 svg_parts.append(
-                    f'<text x="{lx + 8}" y="{ly - 8}" font-size="12" '
+                    f'<text x="{lx + 8}" y="{ly - 8}" font-size="13" '
                     f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
                 )
 
@@ -474,17 +501,17 @@ def _render_degradation_chart_svg(
     if use_realtime:
         svg_parts.append(
             f'<text x="{width / 2}" y="{height - 3}" text-anchor="middle" '
-            f'font-size="10" fill="#999">予測タイムライン（対数スケール）</text>'
+            f'font-size="11" fill="#999">予測タイムライン（対数スケール）</text>'
         )
     else:
         svg_parts.append(
             f'<text x="{width / 2}" y="{height - 5}" text-anchor="middle" '
-            f'font-size="10" fill="#999">経過時間 (秒)</text>'
+            f'font-size="11" fill="#999">経過時間 (秒)</text>'
         )
     # Y軸ラベル
     svg_parts.append(
         f'<text x="12" y="{height / 2}" text-anchor="middle" '
-        f'font-size="10" fill="#999" transform="rotate(-90, 12, {height / 2})">'
+        f'font-size="11" fill="#999" transform="rotate(-90, 12, {height / 2})">'
         f'{metric_name} ({metric_unit})</text>'
     )
 
@@ -705,7 +732,7 @@ def render_stream_dashboard():
             f'border:1px solid #eee;border-radius:4px;padding:4px;">'
             f'{chart_svg}</div>'
         )
-        _components.html(_scroll_html, height=280, scrolling=True)
+        _components.html(_scroll_html, height=350, scrolling=True)
 
         st.markdown("---")
 
