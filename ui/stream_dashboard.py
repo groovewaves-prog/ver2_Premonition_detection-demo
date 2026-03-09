@@ -10,6 +10,7 @@
 import streamlit as st
 import time
 import math
+import logging
 from typing import Optional
 from digital_twin_pkg.alarm_stream import (
     AlarmStreamSimulator,
@@ -18,6 +19,8 @@ from digital_twin_pkg.alarm_stream import (
     get_default_interfaces,
     StreamEvent,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -57,8 +60,8 @@ def _render_metric_gauge_svg(
     width: int = 300,
     height: int = 180,
 ) -> str:
-    """SVGでメトリクスゲージを描画"""
-    # 値の正規化 (0-1)
+    """SVGでメトリクスゲージを描画（三角ポインタ方式）"""
+    # 値の正規化 (0=正常, 1=障害)
     val_range = abs(failure_value - normal_value)
     if val_range < 0.001:
         val_range = 1.0
@@ -86,13 +89,23 @@ def _render_metric_gauge_svg(
     rad = math.pi * (1.0 - normalized)
     cx, cy = width / 2, height - 30
     radius = min(width, height) * 0.45
-    needle_x = cx + radius * 0.85 * math.cos(rad)
-    needle_y = cy - radius * 0.85 * math.sin(rad)
+    needle_len = radius * 0.82
+    needle_tip_x = cx + needle_len * math.cos(rad)
+    needle_tip_y = cy - needle_len * math.sin(rad)
+
+    # 針の根元（三角形の底辺2点）
+    perp_rad = rad + math.pi / 2
+    base_half = 4
+    base_x1 = cx + base_half * math.cos(perp_rad)
+    base_y1 = cy - base_half * math.sin(perp_rad)
+    base_x2 = cx - base_half * math.cos(perp_rad)
+    base_y2 = cy + base_half * math.sin(perp_rad)
 
     # アーク描画パラメータ
     arc_r = radius * 0.85
 
-    svg = f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+    svg = f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg"
+         viewBox="0 0 {width} {height}">
   <!-- 背景アーク (灰色) -->
   <path d="M {cx - arc_r} {cy} A {arc_r} {arc_r} 0 0 1 {cx + arc_r} {cy}"
         fill="none" stroke="#E0E0E0" stroke-width="18" stroke-linecap="round"/>
@@ -105,10 +118,12 @@ def _render_metric_gauge_svg(
   <!-- 危険域 (赤) -->
   <path d="M {cx + arc_r * 0.5} {cy - arc_r * 0.866} A {arc_r} {arc_r} 0 0 1 {cx + arc_r} {cy}"
         fill="none" stroke="#FFCDD2" stroke-width="18" stroke-linecap="round"/>
-  <!-- 針 -->
-  <line x1="{cx}" y1="{cy}" x2="{needle_x}" y2="{needle_y}"
-        stroke="{color}" stroke-width="3" stroke-linecap="round"/>
-  <circle cx="{cx}" cy="{cy}" r="6" fill="{color}"/>
+  <!-- 針（三角ポインタ） -->
+  <polygon points="{needle_tip_x},{needle_tip_y} {base_x1},{base_y1} {base_x2},{base_y2}"
+           fill="{color}" stroke="{color}" stroke-width="1"/>
+  <!-- 中心円 -->
+  <circle cx="{cx}" cy="{cy}" r="7" fill="{color}"/>
+  <circle cx="{cx}" cy="{cy}" r="3" fill="white"/>
   <!-- 値表示 -->
   <text x="{cx}" y="{cy - 15}" text-anchor="middle"
         font-size="28" font-weight="bold" fill="{color}">{current_value:.1f}</text>
@@ -595,16 +610,98 @@ def render_stream_dashboard():
         # 呼び出し元で time.sleep + st.rerun を実行
         return True  # "需要リフレッシュ"
 
-    # 完了時: 結果を保持し、「試験終了」ボタンで手動クリア
-    st.success("✅ 劣化シミュレーション完了。全ステージのデータがforecast_ledgerに記録されました。")
+    # 完了時: DB同期（ChromaDB + GNN学習データエクスポート）
+    _completion_key = "stream_completion_result"
+    if _completion_key not in st.session_state:
+        _sync_result = _run_completion_sync(sim)
+        st.session_state[_completion_key] = _sync_result
+    else:
+        _sync_result = st.session_state[_completion_key]
+
+    # 結果表示
+    _chromadb_n = _sync_result.get("chromadb_added", 0)
+    _gnn_path = _sync_result.get("gnn_session_path")
+    _sync_errors = _sync_result.get("errors", [])
+
+    _summary_parts = ["forecast_ledgerに記録済み"]
+    if _chromadb_n > 0:
+        _summary_parts.append(f"ChromaDB +{_chromadb_n}件")
+    if _gnn_path:
+        _summary_parts.append("GNN学習データ保存済み")
+
+    st.success(f"✅ 劣化シミュレーション完了。{' / '.join(_summary_parts)}")
+
+    if _sync_errors:
+        st.caption(f"⚠ 一部エラー: {', '.join(_sync_errors)}")
 
     col_end, col_spacer = st.columns([1, 3])
     with col_end:
         if st.button("🏁 試験終了", key="stream_end", type="primary"):
+            st.session_state.pop(_completion_key, None)
             _clear_simulator()
             st.rerun()
 
     return False
+
+
+def _run_completion_sync(sim: AlarmStreamSimulator) -> dict:
+    """ストリーム完了時のDB同期を実行"""
+    try:
+        from digital_twin_pkg.stream_completion_handler import handle_stream_completion
+        from registry import load_topology
+
+        # DigitalTwinEngineを取得（cockpit.pyと同じキャッシュ経由）
+        engine = _get_dt_engine_for_sync(sim)
+        topology = None
+        active_site = st.session_state.get("active_site")
+        if active_site:
+            try:
+                topology = load_topology(active_site)
+            except Exception:
+                pass
+
+        return handle_stream_completion(
+            sim=sim,
+            engine=engine,
+            topology=topology,
+        )
+    except Exception as e:
+        logger.warning("Stream completion sync failed: %s", e)
+        return {"chromadb_added": 0, "gnn_session_path": None, "errors": [str(e)]}
+
+
+def _get_dt_engine_for_sync(sim: AlarmStreamSimulator):
+    """DB同期用にDigitalTwinEngineを取得"""
+    active_site = st.session_state.get("active_site")
+    if not active_site:
+        return None
+    try:
+        from registry import load_topology
+        from digital_twin_pkg import DigitalTwinEngine as _DTE
+
+        topology = load_topology(active_site)
+        children_map: dict = {}
+        for nid, n in topology.items():
+            pid = (n.get('parent_id') if isinstance(n, dict)
+                   else getattr(n, 'parent_id', None))
+            if pid:
+                children_map.setdefault(pid, []).append(nid)
+
+        # session_state にキャッシュ
+        cache_key = f"_dt_engine_sync_{active_site}"
+        if cache_key in st.session_state:
+            return st.session_state[cache_key]
+
+        engine = _DTE(
+            topology=topology,
+            children_map=children_map,
+            tenant_id=active_site,
+        )
+        st.session_state[cache_key] = engine
+        return engine
+    except Exception as e:
+        logger.warning("Failed to get DT engine for sync: %s", e)
+        return None
 
 
 def inject_stream_alarms_to_session(sim: AlarmStreamSimulator):

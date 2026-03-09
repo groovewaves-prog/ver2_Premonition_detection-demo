@@ -226,6 +226,9 @@ class AlarmStreamSimulator:
         active_stages = [s for s in self.sequence.stages if s.level >= self.start_level]
         total_duration = sum(s.duration_sec / self.speed_multiplier for s in active_stages)
         cumulative_time = 0.0
+        # 単調劣化を保証するためのトラッキング変数
+        degrading = self.sequence.failure_value < self.sequence.normal_value
+        prev_metric = None
 
         for stage in active_stages:
             duration = stage.duration_sec / self.speed_multiplier
@@ -240,6 +243,13 @@ class AlarmStreamSimulator:
                 # メトリクス値にジッタを追加（リアル感）
                 jitter = self._rng.gauss(0, abs(stage.metric_value) * 0.02)
                 metric_val = stage.metric_value + jitter
+                # 単調劣化を保証: 前回値より「回復」しないようにクランプ
+                if prev_metric is not None:
+                    if degrading:
+                        metric_val = min(metric_val, prev_metric - 0.01)
+                    else:
+                        metric_val = max(metric_val, prev_metric + 0.01)
+                prev_metric = metric_val
 
                 # インターフェース選択
                 intf = self.interfaces[tick % len(self.interfaces)]
