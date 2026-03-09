@@ -229,6 +229,9 @@ class AlarmStreamSimulator:
         # 単調劣化を保証: ジッタを劣化方向にバイアス
         degrading = self.sequence.failure_value < self.sequence.normal_value
         prev_metric = None
+        # 障害値を絶対限界としてクランプ
+        fail_val = self.sequence.failure_value
+        norm_val = self.sequence.normal_value
 
         for stage in active_stages:
             duration = stage.duration_sec / self.speed_multiplier
@@ -253,6 +256,11 @@ class AlarmStreamSimulator:
                         metric_val = min(metric_val, prev_metric - 0.05)
                     else:
                         metric_val = max(metric_val, prev_metric + 0.05)
+                # failure_value を超えないようクランプ
+                if degrading:
+                    metric_val = max(metric_val, fail_val)
+                else:
+                    metric_val = min(metric_val, fail_val)
                 prev_metric = metric_val
 
                 # インターフェース選択
