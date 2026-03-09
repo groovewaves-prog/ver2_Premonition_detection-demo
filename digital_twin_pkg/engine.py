@@ -17,7 +17,8 @@ from .storage import StorageManager
 from .audit import AuditBuilder
 from .tuning import AutoTuner
 from .bayesian import BayesianInferenceEngine
-from .gnn import create_gnn_engine
+from .gnn import create_gnn_engine, GNNPredictionEngine
+from .gnn_trainer import get_pretrained_model_path
 from .llm_client import InternalLLMClient, LLMScores  # Phase 6a/6b
 from .vector_store import VectorStore  # Phase 6c*
 
@@ -135,7 +136,15 @@ class DigitalTwinEngine:
         self.storage = StorageManager(self.tenant_id, BASE_DIR)
         self.tuner = AutoTuner(self)
         self.bayesian = BayesianInferenceEngine(self.storage)
-        self.gnn = create_gnn_engine(topology, children_map)
+        # ★ GNN: 事前学習済みモデルがあれば自動ロード
+        _pretrained_path = get_pretrained_model_path()
+        if _pretrained_path:
+            from .gnn_trainer import load_pretrained_gnn
+            self.gnn = load_pretrained_gnn(topology, children_map)
+            if self.gnn is None:
+                self.gnn = create_gnn_engine(topology, children_map)
+        else:
+            self.gnn = create_gnn_engine(topology, children_map)
 
         # ★ LLM クライアント初期化
         #   スコアリング（6次元）: gemma-3-12b-it（軽量・高速）
@@ -1023,7 +1032,8 @@ class DigitalTwinEngine:
                 time_window_hours=168  # 過去7日間
             )
             
-            # ★ GNN予測による信頼度の補正（オプション）
+            # ★ GNN予測による信頼度の補正（ChiGADウェーブレットフィルタ統合）
+            _gnn_spectral_scores = None
             if self.gnn and self._model:
                 try:
                     # 現在のアラームメッセージをBERT埋め込みに変換
@@ -1033,16 +1043,25 @@ class DigitalTwinEngine:
                             # 複数メッセージの平均埋め込み
                             embeddings = self._model.encode(msg_list, convert_to_numpy=True)
                             alarm_embeddings[msg_dev_id] = embeddings.mean(axis=0)
-                    
-                    # GNNで予測
-                    gnn_confidence, gnn_ttf = self.gnn.predict_with_gnn(
+
+                    # GNNで予測（ChiGADウェーブレット付き）
+                    gnn_confidence, gnn_ttf, _gnn_spectral_scores = self.gnn.predict_with_gnn(
                         alarm_embeddings, dev_id
                     )
-                    
+
                     # ベイズ推論とGNN予測の加重平均（GNNの重みは控えめ）
                     confidence = 0.7 * confidence + 0.3 * gnn_confidence
+
+                    # スペクトル異常スコアが高い場合、信頼度をブースト
+                    if _gnn_spectral_scores:
+                        spectral_score = _gnn_spectral_scores.get("anomaly_spectral_score", 0.5)
+                        if spectral_score > 0.7:
+                            # 高周波エネルギー優勢 = 異常信号が強い → 信頼度をブースト
+                            boost = (spectral_score - 0.7) * 0.2  # 最大 +6%
+                            confidence += boost
+
                     confidence = min(0.99, max(0.1, confidence))
-                    
+
                 except Exception as e:
                     logger.warning(f"GNN prediction failed: {e}")
 
@@ -1118,6 +1137,8 @@ class DigitalTwinEngine:
                         "change_impact": _llm_scores.change_impact,
                     },
                     "vendor_context": _vendor_ctx,
+                    # ChiGAD ウェーブレットフィルタによるスペクトル分解
+                    "spectral_scores": _gnn_spectral_scores,
                 },
             }
             pid = str(uuid.uuid4())

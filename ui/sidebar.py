@@ -4,6 +4,7 @@ import os
 from registry import list_sites, get_display_name, load_topology, get_paths
 from utils.const import SCENARIO_MAP
 from utils.llm_helper import get_rate_limiter, GENAI_AVAILABLE
+from ui.stream_dashboard import render_stream_controls, _get_simulator, inject_stream_alarms_to_session
 
 def render_sidebar():
     with st.sidebar:
@@ -96,10 +97,15 @@ def render_sidebar():
                 st.session_state.maint_flags[site_id] = is_maint
         
         st.divider()
-        
+
         # --- 予兆シミュレーション (完全版) ---
         _render_weak_signal_injection()
-        
+
+        st.divider()
+
+        # --- 連続劣化ストリーム ---
+        _render_stream_section()
+
         return _render_api_key_input()
 
 
@@ -319,6 +325,43 @@ def _render_weak_signal_injection():
                 st.caption(f"{i}. `{disp_msg}`")
         else:
             st.session_state["injected_weak_signal"] = None
+
+
+def _render_stream_section():
+    """連続劣化ストリームのサイドバーUI"""
+    active = st.session_state.get("active_site")
+    site_for_list = active if active else (list_sites()[0] if list_sites() else None)
+
+    device_options = []
+    if site_for_list:
+        try:
+            paths = get_paths(site_for_list)
+            topo = load_topology(paths.topology_path)
+            if topo:
+                child_count = {}
+                for dev_id, info in topo.items():
+                    pid = info.get('parent_id') if isinstance(info, dict) else getattr(info, 'parent_id', None)
+                    if pid:
+                        child_count[pid] = child_count.get(pid, 0) + 1
+
+                for dev_id, info in topo.items():
+                    if child_count.get(dev_id, 0) > 0:
+                        dtype = info.get('type', '') if isinstance(info, dict) else getattr(info, 'type', '')
+                        layer = info.get('layer', 0) if isinstance(info, dict) else getattr(info, 'layer', 0)
+                        rg = info.get('redundancy_group') if isinstance(info, dict) else getattr(info, 'redundancy_group', None)
+                        n_children = child_count.get(dev_id, 0)
+                        tag = "⚠SPOF" if not rg else "HA"
+                        device_options.append((dev_id, f"L{layer} {dev_id} ({dtype}) [{tag}, 配下{n_children}台]"))
+                device_options.sort(key=lambda x: x[1])
+        except Exception:
+            pass
+
+    render_stream_controls(device_options, site_for_list or "")
+
+    # ストリーム実行中: 最新アラームを session_state に注入
+    sim = _get_simulator()
+    if sim is not None and sim.is_started and not sim.is_complete:
+        inject_stream_alarms_to_session(sim)
 
 
 def _render_api_key_input():

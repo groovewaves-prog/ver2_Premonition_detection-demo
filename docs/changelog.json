@@ -1,0 +1,62 @@
+[
+  {
+    "timestamp": "2025-05-01T00:00:00",
+    "title": "ChiGADカイ二乗ウェーブレットフィルタ実装",
+    "description": "KDD 2025論文ベースのカイ二乗ウェーブレットカーネルによるスペクトル分解を実装。高周波異常信号の保持・増幅により標準GNNのローパス問題を解決。",
+    "category": "resolved_gap",
+    "status": "resolved",
+    "pdf_section": "3. GNN / Graph Anomaly Detection",
+    "files_changed": ["digital_twin_pkg/gnn.py"],
+    "related_gap": "ChiGADカイ二乗ウェーブレットフィルタ"
+  },
+  {
+    "timestamp": "2026-03-09T00:00:00",
+    "title": "アラームストリームシミュレーター",
+    "description": "ワンショットではなく時間経過に伴う段階的劣化シーケンスを生成。Level 1-5の連続的なアラーム列により、RULトレンド予測(linear regression)が実データで機能するようになった。",
+    "category": "feature",
+    "status": "resolved",
+    "pdf_section": "4. PHM / Predictive Health Management",
+    "files_changed": ["digital_twin_pkg/alarm_stream.py", "ui/stream_dashboard.py", "ui/sidebar.py", "app.py"],
+    "related_gap": "連続アラームストリーム"
+  },
+  {
+    "timestamp": "2026-03-09T00:00:00",
+    "title": "GNN合成事前学習",
+    "description": "EscalationRuleから合成トレーニングデータを生成し、GNNを事前学習。デプロイ直後からGNNが意味のある推論を行えるようになった。ランダム重み問題を解決。",
+    "category": "resolved_gap",
+    "status": "resolved",
+    "pdf_section": "3. GNN / Graph Anomaly Detection",
+    "files_changed": ["digital_twin_pkg/gnn_trainer.py", "digital_twin_pkg/engine.py", "ui/tuning.py"],
+    "related_gap": "GNN事前学習"
+  },
+  {
+    "timestamp": "2026-03-09T00:00:00",
+    "title": "リアルタイム劣化モニタリングダッシュボード",
+    "description": "SVGベースのメトリクスゲージ、ステージタイムライン、劣化曲線チャート、色分けイベントログにより、誰でも劣化進行状況を視覚的に判断可能。",
+    "category": "feature",
+    "status": "resolved",
+    "pdf_section": "6. Dashboard / Visualization",
+    "files_changed": ["ui/stream_dashboard.py"],
+    "related_gap": ""
+  },
+  {
+    "timestamp": "2026-03-09T00:00:00",
+    "title": "PHM: 1DCNN-BiLSTMモデル",
+    "description": "センサー時系列データ（振動、温度等）の大量学習データが前提。現在はアラームログベースの予兆検知がメインで、連続センサーデータなし。決定論的減衰モデル+線形回帰で代替中。",
+    "category": "resolved_gap",
+    "status": "deferred",
+    "pdf_section": "4. PHM / Predictive Health Management",
+    "files_changed": [],
+    "related_gap": "PHM: 1DCNN-BiLSTMモデル"
+  },
+  {
+    "timestamp": "2026-03-09T00:00:00",
+    "title": "連合学習 FedAvg",
+    "description": "マルチサイト基盤は構築済み。FedAvgモデル重み集約は各サイトでGNN学習データが十分蓄積された後に実装予定。",
+    "category": "resolved_gap",
+    "status": "deferred",
+    "pdf_section": "5. Federated Learning",
+    "files_changed": [],
+    "related_gap": "連合学習 FedAvg"
+  }
+]
