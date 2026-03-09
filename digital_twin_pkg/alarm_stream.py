@@ -53,6 +53,22 @@ class DegradationSequence:
 # 定義済み劣化シーケンス
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# シナリオごとの base TTF (Time To Failure) — rules.py の early_warning_hours と対応
+SCENARIO_BASE_TTF_HOURS: Dict[str, int] = {
+    "optical": 336,      # 14日
+    "microburst": 24,    # 1日
+    "memory_leak": 336,  # 14日
+}
+
+# Level → RUL 減衰係数 (engine.py の _DETERMINISTIC_DECAY と同一)
+_DETERMINISTIC_DECAY: Dict[int, float] = {
+    1: 1.00,
+    2: 0.50,
+    3: 0.21,
+    4: 0.07,
+    5: 0.015,
+}
+
 DEGRADATION_SEQUENCES: Dict[str, DegradationSequence] = {
     "optical": DegradationSequence(
         pattern="optical",
@@ -401,6 +417,77 @@ class AlarmStreamSimulator:
                 v = min(v, fail_val)
             history.append((ev.elapsed_sec, v))
         return history
+
+    def get_realtime_metric_history(self) -> Tuple[List[Tuple[float, float]], float]:
+        """(real_hours_from_start, metric_value) のリストと total_hours を返す。
+
+        シミュレーション経過秒を、RUL 減衰モデルに基づく実時間（時間単位）に変換する。
+        各ステージの実時間上の幅は _DETERMINISTIC_DECAY から算出:
+          Level N の到達時刻 = base_ttf * (1 - decay[N])
+        """
+        base_ttf = SCENARIO_BASE_TTF_HOURS.get(self.sequence.pattern, 336)
+
+        # 各レベルが実時間上で到達される時刻 (時間)
+        # level_start_hours[level] = base_ttf * (1 - decay[level])
+        level_real_start: Dict[int, float] = {}
+        for lvl in range(1, 6):
+            decay = _DETERMINISTIC_DECAY.get(lvl, 0.50)
+            level_real_start[lvl] = base_ttf * (1.0 - decay)
+        # 障害発生 = base_ttf
+
+        # アクティブステージの情報を構築
+        active_stages = [s for s in self.sequence.stages if s.level >= self.start_level]
+
+        # シミュレーション上での各ステージの累積開始秒
+        sim_stage_starts: Dict[int, float] = {}
+        cum = 0.0
+        for s in active_stages:
+            sim_stage_starts[s.level] = cum
+            cum += s.duration_sec / self.speed_multiplier
+        sim_total = cum  # total simulation seconds
+
+        # 実時間上の表示範囲
+        real_start_hours = level_real_start.get(self.start_level, 0.0)
+        real_total_hours = base_ttf  # 障害発生時刻
+
+        # シミュレーション秒 → 実時間(時間) への変換
+        def sim_to_real(elapsed_sec: float) -> float:
+            """シミュレーション秒を実時間(時間)に変換"""
+            # どのステージに属するか特定
+            target_stage = active_stages[0]
+            for i, s in enumerate(active_stages):
+                stage_start = sim_stage_starts[s.level]
+                stage_end = stage_start + s.duration_sec / self.speed_multiplier
+                if elapsed_sec <= stage_end + 0.001:
+                    target_stage = s
+                    break
+
+            stage_sim_start = sim_stage_starts[target_stage.level]
+            stage_sim_dur = target_stage.duration_sec / self.speed_multiplier
+
+            # ステージ内での割合
+            if stage_sim_dur > 0:
+                frac = (elapsed_sec - stage_sim_start) / stage_sim_dur
+            else:
+                frac = 1.0
+            frac = max(0.0, min(1.0, frac))
+
+            # このステージの実時間範囲
+            real_stage_start = level_real_start.get(target_stage.level, 0.0)
+            if target_stage.level < 5:
+                real_stage_end = level_real_start.get(target_stage.level + 1, base_ttf)
+            else:
+                real_stage_end = base_ttf
+            return real_stage_start + frac * (real_stage_end - real_stage_start)
+
+        # メトリクス履歴を実時間に変換
+        sim_history = self.get_metric_history()
+        real_history: List[Tuple[float, float]] = []
+        for elapsed_sec, metric_val in sim_history:
+            real_h = sim_to_real(elapsed_sec)
+            real_history.append((real_h, metric_val))
+
+        return real_history, real_total_hours
 
     def get_latest_messages(self) -> List[str]:
         """最新イベントのメッセージを返す"""

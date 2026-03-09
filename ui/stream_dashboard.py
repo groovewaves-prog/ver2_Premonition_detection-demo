@@ -11,10 +11,13 @@ import streamlit as st
 import time
 import math
 import logging
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, List, Tuple
 from digital_twin_pkg.alarm_stream import (
     AlarmStreamSimulator,
     DEGRADATION_SEQUENCES,
+    SCENARIO_BASE_TTF_HOURS,
+    _DETERMINISTIC_DECAY,
     get_available_scenarios,
     get_default_interfaces,
     StreamEvent,
@@ -261,16 +264,35 @@ def _render_degradation_chart_svg(
     total_duration: float,
     width: int = 700,
     height: int = 250,
+    *,
+    realtime_history: Optional[List[Tuple[float, float]]] = None,
+    realtime_total_hours: float = 0.0,
+    scenario_key: str = "",
+    start_level: int = 1,
+    sim_start_dt: Optional[datetime] = None,
 ) -> str:
-    """劣化曲線チャートをSVGで描画"""
+    """劣化曲線チャートをSVGで描画。
+
+    realtime_history が指定された場合、X軸を実時間（日時）で描画する。
+    """
+    # 実時間モードかどうか
+    use_realtime = realtime_history is not None and realtime_total_hours > 0
+    history = realtime_history if use_realtime else metric_history
+    x_total = realtime_total_hours if use_realtime else total_duration
+
+    # 実時間モードでは幅を広げる（日単位のデータを見やすく）
+    if use_realtime and realtime_total_hours >= 48:
+        # 1日あたり約100pxを目安、最小700px、最大1400px
+        width = max(700, min(1400, int(realtime_total_hours / 24 * 120)))
+
     margin_left = 60
-    margin_right = 20
+    margin_right = 30
     margin_top = 25
-    margin_bottom = 35
+    margin_bottom = 50 if use_realtime else 35
     chart_w = width - margin_left - margin_right
     chart_h = height - margin_top - margin_bottom
 
-    # Y軸レンジ: normal_value ～ failure_value を基準に 10% パディング
+    # Y軸レンジ: normal_value ～ failure_value を基準に 8% パディング
     base_min = min(normal_value, failure_value)
     base_max = max(normal_value, failure_value)
     base_range = base_max - base_min if abs(base_max - base_min) > 0.001 else 1.0
@@ -280,7 +302,7 @@ def _render_degradation_chart_svg(
     y_range = y_max - y_min
 
     def to_svg_x(t):
-        return margin_left + (t / max(total_duration, 0.1)) * chart_w
+        return margin_left + (t / max(x_total, 0.1)) * chart_w
 
     def to_svg_y(v):
         return margin_top + chart_h - ((v - y_min) / y_range) * chart_h
@@ -290,7 +312,7 @@ def _render_degradation_chart_svg(
         f'<rect x="0" y="0" width="{width}" height="{height}" fill="#FAFAFA" rx="4"/>',
     ]
 
-    # グリッド
+    # グリッド (Y軸)
     for i in range(5):
         gy = margin_top + (chart_h / 4) * i
         gv = y_max - (y_range / 4) * i
@@ -303,6 +325,57 @@ def _render_degradation_chart_svg(
             f'font-size="10" fill="#999">{gv:.1f}</text>'
         )
 
+    # --- X軸: 実時間モードではレベル到達日時を目盛りに表示 ---
+    if use_realtime and sim_start_dt:
+        # レベル到達時刻をX軸の目盛りとして表示
+        base_ttf = SCENARIO_BASE_TTF_HOURS.get(scenario_key, 336)
+        tick_levels = list(range(start_level, 6))
+        # 障害発生時刻も追加
+        for lvl in tick_levels:
+            decay = _DETERMINISTIC_DECAY.get(lvl, 0.50)
+            real_h = base_ttf * (1.0 - decay)
+            sx = to_svg_x(real_h)
+            tick_dt = sim_start_dt + timedelta(hours=real_h)
+            label = f"L{lvl}"
+            dt_str = tick_dt.strftime("%-m/%-d")
+            # 垂直目盛り線
+            svg_parts.append(
+                f'<line x1="{sx}" y1="{margin_top}" x2="{sx}" y2="{margin_top + chart_h}" '
+                f'stroke="#E0E0E0" stroke-width="1" stroke-dasharray="3,3"/>'
+            )
+            svg_parts.append(
+                f'<text x="{sx}" y="{margin_top + chart_h + 13}" text-anchor="middle" '
+                f'font-size="9" font-weight="bold" fill="#666">{label}</text>'
+            )
+            svg_parts.append(
+                f'<text x="{sx}" y="{margin_top + chart_h + 25}" text-anchor="middle" '
+                f'font-size="9" fill="#999">{dt_str}</text>'
+            )
+        # 障害発生線
+        fx = to_svg_x(base_ttf)
+        fail_dt = sim_start_dt + timedelta(hours=base_ttf)
+        fail_dt_str = fail_dt.strftime("%-m/%-d %H:%M")
+        svg_parts.append(
+            f'<line x1="{fx}" y1="{margin_top}" x2="{fx}" y2="{margin_top + chart_h}" '
+            f'stroke="#D32F2F" stroke-width="1.5" stroke-dasharray="4,2"/>'
+        )
+        svg_parts.append(
+            f'<text x="{fx}" y="{margin_top + chart_h + 13}" text-anchor="middle" '
+            f'font-size="9" font-weight="bold" fill="#D32F2F">障害</text>'
+        )
+        svg_parts.append(
+            f'<text x="{fx}" y="{margin_top + chart_h + 25}" text-anchor="middle" '
+            f'font-size="9" fill="#D32F2F">{fail_dt_str}</text>'
+        )
+        # 現在時刻マーカー (now)
+        if history:
+            now_h = history[-1][0]
+            now_sx = to_svg_x(now_h)
+            svg_parts.append(
+                f'<line x1="{now_sx}" y1="{margin_top}" x2="{now_sx}" y2="{margin_top + chart_h}" '
+                f'stroke="#1565C0" stroke-width="1" stroke-dasharray="2,2"/>'
+            )
+
     # 正常ライン
     ny = to_svg_y(normal_value)
     svg_parts.append(
@@ -313,7 +386,7 @@ def _render_degradation_chart_svg(
         f'<text x="{width - margin_right + 2}" y="{ny + 3}" font-size="9" fill="#4CAF50">正常</text>'
     )
 
-    # 障害ライン
+    # 障害ライン (Y)
     fy = to_svg_y(failure_value)
     svg_parts.append(
         f'<line x1="{margin_left}" y1="{fy}" x2="{width - margin_right}" y2="{fy}" '
@@ -338,9 +411,9 @@ def _render_degradation_chart_svg(
     )
 
     # データポイント + ライン
-    if len(metric_history) > 1:
+    if len(history) > 1:
         points_line = []
-        for t, v in metric_history:
+        for t, v in history:
             sx = to_svg_x(t)
             sy = to_svg_y(v)
             points_line.append(f"{sx},{sy}")
@@ -352,19 +425,19 @@ def _render_degradation_chart_svg(
         )
 
         # ポイント
-        for i, (t, v) in enumerate(metric_history):
+        for i, (t, v) in enumerate(history):
             sx = to_svg_x(t)
             sy = to_svg_y(v)
-            r = 5 if i == len(metric_history) - 1 else 3
-            color = "#D32F2F" if i == len(metric_history) - 1 else "#1565C0"
+            r = 5 if i == len(history) - 1 else 3
+            color = "#D32F2F" if i == len(history) - 1 else "#1565C0"
             svg_parts.append(
                 f'<circle cx="{sx}" cy="{sy}" r="{r}" fill="{color}" '
                 f'stroke="white" stroke-width="1.5"/>'
             )
 
         # 最新値のラベル
-        if metric_history:
-            last_t, last_v = metric_history[-1]
+        if history:
+            last_t, last_v = history[-1]
             lx = to_svg_x(last_t)
             ly = to_svg_y(last_v)
             svg_parts.append(
@@ -373,10 +446,16 @@ def _render_degradation_chart_svg(
             )
 
     # X軸ラベル
-    svg_parts.append(
-        f'<text x="{width / 2}" y="{height - 5}" text-anchor="middle" '
-        f'font-size="10" fill="#999">経過時間 (秒)</text>'
-    )
+    if use_realtime:
+        svg_parts.append(
+            f'<text x="{width / 2}" y="{height - 3}" text-anchor="middle" '
+            f'font-size="10" fill="#999">予測タイムライン（日付）</text>'
+        )
+    else:
+        svg_parts.append(
+            f'<text x="{width / 2}" y="{height - 5}" text-anchor="middle" '
+            f'font-size="10" fill="#999">経過時間 (秒)</text>'
+        )
     # Y軸ラベル
     svg_parts.append(
         f'<text x="12" y="{height / 2}" text-anchor="middle" '
@@ -555,10 +634,17 @@ def render_stream_dashboard():
             st.metric("イベント数", f"{len(events)}")
 
         with col_kpi2:
+            # 実時間ベースの予測情報を表示
+            _base_ttf = SCENARIO_BASE_TTF_HOURS.get(seq.pattern, 336)
+            _decay = _DETERMINISTIC_DECAY.get(current_level, 1.0)
+            _rul_hours = max(1, int(_base_ttf * _decay))
+            if _rul_hours >= 24:
+                st.metric("障害予測", f"{_rul_hours // 24}日後")
+            else:
+                st.metric("障害予測", f"{_rul_hours}時間後")
             elapsed = sim.current_elapsed_sec
             remaining = max(0, sim.total_duration_sec - elapsed)
-            st.metric("経過時間", f"{elapsed:.0f}s")
-            st.metric("残り時間", f"{remaining:.0f}s")
+            st.metric("シミュ残", f"{remaining:.0f}s")
 
         with col_kpi3:
             severity = events[-1].severity if events else "NORMAL"
@@ -569,8 +655,11 @@ def render_stream_dashboard():
 
         st.markdown("---")
 
-        # ── 3. 劣化曲線チャート ──
+        # ── 3. 劣化曲線チャート（実時間軸） ──
         metric_history = sim.get_metric_history()
+        realtime_history, realtime_total_hours = sim.get_realtime_metric_history()
+        # シミュレーション開始日時を復元
+        _sim_start_dt = datetime.fromtimestamp(sim._start_time) if sim._start_time else datetime.now()
         chart_svg = _render_degradation_chart_svg(
             metric_history=metric_history,
             normal_value=seq.normal_value,
@@ -578,8 +667,20 @@ def render_stream_dashboard():
             metric_name=seq.metric_name,
             metric_unit=seq.metric_unit,
             total_duration=sim.total_duration_sec,
+            realtime_history=realtime_history,
+            realtime_total_hours=realtime_total_hours,
+            scenario_key=seq.pattern,
+            start_level=start_lvl,
+            sim_start_dt=_sim_start_dt,
         )
-        _st_html(chart_svg, height=260)
+        # 横スクロール対応ラッパー
+        import streamlit.components.v1 as _components
+        _scroll_html = (
+            f'<div style="overflow-x:auto;overflow-y:hidden;'
+            f'border:1px solid #eee;border-radius:4px;padding:4px;">'
+            f'{chart_svg}</div>'
+        )
+        _components.html(_scroll_html, height=280, scrolling=True)
 
         st.markdown("---")
 
