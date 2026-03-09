@@ -1,0 +1,611 @@
+# ui/stream_dashboard.py
+# アラームストリーム・リアルタイムダッシュボード
+#
+# 視覚的に劣化進行を表示:
+#   - タイムライン: ステージ遷移の横方向プログレスバー
+#   - メトリクスゲージ: 現在値・閾値・危険域の視覚的表示
+#   - 劣化曲線チャート: SVGによる時系列グラフ
+#   - イベントログ: 色分けされたアラーム履歴
+
+import streamlit as st
+import time
+import math
+from typing import Optional
+from digital_twin_pkg.alarm_stream import (
+    AlarmStreamSimulator,
+    DEGRADATION_SEQUENCES,
+    get_available_scenarios,
+    get_default_interfaces,
+    StreamEvent,
+)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# セッションステート管理
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_STREAM_STATE_KEY = "alarm_stream_sim"
+_STREAM_EVENTS_KEY = "alarm_stream_events"
+
+
+def _get_simulator() -> Optional[AlarmStreamSimulator]:
+    state = st.session_state.get(_STREAM_STATE_KEY)
+    if state is None:
+        return None
+    return AlarmStreamSimulator.from_state_dict(state)
+
+
+def _save_simulator(sim: AlarmStreamSimulator):
+    st.session_state[_STREAM_STATE_KEY] = sim.to_state_dict()
+
+
+def _clear_simulator():
+    st.session_state.pop(_STREAM_STATE_KEY, None)
+    st.session_state.pop(_STREAM_EVENTS_KEY, None)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SVG チャート生成
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _render_metric_gauge_svg(
+    current_value: float,
+    normal_value: float,
+    failure_value: float,
+    unit: str,
+    label: str,
+    width: int = 300,
+    height: int = 180,
+) -> str:
+    """SVGでメトリクスゲージを描画"""
+    # 値の正規化 (0-1)
+    val_range = abs(failure_value - normal_value)
+    if val_range < 0.001:
+        val_range = 1.0
+    if failure_value > normal_value:
+        normalized = (current_value - normal_value) / val_range
+    else:
+        normalized = (normal_value - current_value) / val_range
+    normalized = max(0.0, min(1.0, normalized))
+
+    # 色の決定
+    if normalized < 0.3:
+        color = "#4CAF50"  # 緑
+        status = "正常"
+    elif normalized < 0.6:
+        color = "#FF9800"  # オレンジ
+        status = "注意"
+    elif normalized < 0.85:
+        color = "#FF5722"  # 赤オレンジ
+        status = "警戒"
+    else:
+        color = "#D32F2F"  # 赤
+        status = "危険"
+
+    # アーク角度計算 (半円: -90° to 90°)
+    angle = -90 + (normalized * 180)
+    rad = math.radians(angle)
+    cx, cy = width / 2, height - 30
+    radius = min(width, height) * 0.45
+    needle_x = cx + radius * 0.85 * math.cos(rad)
+    needle_y = cy - radius * 0.85 * math.sin(rad)
+
+    # アーク描画パラメータ
+    arc_r = radius * 0.85
+
+    svg = f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景アーク (灰色) -->
+  <path d="M {cx - arc_r} {cy} A {arc_r} {arc_r} 0 0 1 {cx + arc_r} {cy}"
+        fill="none" stroke="#E0E0E0" stroke-width="18" stroke-linecap="round"/>
+  <!-- 正常域 (緑) -->
+  <path d="M {cx - arc_r} {cy} A {arc_r} {arc_r} 0 0 1 {cx - arc_r * 0.5} {cy - arc_r * 0.866}"
+        fill="none" stroke="#C8E6C9" stroke-width="18" stroke-linecap="round"/>
+  <!-- 注意域 (黄) -->
+  <path d="M {cx - arc_r * 0.5} {cy - arc_r * 0.866} A {arc_r} {arc_r} 0 0 1 {cx + arc_r * 0.5} {cy - arc_r * 0.866}"
+        fill="none" stroke="#FFF9C4" stroke-width="18" stroke-linecap="round"/>
+  <!-- 危険域 (赤) -->
+  <path d="M {cx + arc_r * 0.5} {cy - arc_r * 0.866} A {arc_r} {arc_r} 0 0 1 {cx + arc_r} {cy}"
+        fill="none" stroke="#FFCDD2" stroke-width="18" stroke-linecap="round"/>
+  <!-- 針 -->
+  <line x1="{cx}" y1="{cy}" x2="{needle_x}" y2="{needle_y}"
+        stroke="{color}" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="{cx}" cy="{cy}" r="6" fill="{color}"/>
+  <!-- 値表示 -->
+  <text x="{cx}" y="{cy - 15}" text-anchor="middle"
+        font-size="28" font-weight="bold" fill="{color}">{current_value:.1f}</text>
+  <text x="{cx}" y="{cy + 2}" text-anchor="middle"
+        font-size="12" fill="#666">{unit}</text>
+  <!-- ラベル -->
+  <text x="{cx}" y="{height - 5}" text-anchor="middle"
+        font-size="11" fill="#999">{label}</text>
+  <!-- ステータス -->
+  <rect x="{cx - 25}" y="{cy - radius * 0.5 - 8}" width="50" height="18" rx="9"
+        fill="{color}" opacity="0.15"/>
+  <text x="{cx}" y="{cy - radius * 0.5 + 5}" text-anchor="middle"
+        font-size="11" font-weight="bold" fill="{color}">{status}</text>
+  <!-- 範囲ラベル -->
+  <text x="{cx - arc_r - 5}" y="{cy + 15}" text-anchor="end"
+        font-size="10" fill="#999">{normal_value:.1f}</text>
+  <text x="{cx + arc_r + 5}" y="{cy + 15}" text-anchor="start"
+        font-size="10" fill="#999">{failure_value:.1f}</text>
+</svg>"""
+    return svg
+
+
+def _render_timeline_svg(
+    current_level: int,
+    progress_pct: float,
+    stages_info: list,
+    width: int = 700,
+    height: int = 90,
+) -> str:
+    """ステージ遷移タイムラインをSVGで描画"""
+    margin = 40
+    bar_width = width - margin * 2
+    bar_y = 35
+    bar_height = 12
+
+    svg_parts = [
+        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
+        f'<rect x="{margin}" y="{bar_y}" width="{bar_width}" height="{bar_height}" '
+        f'rx="6" fill="#E0E0E0"/>',
+    ]
+
+    # プログレスバー
+    fill_width = bar_width * (progress_pct / 100.0)
+    if current_level <= 2:
+        bar_color = "#FFC107"
+    elif current_level <= 3:
+        bar_color = "#FF9800"
+    elif current_level <= 4:
+        bar_color = "#FF5722"
+    else:
+        bar_color = "#D32F2F"
+
+    svg_parts.append(
+        f'<rect x="{margin}" y="{bar_y}" width="{fill_width}" height="{bar_height}" '
+        f'rx="6" fill="{bar_color}"/>'
+    )
+
+    # ステージマーカー
+    num_stages = len(stages_info)
+    for i, stage in enumerate(stages_info):
+        x = margin + (bar_width / num_stages) * (i + 0.5)
+        is_active = (i + 1) == current_level
+        is_past = (i + 1) < current_level
+
+        if is_active:
+            circle_fill = bar_color
+            circle_r = 10
+            stroke = f'stroke="{bar_color}" stroke-width="3"'
+            text_weight = "bold"
+            text_color = bar_color
+        elif is_past:
+            circle_fill = "#4CAF50"
+            circle_r = 8
+            stroke = 'stroke="none"'
+            text_weight = "normal"
+            text_color = "#4CAF50"
+        else:
+            circle_fill = "#BDBDBD"
+            circle_r = 7
+            stroke = 'stroke="none"'
+            text_weight = "normal"
+            text_color = "#999"
+
+        svg_parts.append(
+            f'<circle cx="{x}" cy="{bar_y + bar_height / 2}" r="{circle_r}" '
+            f'fill="{"white" if is_active else circle_fill}" {stroke}/>'
+        )
+        if is_active:
+            svg_parts.append(
+                f'<circle cx="{x}" cy="{bar_y + bar_height / 2}" r="5" fill="{bar_color}"/>'
+            )
+
+        # ステージ番号
+        svg_parts.append(
+            f'<text x="{x}" y="{bar_y - 8}" text-anchor="middle" '
+            f'font-size="11" font-weight="{text_weight}" fill="{text_color}">L{i + 1}</text>'
+        )
+        # ステージラベル
+        svg_parts.append(
+            f'<text x="{x}" y="{bar_y + bar_height + 18}" text-anchor="middle" '
+            f'font-size="10" fill="{text_color}">{stage["label"]}</text>'
+        )
+
+    # 進行率テキスト
+    svg_parts.append(
+        f'<text x="{width - 10}" y="{bar_y + bar_height + 18}" text-anchor="end" '
+        f'font-size="11" font-weight="bold" fill="{bar_color}">{progress_pct:.0f}%</text>'
+    )
+
+    svg_parts.append('</svg>')
+    return '\n'.join(svg_parts)
+
+
+def _render_degradation_chart_svg(
+    metric_history: list,
+    normal_value: float,
+    failure_value: float,
+    metric_name: str,
+    metric_unit: str,
+    total_duration: float,
+    width: int = 700,
+    height: int = 250,
+) -> str:
+    """劣化曲線チャートをSVGで描画"""
+    margin_left = 60
+    margin_right = 20
+    margin_top = 25
+    margin_bottom = 35
+    chart_w = width - margin_left - margin_right
+    chart_h = height - margin_top - margin_bottom
+
+    # Y軸レンジ
+    all_vals = [v for _, v in metric_history] + [normal_value, failure_value]
+    y_min = min(all_vals) - abs(max(all_vals) - min(all_vals)) * 0.1
+    y_max = max(all_vals) + abs(max(all_vals) - min(all_vals)) * 0.1
+    y_range = y_max - y_min if abs(y_max - y_min) > 0.001 else 1.0
+
+    def to_svg_x(t):
+        return margin_left + (t / max(total_duration, 0.1)) * chart_w
+
+    def to_svg_y(v):
+        return margin_top + chart_h - ((v - y_min) / y_range) * chart_h
+
+    svg_parts = [
+        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#FAFAFA" rx="4"/>',
+    ]
+
+    # グリッド
+    for i in range(5):
+        gy = margin_top + (chart_h / 4) * i
+        gv = y_max - (y_range / 4) * i
+        svg_parts.append(
+            f'<line x1="{margin_left}" y1="{gy}" x2="{width - margin_right}" y2="{gy}" '
+            f'stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,4"/>'
+        )
+        svg_parts.append(
+            f'<text x="{margin_left - 5}" y="{gy + 4}" text-anchor="end" '
+            f'font-size="10" fill="#999">{gv:.1f}</text>'
+        )
+
+    # 正常ライン
+    ny = to_svg_y(normal_value)
+    svg_parts.append(
+        f'<line x1="{margin_left}" y1="{ny}" x2="{width - margin_right}" y2="{ny}" '
+        f'stroke="#4CAF50" stroke-width="1.5" stroke-dasharray="6,3"/>'
+    )
+    svg_parts.append(
+        f'<text x="{width - margin_right + 2}" y="{ny + 3}" font-size="9" fill="#4CAF50">正常</text>'
+    )
+
+    # 障害ライン
+    fy = to_svg_y(failure_value)
+    svg_parts.append(
+        f'<line x1="{margin_left}" y1="{fy}" x2="{width - margin_right}" y2="{fy}" '
+        f'stroke="#D32F2F" stroke-width="1.5" stroke-dasharray="6,3"/>'
+    )
+    svg_parts.append(
+        f'<text x="{width - margin_right + 2}" y="{fy + 3}" font-size="9" fill="#D32F2F">障害</text>'
+    )
+
+    # 危険域の塗りつぶし
+    if failure_value > normal_value:
+        danger_y1 = to_svg_y(failure_value)
+        danger_y2 = to_svg_y(failure_value * 0.85)
+    else:
+        danger_y1 = to_svg_y(failure_value * 0.85)
+        danger_y2 = to_svg_y(failure_value)
+    svg_parts.append(
+        f'<rect x="{margin_left}" y="{min(danger_y1, danger_y2)}" '
+        f'width="{chart_w}" height="{abs(danger_y2 - danger_y1)}" '
+        f'fill="#FFCDD2" opacity="0.3"/>'
+    )
+
+    # データポイント + ライン
+    if len(metric_history) > 1:
+        points_line = []
+        for t, v in metric_history:
+            sx = to_svg_x(t)
+            sy = to_svg_y(v)
+            points_line.append(f"{sx},{sy}")
+
+        # 線
+        svg_parts.append(
+            f'<polyline points="{" ".join(points_line)}" '
+            f'fill="none" stroke="#1565C0" stroke-width="2.5" stroke-linejoin="round"/>'
+        )
+
+        # ポイント
+        for i, (t, v) in enumerate(metric_history):
+            sx = to_svg_x(t)
+            sy = to_svg_y(v)
+            r = 5 if i == len(metric_history) - 1 else 3
+            color = "#D32F2F" if i == len(metric_history) - 1 else "#1565C0"
+            svg_parts.append(
+                f'<circle cx="{sx}" cy="{sy}" r="{r}" fill="{color}" '
+                f'stroke="white" stroke-width="1.5"/>'
+            )
+
+        # 最新値のラベル
+        if metric_history:
+            last_t, last_v = metric_history[-1]
+            lx = to_svg_x(last_t)
+            ly = to_svg_y(last_v)
+            svg_parts.append(
+                f'<text x="{lx + 8}" y="{ly - 8}" font-size="12" '
+                f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
+            )
+
+    # X軸ラベル
+    svg_parts.append(
+        f'<text x="{width / 2}" y="{height - 5}" text-anchor="middle" '
+        f'font-size="10" fill="#999">経過時間 (秒)</text>'
+    )
+    # Y軸ラベル
+    svg_parts.append(
+        f'<text x="12" y="{height / 2}" text-anchor="middle" '
+        f'font-size="10" fill="#999" transform="rotate(-90, 12, {height / 2})">'
+        f'{metric_name} ({metric_unit})</text>'
+    )
+
+    svg_parts.append('</svg>')
+    return '\n'.join(svg_parts)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# メイン描画関数
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def render_stream_controls(device_options: list, site_id: str):
+    """
+    サイドバーまたはメインエリアにストリーム制御UIを描画。
+
+    device_options: [(device_id, display_label), ...]
+    """
+    sim = _get_simulator()
+    is_running = sim is not None and sim.is_started and not sim.is_complete
+
+    with st.expander("📡 連続劣化ストリーム", expanded=True):
+        st.caption(
+            "時間経過に伴う段階的な劣化進行をシミュレートします。"
+            "RULトレンド予測とGNN学習データの蓄積に活用されます。"
+        )
+
+        if is_running:
+            st.warning(f"🔄 ストリーム実行中: {sim.sequence.pattern} on {sim.device_id}")
+            col_stop, col_info = st.columns([1, 2])
+            with col_stop:
+                if st.button("⏹ 停止", key="stream_stop", type="primary"):
+                    _clear_simulator()
+                    st.rerun()
+            with col_info:
+                elapsed = sim.current_elapsed_sec
+                st.caption(f"経過: {elapsed:.0f}s / {sim.total_duration_sec:.0f}s")
+            return
+
+        # --- 新規ストリーム設定 ---
+        if not device_options:
+            device_options = [("WAN_ROUTER_01", "WAN_ROUTER_01")]
+
+        target_device = st.selectbox(
+            "対象デバイス",
+            [d[0] for d in device_options],
+            format_func=lambda x: next((d[1] for d in device_options if d[0] == x), x),
+            key="stream_target"
+        )
+
+        scenarios = get_available_scenarios()
+        scenario_key = st.selectbox(
+            "劣化シナリオ",
+            list(scenarios.keys()),
+            format_func=lambda k: scenarios[k],
+            key="stream_scenario"
+        )
+
+        speed = st.select_slider(
+            "速度",
+            options=[0.5, 1.0, 2.0, 3.0, 5.0],
+            value=2.0,
+            format_func=lambda x: f"{x}x",
+            key="stream_speed",
+            help="シミュレーション速度。2x = 実時間の2倍速"
+        )
+
+        # プレビュー情報
+        seq = DEGRADATION_SEQUENCES[scenario_key]
+        total_sec = sum(s.duration_sec / speed for s in seq.stages)
+        st.info(
+            f"📊 **{seq.metric_name}**: {seq.normal_value} → {seq.failure_value} {seq.metric_unit}  \n"
+            f"⏱ 所要時間: **{total_sec:.0f}秒**（{len(seq.stages)}ステージ）"
+        )
+
+        if st.button("▶ ストリーム開始", key="stream_start", type="primary"):
+            interfaces = get_default_interfaces(target_device, scenario_key)
+            sim = AlarmStreamSimulator(
+                scenario_key=scenario_key,
+                device_id=target_device,
+                interfaces=interfaces,
+                speed_multiplier=speed,
+            )
+            sim.start()
+            _save_simulator(sim)
+            # 既存のワンショットシミュレーションをクリア
+            st.session_state["injected_weak_signal"] = None
+            st.session_state.pop("dt_prediction_cache", None)
+            st.rerun()
+
+
+def render_stream_dashboard():
+    """
+    メインエリアに連続劣化ダッシュボードを描画。
+
+    誰でも状況を判断できる視覚的UIを提供:
+      1. ステージタイムライン（横方向プログレス）
+      2. メトリクスゲージ（半円ゲージ）
+      3. 劣化曲線チャート（時系列SVG）
+      4. イベントログ（色分けされた履歴）
+    """
+    sim = _get_simulator()
+    if sim is None or not sim.is_started:
+        return False  # ストリーム非実行
+
+    seq = sim.sequence
+    events = sim.get_all_events_until_now()
+    current_level = sim.get_current_level()
+    progress = sim.current_progress_pct
+    is_complete = sim.is_complete
+
+    # ── ヘッダー ──
+    status_color = "#D32F2F" if current_level >= 4 else "#FF9800" if current_level >= 2 else "#4CAF50"
+    status_text = "完了" if is_complete else f"Level {current_level}/5"
+    status_icon = "✅" if is_complete else "🔴" if current_level >= 4 else "🟠" if current_level >= 2 else "🟢"
+
+    st.markdown(
+        f"### 📡 連続劣化モニタリング  \n"
+        f"<span style='background:{status_color};color:white;padding:2px 10px;"
+        f"border-radius:10px;font-size:13px;'>"
+        f"{status_icon} {status_text}</span>"
+        f"<span style='color:#666;font-size:13px;margin-left:12px;'>"
+        f"{seq.pattern.upper()} | {sim.device_id}</span>",
+        unsafe_allow_html=True,
+    )
+
+    with st.container(border=True):
+        # ── 1. ステージタイムライン ──
+        stages_info = [{"label": s.label} for s in seq.stages]
+        timeline_svg = _render_timeline_svg(current_level, progress, stages_info)
+        st.markdown(timeline_svg, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ── 2. メトリクスゲージ + KPI ──
+        col_gauge, col_kpi1, col_kpi2, col_kpi3 = st.columns([2, 1, 1, 1])
+
+        current_metric = events[-1].metric_value if events else seq.normal_value
+        with col_gauge:
+            gauge_svg = _render_metric_gauge_svg(
+                current_value=current_metric,
+                normal_value=seq.normal_value,
+                failure_value=seq.failure_value,
+                unit=seq.metric_unit,
+                label=seq.metric_name,
+            )
+            st.markdown(gauge_svg, unsafe_allow_html=True)
+
+        with col_kpi1:
+            st.metric(
+                "現在レベル",
+                f"{current_level}/5",
+                delta=f"+{current_level - (events[-2].level if len(events) >= 2 else 0)}" if len(events) >= 2 and events[-1].level != events[-2].level else None,
+                delta_color="inverse",
+            )
+            st.metric("イベント数", f"{len(events)}")
+
+        with col_kpi2:
+            elapsed = sim.current_elapsed_sec
+            remaining = max(0, sim.total_duration_sec - elapsed)
+            st.metric("経過時間", f"{elapsed:.0f}s")
+            st.metric("残り時間", f"{remaining:.0f}s")
+
+        with col_kpi3:
+            severity = events[-1].severity if events else "NORMAL"
+            severity_display = "🔴 CRITICAL" if severity == "CRITICAL" else "🟡 WARNING" if severity == "WARNING" else "🟢 NORMAL"
+            st.metric("重要度", severity_display)
+            latest_stage = events[-1].stage_label if events else "-"
+            st.metric("ステージ", latest_stage)
+
+        st.markdown("---")
+
+        # ── 3. 劣化曲線チャート ──
+        metric_history = sim.get_metric_history()
+        chart_svg = _render_degradation_chart_svg(
+            metric_history=metric_history,
+            normal_value=seq.normal_value,
+            failure_value=seq.failure_value,
+            metric_name=seq.metric_name,
+            metric_unit=seq.metric_unit,
+            total_duration=sim.total_duration_sec,
+        )
+        st.markdown(chart_svg, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ── 4. イベントログ ──
+        st.markdown("**📋 アラームイベントログ**")
+        if events:
+            # 最新5件を表示（新しい順）
+            for ev in reversed(events[-5:]):
+                border_color = ev.color
+                severity_badge = (
+                    f"<span style='background:#D32F2F;color:white;padding:1px 6px;"
+                    f"border-radius:3px;font-size:10px;'>CRITICAL</span>"
+                    if ev.severity == "CRITICAL"
+                    else f"<span style='background:#FF9800;color:white;padding:1px 6px;"
+                    f"border-radius:3px;font-size:10px;'>WARNING</span>"
+                )
+                time_display = f"{ev.elapsed_sec:.1f}s"
+                msg_display = ev.messages[0][:100] + ("..." if len(ev.messages[0]) > 100 else "")
+
+                extra_line = ""
+                if len(ev.messages) > 1:
+                    extra_count = len(ev.messages) - 1
+                    extra_line = f"<br><span style='color:#999;font-size:10px;'>+ {extra_count} more alerts</span>"
+
+                st.markdown(
+                    f"<div style='border-left:3px solid {border_color};padding:4px 8px;"
+                    f"margin:3px 0;font-size:12px;background:#FAFAFA;border-radius:2px;'>"
+                    f"<span style='color:#999;'>[{time_display}]</span> "
+                    f"{severity_badge} "
+                    f"<span style='color:#333;'>L{ev.level}</span> "
+                    f"<code style='font-size:11px;'>{msg_display}</code>"
+                    f"{extra_line}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            if len(events) > 5:
+                st.caption(f"...他 {len(events) - 5} 件のイベント")
+        else:
+            st.caption("イベント待機中...")
+
+    # ── 自動リフレッシュ ──
+    if not is_complete:
+        # ストリーム実行中は2秒ごとに更新
+        # Streamlitの自動リフレッシュ (st.rerun) のため、
+        # 呼び出し元で time.sleep + st.rerun を実行
+        return True  # "需要リフレッシュ"
+
+    # 完了時
+    st.success("✅ 劣化シミュレーション完了。全ステージのデータがforecast_ledgerに記録されました。")
+    return False
+
+
+def inject_stream_alarms_to_session(sim: AlarmStreamSimulator):
+    """
+    ストリームの最新アラームを session_state["injected_weak_signal"] に注入。
+    cockpit.py が既存のフローで処理できるようにする。
+    """
+    if sim is None or not sim.is_started:
+        return
+
+    current_level = sim.get_current_level()
+    if current_level == 0:
+        return
+
+    latest_msgs = sim.get_latest_messages()
+    if not latest_msgs:
+        return
+
+    scenario_display = get_available_scenarios().get(sim.sequence.pattern, sim.sequence.pattern)
+
+    st.session_state["injected_weak_signal"] = {
+        "device_id": sim.device_id,
+        "messages": latest_msgs,
+        "message": latest_msgs[0],
+        "level": current_level,
+        "scenario": scenario_display,
+        "source": "stream",  # ストリーム由来であることを示す
+    }

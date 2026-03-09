@@ -117,7 +117,7 @@ def render_tuning_dashboard(site_id: str):
         display_name = site_id
     st.caption(f"対象拠点: **{display_name}** | テナントID: `{site_id}`")
 
-    tab1, tab2, tab3 = st.tabs(["⚡ Auto-Tuning", "📜 Audit Log", "🛑 Maintenance"])
+    tab1, tab2, tab3, tab4 = st.tabs(["⚡ Auto-Tuning", "📜 Audit Log", "🛑 Maintenance", "🧠 GNN Training"])
 
     # ── Tab1: Auto-Tuning ──────────────────────────────────
     with tab1:
@@ -244,3 +244,106 @@ def render_tuning_dashboard(site_id: str):
         _llm_name = getattr(getattr(dt_engine, 'llm', None), 'backend_name', '未初期化')
         col_s4.metric("LLMバックエンド", _llm_name.split("(")[0].strip())
         st.caption(f"🤖 {_llm_name}")
+
+    # ── Tab4: GNN Training ──────────────────────────────────
+    with tab4:
+        _render_gnn_training_tab(site_id, dt_engine)
+
+
+def _render_gnn_training_tab(site_id: str, dt_engine):
+    """GNN事前学習UIタブ"""
+    st.caption(
+        "ChiGADウェーブレットGNNの事前学習を実行します。"
+        "EscalationRuleから合成データを生成し、モデルを学習させます。"
+    )
+
+    from digital_twin_pkg.gnn_trainer import (
+        get_pretrained_model_path,
+        pretrain_gnn,
+        DEFAULT_MODEL_PATH,
+    )
+    from digital_twin_pkg.gnn import HAS_PYTORCH_GEOMETRIC
+
+    if not HAS_PYTORCH_GEOMETRIC:
+        st.error("PyTorch Geometric がインストールされていません。GNN学習は利用できません。")
+        return
+
+    # 現在のモデル状態
+    model_path = get_pretrained_model_path()
+    col_status1, col_status2 = st.columns(2)
+    with col_status1:
+        if model_path:
+            file_size = os.path.getsize(model_path) / 1024
+            mod_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(model_path)))
+            st.success(f"✅ 学習済みモデル: `{os.path.basename(model_path)}`")
+            st.caption(f"サイズ: {file_size:.0f} KB | 更新: {mod_time}")
+        else:
+            st.warning("⚠️ 学習済みモデルなし（GNNはランダム重みで動作中）")
+
+    with col_status2:
+        gnn_engine = getattr(dt_engine, 'gnn', None)
+        gnn_model = getattr(gnn_engine, 'model', None) if gnn_engine else None
+        if gnn_model is not None:
+            st.info(f"🧠 GNN: アクティブ (weight={0.3 if not model_path else 0.3})")
+        else:
+            st.info("🧠 GNN: 無効")
+
+    st.divider()
+
+    # 学習パラメータ
+    st.markdown("#### 学習パラメータ")
+    col_p1, col_p2, col_p3 = st.columns(3)
+    with col_p1:
+        epochs = st.number_input("エポック数", min_value=10, max_value=300, value=80, step=10)
+    with col_p2:
+        samples = st.number_input("サンプル/ルール", min_value=10, max_value=200, value=50, step=10)
+    with col_p3:
+        lr = st.select_slider("学習率", options=[0.0001, 0.0005, 0.001, 0.005, 0.01], value=0.001)
+
+    # 学習実行
+    if st.button("🚀 事前学習を開始", type="primary"):
+        topology = dt_engine.topology
+        children_map = dt_engine.children_map
+
+        progress_bar = st.progress(0, text="学習準備中...")
+        status_text = st.empty()
+        loss_chart_data = []
+
+        def on_progress(epoch, total, loss):
+            progress_bar.progress(epoch / total, text=f"Epoch {epoch}/{total} | Loss: {loss:.4f}")
+            loss_chart_data.append({"epoch": epoch, "loss": loss})
+
+        with st.spinner("GNN事前学習を実行中..."):
+            result = pretrain_gnn(
+                topology=topology,
+                children_map=children_map,
+                epochs=int(epochs),
+                lr=float(lr),
+                samples_per_rule=int(samples),
+                progress_callback=on_progress,
+            )
+
+        if result:
+            progress_bar.progress(1.0, text="完了!")
+            st.success(
+                f"✅ **学習完了** | "
+                f"最良Loss: {result['best_loss']:.4f} | "
+                f"所要時間: {result['elapsed_sec']:.1f}秒 | "
+                f"サンプル数: {result['total_samples']}"
+            )
+
+            # Loss曲線の描画
+            if result.get('loss_history'):
+                import pandas as pd
+                loss_df = pd.DataFrame({
+                    "epoch": list(range(1, len(result['loss_history']) + 1)),
+                    "loss": result['loss_history']
+                })
+                st.line_chart(loss_df, x="epoch", y="loss", height=250)
+
+            st.info(
+                "💡 モデルが保存されました。エンジンを再起動すると自動的にロードされます。\n\n"
+                "「🧹 Cache Clear」（Maintenanceタブ）を実行してエンジンを再初期化してください。"
+            )
+        else:
+            st.error("学習に失敗しました。ログを確認してください。")

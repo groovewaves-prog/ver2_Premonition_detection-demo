@@ -17,7 +17,8 @@ from .storage import StorageManager
 from .audit import AuditBuilder
 from .tuning import AutoTuner
 from .bayesian import BayesianInferenceEngine
-from .gnn import create_gnn_engine
+from .gnn import create_gnn_engine, GNNPredictionEngine
+from .gnn_trainer import get_pretrained_model_path
 from .llm_client import InternalLLMClient, LLMScores  # Phase 6a/6b
 from .vector_store import VectorStore  # Phase 6c*
 
@@ -135,7 +136,15 @@ class DigitalTwinEngine:
         self.storage = StorageManager(self.tenant_id, BASE_DIR)
         self.tuner = AutoTuner(self)
         self.bayesian = BayesianInferenceEngine(self.storage)
-        self.gnn = create_gnn_engine(topology, children_map)
+        # ★ GNN: 事前学習済みモデルがあれば自動ロード
+        _pretrained_path = get_pretrained_model_path()
+        if _pretrained_path:
+            from .gnn_trainer import load_pretrained_gnn
+            self.gnn = load_pretrained_gnn(topology, children_map)
+            if self.gnn is None:
+                self.gnn = create_gnn_engine(topology, children_map)
+        else:
+            self.gnn = create_gnn_engine(topology, children_map)
 
         # ★ LLM クライアント初期化
         #   スコアリング（6次元）: gemma-3-12b-it（軽量・高速）
