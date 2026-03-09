@@ -650,8 +650,8 @@ def _run_completion_sync(sim: AlarmStreamSimulator) -> dict:
         from digital_twin_pkg.stream_completion_handler import handle_stream_completion
         from registry import load_topology
 
-        # DigitalTwinEngineを取得（cockpit.pyと同じキャッシュ経由）
-        engine = _get_dt_engine_for_sync(sim)
+        # cockpit.py の @st.cache_resource と同じエンジンを再利用
+        engine = _get_shared_dt_engine()
         topology = None
         active_site = st.session_state.get("active_site")
         if active_site:
@@ -670,37 +670,24 @@ def _run_completion_sync(sim: AlarmStreamSimulator) -> dict:
         return {"chromadb_added": 0, "gnn_session_path": None, "errors": [str(e)]}
 
 
-def _get_dt_engine_for_sync(sim: AlarmStreamSimulator):
-    """DB同期用にDigitalTwinEngineを取得"""
+def _get_shared_dt_engine():
+    """cockpit.py のキャッシュ済み DigitalTwinEngine を再利用する。
+
+    cockpit.py の _get_cached_dt_engine (@st.cache_resource) と同一インスタンスを
+    参照することで、SQLite/ChromaDB の接続二重化を防ぐ。
+    """
     active_site = st.session_state.get("active_site")
     if not active_site:
         return None
     try:
+        from ui.cockpit import _get_cached_dt_engine, _compute_topo_hash
         from registry import load_topology
-        from digital_twin_pkg import DigitalTwinEngine as _DTE
 
         topology = load_topology(active_site)
-        children_map: dict = {}
-        for nid, n in topology.items():
-            pid = (n.get('parent_id') if isinstance(n, dict)
-                   else getattr(n, 'parent_id', None))
-            if pid:
-                children_map.setdefault(pid, []).append(nid)
-
-        # session_state にキャッシュ
-        cache_key = f"_dt_engine_sync_{active_site}"
-        if cache_key in st.session_state:
-            return st.session_state[cache_key]
-
-        engine = _DTE(
-            topology=topology,
-            children_map=children_map,
-            tenant_id=active_site,
-        )
-        st.session_state[cache_key] = engine
-        return engine
+        topo_hash = _compute_topo_hash(topology)
+        return _get_cached_dt_engine(active_site, topo_hash, topology)
     except Exception as e:
-        logger.warning("Failed to get DT engine for sync: %s", e)
+        logger.warning("Failed to get shared DT engine: %s", e)
         return None
 
 
