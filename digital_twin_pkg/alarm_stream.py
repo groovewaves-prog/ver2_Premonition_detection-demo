@@ -226,7 +226,7 @@ class AlarmStreamSimulator:
         active_stages = [s for s in self.sequence.stages if s.level >= self.start_level]
         total_duration = sum(s.duration_sec / self.speed_multiplier for s in active_stages)
         cumulative_time = 0.0
-        # 単調劣化を保証するためのトラッキング変数
+        # 単調劣化を保証: ジッタを劣化方向にバイアス
         degrading = self.sequence.failure_value < self.sequence.normal_value
         prev_metric = None
 
@@ -240,15 +240,19 @@ class AlarmStreamSimulator:
                 tick_time = cumulative_time + tick_interval * (tick + 1)
                 progress = (tick_time / total_duration) * 100.0
 
-                # メトリクス値にジッタを追加（リアル感）
-                jitter = self._rng.gauss(0, abs(stage.metric_value) * 0.02)
-                metric_val = stage.metric_value + jitter
-                # 単調劣化を保証: 前回値より「回復」しないようにクランプ
+                # メトリクス値にジッタを追加（劣化方向バイアス付き）
+                # abs(jitter) で常に正値を取り、劣化方向に適用
+                jitter_magnitude = abs(self._rng.gauss(0, abs(stage.metric_value) * 0.015))
+                if degrading:
+                    metric_val = stage.metric_value - jitter_magnitude
+                else:
+                    metric_val = stage.metric_value + jitter_magnitude
+                # 前回値より劣化方向に進んでいることを保証
                 if prev_metric is not None:
                     if degrading:
-                        metric_val = min(metric_val, prev_metric - 0.01)
+                        metric_val = min(metric_val, prev_metric - 0.05)
                     else:
-                        metric_val = max(metric_val, prev_metric + 0.01)
+                        metric_val = max(metric_val, prev_metric + 0.05)
                 prev_metric = metric_val
 
                 # インターフェース選択

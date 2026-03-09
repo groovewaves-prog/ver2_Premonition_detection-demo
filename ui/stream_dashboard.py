@@ -671,21 +671,10 @@ def _run_completion_sync(sim: AlarmStreamSimulator) -> dict:
 
 
 def _get_shared_dt_engine():
-    """cockpit.py のキャッシュ済み DigitalTwinEngine を再利用する。
-
-    cockpit.py の _get_cached_dt_engine (@st.cache_resource) と同一インスタンスを
-    参照することで、SQLite/ChromaDB の接続二重化を防ぐ。
-    """
-    active_site = st.session_state.get("active_site")
-    if not active_site:
-        return None
+    """共通キャッシュ (engine_cache) 経由で DigitalTwinEngine を取得する。"""
     try:
-        from ui.cockpit import _get_cached_dt_engine, _compute_topo_hash
-        from registry import load_topology
-
-        topology = load_topology(active_site)
-        topo_hash = _compute_topo_hash(topology)
-        return _get_cached_dt_engine(active_site, topo_hash, topology)
+        from ui.engine_cache import get_dt_engine_for_site
+        return get_dt_engine_for_site()
     except Exception as e:
         logger.warning("Failed to get shared DT engine: %s", e)
         return None
