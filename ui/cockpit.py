@@ -1028,55 +1028,110 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     noise_reduction = ((total_alarms - root_cause_count) / total_alarms * 100) if total_alarms > 0 else 0.0
     action_required = root_cause_count
 
-    st.markdown("---")
-
-    # 上段: ステータス・アラーム数・3分類内訳
-    cols = st.columns(3)
-    cols[0].metric("🚨 ステータス", f"{get_status_icon(status)} {status}")
-    cols[1].metric("📊 総アラート数", f"{total_alarms}件")
+    # =====================================================
+    # ステータスバナー + 分析サマリー（HTML）
+    # =====================================================
     suspect_count = len([r for r in analysis_results if r.get('prob', 0) > 0.5])
-    if prediction_count > 0:
-        cols[2].metric("🎯 被疑箇所", f"{suspect_count}件",
-                       delta=f"うち予兆 {prediction_count}件", delta_color="off")
+
+    # --- ステータス色・テキスト決定 ---
+    if any(r.get('status') in ('RED', 'CRITICAL') for r in analysis_results if not r.get('is_prediction')):
+        _banner_color = "#D32F2F"
+        _banner_bg = "#FFEBEE"
+        _banner_icon = "&#9888;"  # ⚠
+        _banner_text = "インシデント検知"
+        _banner_sub = "根本原因を特定しました。対処を推奨します。"
+    elif prediction_count > 0:
+        _banner_color = "#E65100"
+        _banner_bg = "#FFF3E0"
+        _banner_icon = "&#128302;"  # 🔮
+        _banner_text = "予兆検知"
+        _banner_sub = "将来の障害リスクをAIが検出しました。"
+    elif total_alarms > 0:
+        _banner_color = "#F9A825"
+        _banner_bg = "#FFFDE7"
+        _banner_icon = "&#9888;"
+        _banner_text = "警告あり"
+        _banner_sub = "アラートがありますが、重大な障害は検知されていません。"
     else:
-        cols[2].metric("🎯 被疑箇所", f"{suspect_count}件")
+        _banner_color = "#2E7D32"
+        _banner_bg = "#E8F5E9"
+        _banner_icon = "&#10003;"  # ✓
+        _banner_text = "正常稼働"
+        _banner_sub = "アラートは検知されていません。"
 
-    # 中段: 3分類内訳 + ノイズ削減率
-    cls_cols = st.columns(4)
-    cls_cols[0].metric(
-        "🔴 真因 (Root Cause)", f"{root_cause_count}件",
-        delta=f"-{total_alarms - root_cause_count}件削減" if total_alarms > root_cause_count else None,
-        delta_color="normal"
-    )
-    cls_cols[1].metric("🔗 派生 (Symptom)", f"{symptom_count}件",
-                       help="真因の影響で発生した二次的アラート")
-    cls_cols[2].metric("📢 無関係 (Unrelated)", f"{unrelated_count}件",
-                       help="トポロジー上の因果関係がないノイズアラート")
-    with cls_cols[3]:
-        delta_text = "高効率" if noise_reduction > 90 else ("通常" if noise_reduction > 50 else "要確認")
-        delta_color = "normal" if noise_reduction > 90 else ("off" if noise_reduction > 50 else "inverse")
-        cls_cols[3].metric("📉 ノイズ削減率", f"{noise_reduction:.1f}%",
-                           delta=delta_text, delta_color=delta_color)
+    # --- 分類サマリー（横棒グラフ風） ---
+    _total_classified = root_cause_count + symptom_count + unrelated_count
+    _rc_pct = (root_cause_count / _total_classified * 100) if _total_classified > 0 else 0
+    _sy_pct = (symptom_count / _total_classified * 100) if _total_classified > 0 else 0
+    _ur_pct = (unrelated_count / _total_classified * 100) if _total_classified > 0 else 0
 
-    # 下段: 予兆・要対応
-    kpi_cols = st.columns(3)
-    with kpi_cols[0]:
-        kpi_cols[0].metric("🔮 予兆検知", f"{prediction_count}件",
-                           delta="要注意" if prediction_count > 0 else "問題なし",
-                           delta_color="inverse" if prediction_count > 0 else "normal")
-    with kpi_cols[1]:
-        kpi_cols[1].metric("🚨 要対応インシデント", f"{action_required}件",
-                           delta="対処が必要" if action_required > 0 else "問題なし",
-                           delta_color="inverse" if action_required > 0 else "normal")
-    with kpi_cols[2]:
-        pass  # 余白
+    _bar_html = ""
+    if _total_classified > 0:
+        _bar_parts = []
+        if _rc_pct > 0:
+            _bar_parts.append(f'<div style="width:{max(_rc_pct, 8)}%;background:#EF5350;height:100%;border-radius:4px 0 0 4px;" title="Root Cause {root_cause_count}"></div>')
+        if _sy_pct > 0:
+            _bar_parts.append(f'<div style="width:{max(_sy_pct, 8)}%;background:#FFA726;height:100%;" title="Symptom {symptom_count}"></div>')
+        if _ur_pct > 0:
+            _bar_parts.append(f'<div style="width:{max(_ur_pct, 8)}%;background:#BDBDBD;height:100%;border-radius:0 4px 4px 0;" title="Unrelated {unrelated_count}"></div>')
+        _bar_html = f"""
+        <div style="display:flex;height:8px;border-radius:4px;overflow:hidden;background:#eee;margin:8px 0 4px 0;">
+            {"".join(_bar_parts)}
+        </div>
+        <div style="display:flex;gap:16px;font-size:11px;color:#666;">
+            <span><span style="display:inline-block;width:8px;height:8px;background:#EF5350;border-radius:2px;margin-right:4px;"></span>Root Cause {root_cause_count}</span>
+            <span><span style="display:inline-block;width:8px;height:8px;background:#FFA726;border-radius:2px;margin-right:4px;"></span>Symptom {symptom_count}</span>
+            <span><span style="display:inline-block;width:8px;height:8px;background:#BDBDBD;border-radius:2px;margin-right:4px;"></span>Unrelated {unrelated_count}</span>
+        </div>"""
 
-    st.markdown("---")
+    _prediction_chip = ""
+    if prediction_count > 0:
+        _prediction_chip = (
+            f'<div style="display:inline-flex;align-items:center;gap:6px;background:#FFF3E0;'
+            f'border:1px solid #FFE0B2;border-radius:16px;padding:4px 12px;font-size:12px;color:#E65100;font-weight:600;">'
+            f'&#128302; {prediction_count} Predictions'
+            f'</div>'
+        )
 
-    if root_cause_candidates and (symptom_devices or downstream_devices):
-        rc_id = root_cause_candidates[0]['id']
-        total_impact = len(symptom_devices) + len(unrelated_devices)
-        st.info(f"📍 **根本原因**: {rc_id} → 派生: {len(symptom_devices)}件 / 無関係: {len(unrelated_devices)}件")
+    _kpi_html = f"""
+    <div style="border:1px solid #e0e0e0;border-radius:10px;overflow:hidden;margin:12px 0 16px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <!-- ステータスバナー -->
+      <div style="background:{_banner_bg};border-bottom:2px solid {_banner_color};padding:14px 20px;display:flex;align-items:center;gap:14px;">
+        <div style="font-size:28px;color:{_banner_color};line-height:1;">{_banner_icon}</div>
+        <div>
+          <div style="font-size:18px;font-weight:700;color:{_banner_color};line-height:1.2;">{_banner_text}</div>
+          <div style="font-size:13px;color:#666;margin-top:2px;">{_banner_sub}</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:12px;align-items:center;">
+          {_prediction_chip}
+        </div>
+      </div>
+      <!-- KPI数値 -->
+      <div style="display:flex;padding:12px 20px;gap:0;background:#fff;">
+        <div style="flex:1;text-align:center;border-right:1px solid #eee;">
+          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Alerts</div>
+          <div style="font-size:26px;font-weight:700;color:#333;line-height:1.3;">{total_alarms}</div>
+        </div>
+        <div style="flex:1;text-align:center;border-right:1px solid #eee;">
+          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Root Cause</div>
+          <div style="font-size:26px;font-weight:700;color:#EF5350;line-height:1.3;">{root_cause_count}</div>
+        </div>
+        <div style="flex:1;text-align:center;border-right:1px solid #eee;">
+          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Impact</div>
+          <div style="font-size:26px;font-weight:700;color:#FFA726;line-height:1.3;">{symptom_count}</div>
+        </div>
+        <div style="flex:1;text-align:center;">
+          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Noise Reduction</div>
+          <div style="font-size:26px;font-weight:700;color:#333;line-height:1.3;">{noise_reduction:.0f}%</div>
+        </div>
+      </div>
+      <!-- 分類バー -->
+      <div style="padding:0 20px 12px 20px;background:#fff;">
+        {_bar_html}
+      </div>
+    </div>
+    """
+    st.markdown(_kpi_html, unsafe_allow_html=True)
 
     # =====================================================
     # 🔮 AIOps Future Radar（予兆専用表示エリア）
