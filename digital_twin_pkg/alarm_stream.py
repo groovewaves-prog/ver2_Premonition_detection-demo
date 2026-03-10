@@ -11,6 +11,7 @@
 #   タイムステップごとにリアルな段階的アラームを生成する
 
 from __future__ import annotations
+import bisect
 import time
 import math
 import random
@@ -312,6 +313,8 @@ class AlarmStreamSimulator:
             cumulative_time += duration
 
         self._total_duration = total_duration
+        # 二分探索用のタイムスタンプ配列を事前構築（イミュータブル）
+        self._event_timestamps = [e.timestamp for e in self._all_events]
 
     @property
     def total_duration_sec(self) -> float:
@@ -368,35 +371,44 @@ class AlarmStreamSimulator:
 
         return new_events
 
-    def get_all_events_until_now(self) -> List[StreamEvent]:
-        """開始時刻から現在までの全イベントを取得"""
+    def _current_event_count(self) -> int:
+        """二分探索で現在時刻までのイベント数を O(log n) で返す"""
         if self._start_time is None:
-            return []
-
+            return 0
         elapsed = time.time() - self._start_time
-        return [e for e in self._all_events if e.timestamp <= elapsed]
+        return bisect.bisect_right(self._event_timestamps, elapsed)
+
+    def get_all_events_until_now(self) -> List[StreamEvent]:
+        """開始時刻から現在までの全イベントを取得（二分探索で高速化）"""
+        count = self._current_event_count()
+        if count == 0:
+            return []
+        return self._all_events[:count]
 
     def get_all_events(self) -> List[StreamEvent]:
         """全イベント（未来分含む）を取得（プレビュー用）"""
         return list(self._all_events)
 
     def get_current_stage(self) -> Optional[DegradationStage]:
-        """現在のステージを取得"""
-        events = self.get_all_events_until_now()
-        if not events:
+        """現在のステージを取得（get_all_events_until_now を呼ばず直接参照）"""
+        count = self._current_event_count()
+        if count == 0:
             return None
-        return self.sequence.stages[events[-1].level - 1]
+        return self.sequence.stages[self._all_events[count - 1].level - 1]
 
     def get_current_level(self) -> int:
-        """現在のレベル (0=未開始)"""
-        events = self.get_all_events_until_now()
-        if not events:
+        """現在のレベル (0=未開始)（get_all_events_until_now を呼ばず直接参照）"""
+        count = self._current_event_count()
+        if count == 0:
             return 0
-        return events[-1].level
+        return self._all_events[count - 1].level
 
-    def get_metric_history(self) -> List[Tuple[float, float]]:
-        """(elapsed_sec, metric_value) のリストを返す（チャート用）"""
-        events = self.get_all_events_until_now()
+    def get_metric_history(self, events: Optional[List['StreamEvent']] = None) -> List[Tuple[float, float]]:
+        """(elapsed_sec, metric_value) のリストを返す（チャート用）
+        events を渡すと内部での get_all_events_until_now() 呼び出しを省略できる。
+        """
+        if events is None:
+            events = self.get_all_events_until_now()
         # 開始レベルに応じた初期値を先頭に追加
         if self.start_level > 1:
             # 開始レベルの1つ前のステージのメトリクス値を初期値にする
@@ -418,7 +430,7 @@ class AlarmStreamSimulator:
             history.append((ev.elapsed_sec, v))
         return history
 
-    def get_realtime_metric_history(self) -> Tuple[List[Tuple[float, float]], float, float]:
+    def get_realtime_metric_history(self, events: Optional[List['StreamEvent']] = None) -> Tuple[List[Tuple[float, float]], float, float]:
         """(real_hours, metric_value) のリストと (x_start_hours, x_end_hours) を返す。
 
         シミュレーション経過秒を、RUL 減衰モデルに基づく実時間（時間単位）に変換する。
@@ -486,7 +498,7 @@ class AlarmStreamSimulator:
             return real_stage_start + frac * (real_stage_end - real_stage_start)
 
         # メトリクス履歴を実時間に変換
-        sim_history = self.get_metric_history()
+        sim_history = self.get_metric_history(events=events)
         real_history: List[Tuple[float, float]] = []
 
         # L5 のメトリクスを補間するための準備:

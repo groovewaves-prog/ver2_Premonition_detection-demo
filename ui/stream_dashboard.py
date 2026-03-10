@@ -10,6 +10,7 @@
 import streamlit as st
 import time
 import math
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
@@ -228,6 +229,26 @@ def _save_simulator(sim: AlarmStreamSimulator):
 def _clear_simulator():
     st.session_state.pop(_STREAM_STATE_KEY, None)
     st.session_state.pop(_STREAM_EVENTS_KEY, None)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SVG キャッシュ（同一パラメータなら再生成をスキップ）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_SVG_CACHE_KEY = "_stream_svg_cache"
+
+
+def _svg_cached(cache_name: str, cache_key: str, generator, *args, **kwargs) -> str:
+    """SVG生成結果をsession_stateにキャッシュ。cache_keyが変わった時だけ再生成。"""
+    if _SVG_CACHE_KEY not in st.session_state:
+        st.session_state[_SVG_CACHE_KEY] = {}
+    cache = st.session_state[_SVG_CACHE_KEY]
+    full_key = f"{cache_name}:{cache_key}"
+    if full_key in cache:
+        return cache[full_key]
+    svg = generator(*args, **kwargs)
+    cache[full_key] = svg
+    return svg
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -822,7 +843,9 @@ def render_stream_dashboard():
         stages_info = [{"label": s.label} for s in active_stages]
         # current_level を active_stages 内での相対位置に変換
         relative_level = max(0, current_level - start_lvl + 1) if current_level >= start_lvl else 0
-        timeline_svg = _render_timeline_svg(relative_level, progress, stages_info)
+        _tl_cache_key = f"{relative_level}|{int(progress)}"
+        timeline_svg = _svg_cached("timeline", _tl_cache_key,
+                                   _render_timeline_svg, relative_level, progress, stages_info)
         _st_html(timeline_svg, height=100)
 
         st.markdown("---")
@@ -832,13 +855,15 @@ def render_stream_dashboard():
 
         current_metric = events[-1].metric_value if events else seq.normal_value
         with col_gauge:
-            gauge_svg = _render_metric_gauge_svg(
-                current_value=current_metric,
-                normal_value=seq.normal_value,
-                failure_value=seq.failure_value,
-                unit=seq.metric_unit,
-                label=seq.metric_name,
-            )
+            # メトリクス値を小数1桁で丸めてキャッシュキーに使用（微小変動でSVG再生成を防止）
+            _gauge_cache_key = f"{round(current_metric, 1)}|{seq.normal_value}|{seq.failure_value}"
+            gauge_svg = _svg_cached("gauge", _gauge_cache_key,
+                                    _render_metric_gauge_svg,
+                                    current_value=current_metric,
+                                    normal_value=seq.normal_value,
+                                    failure_value=seq.failure_value,
+                                    unit=seq.metric_unit,
+                                    label=seq.metric_name)
             _st_html(gauge_svg, height=190)
 
         with col_kpi1:
@@ -976,10 +1001,13 @@ def render_stream_dashboard():
         st.markdown("---")
 
         # ── 3. 劣化曲線チャート（実時間軸） ──
-        metric_history = sim.get_metric_history()
-        realtime_history, rt_x_start, rt_x_end = sim.get_realtime_metric_history()
+        metric_history = sim.get_metric_history(events=events)
+        realtime_history, rt_x_start, rt_x_end = sim.get_realtime_metric_history(events=events)
         _sim_start_dt = datetime.fromtimestamp(sim._start_time) if sim._start_time else datetime.now()
-        chart_svg = _render_degradation_chart_svg(
+        # イベント数が変わった時だけ再生成（最もコストの高いSVG）
+        _chart_cache_key = f"{len(events)}|{current_level}|{start_lvl}|{seq.pattern}"
+        chart_svg = _svg_cached("degradation", _chart_cache_key,
+            _render_degradation_chart_svg,
             metric_history=metric_history,
             normal_value=seq.normal_value,
             failure_value=seq.failure_value,

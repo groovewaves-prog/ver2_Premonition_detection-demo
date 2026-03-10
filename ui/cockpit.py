@@ -125,9 +125,14 @@ def _build_ci_context_for_chat(topology: dict, target_node_id: str) -> dict:
         else:
             ci["parent_device"] = None  # ルートデバイス
 
-        # 子デバイス一覧（直接の配下）
+        # 子/冗長ペア/同レイヤーを1パスで収集（トポロジー走査を3→1に削減）
         children = []
+        peers = []
+        same_layer = []
         for nid, n in topology.items():
+            if nid == target_node_id:
+                continue
+            # 子デバイス
             if _get(n, 'parent_id') == target_node_id:
                 n_md = _get(n, 'metadata') or {}
                 children.append({
@@ -136,30 +141,21 @@ def _build_ci_context_for_chat(topology: dict, target_node_id: str) -> dict:
                     "vendor": _pick_first(n_md, ["vendor", "manufacturer"], default=""),
                     "os":     _pick_first(n_md, ["os", "platform"], default=""),
                 })
+            # 冗長ペア
+            if redundancy_group and _get(n, 'redundancy_group') == redundancy_group:
+                n_md = _get(n, 'metadata') or {}
+                peers.append({
+                    "id":     nid,
+                    "type":   _get(n, 'type', ''),
+                    "vendor": _pick_first(n_md, ["vendor", "manufacturer"], default=""),
+                    "os":     _pick_first(n_md, ["os", "platform"], default=""),
+                })
+            # 同一レイヤー
+            if _get(n, 'layer') == node_layer:
+                same_layer.append(nid)
         ci["children_devices"] = children
         ci["children_count"]   = len(children)
-
-        # 冗長ペアデバイス（同じredundancy_groupに属する他のデバイス）
-        if redundancy_group:
-            peers = []
-            for nid, n in topology.items():
-                if nid == target_node_id:
-                    continue
-                if _get(n, 'redundancy_group') == redundancy_group:
-                    n_md = _get(n, 'metadata') or {}
-                    peers.append({
-                        "id":     nid,
-                        "type":   _get(n, 'type', ''),
-                        "vendor": _pick_first(n_md, ["vendor", "manufacturer"], default=""),
-                        "os":     _pick_first(n_md, ["os", "platform"], default=""),
-                    })
-            ci["redundancy_peers"] = peers
-        else:
-            ci["redundancy_peers"] = []  # SPOFであることを明示
-
-        # 同一レイヤーのデバイス一覧（参考情報）
-        same_layer = [nid for nid, n in topology.items()
-                      if _get(n, 'layer') == node_layer and nid != target_node_id]
+        ci["redundancy_peers"] = peers
         ci["same_layer_devices"] = same_layer
 
     # ---- コンフィグファイル（configsフォルダ） ----

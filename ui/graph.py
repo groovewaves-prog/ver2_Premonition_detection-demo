@@ -202,6 +202,13 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         }
         nodes.append(node_obj)
 
+    # --- 冗長グループインデックスを事前構築 O(n) ---
+    _rg_index: Dict[str, List[str]] = {}
+    for _nid, _n in topology.items():
+        _rg = _n.get('redundancy_group') if isinstance(_n, dict) else getattr(_n, 'redundancy_group', None)
+        if _rg:
+            _rg_index.setdefault(_rg, []).append(_nid)
+
     # --- エッジ生成 ---
     edges = []
     added_edges = set()
@@ -213,18 +220,17 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                 edges.append({"from": parent_id, "to": node_id, "arrows": "to", "color": "#999"})
                 added_edges.add(edge_key)
 
-            # 冗長ペア
+            # 冗長ペア（O(1)ルックアップ）
             p_node = topology.get(parent_id)
             if p_node:
                 rg = p_node.get('redundancy_group') if isinstance(p_node, dict) else getattr(p_node, 'redundancy_group', None)
-                if rg:
-                    for nid, n in topology.items():
-                        n_rg = n.get('redundancy_group') if isinstance(n, dict) else getattr(n, 'redundancy_group', None)
-                        if n_rg == rg and nid != parent_id:
-                            edge_key2 = (nid, node_id)
+                if rg and rg in _rg_index:
+                    for peer_id in _rg_index[rg]:
+                        if peer_id != parent_id:
+                            edge_key2 = (peer_id, node_id)
                             if edge_key2 not in added_edges:
                                 edges.append({
-                                    "from": nid, "to": node_id,
+                                    "from": peer_id, "to": node_id,
                                     "arrows": "to",
                                     "color": {"color": "#B0BEC5", "opacity": 0.6},
                                     "dashes": True,
