@@ -598,16 +598,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     alarms = generate_alarms_for_scenario(topology, scenario)
     status = get_status_from_alarms(scenario, alarms)
     
-    # ★ 将来の拡張: 障害発生時に予兆を自動確認（コメントアウト）
-    # if dt_engine and scenario != "正常稼働":
-    #     # CRITICAL アラームが発生したデバイスの予兆を自動的に confirmed_incident に更新
-    #     critical_devices = {a.device_id for a in alarms if a.severity == "CRITICAL"}
-    #     for dev_id in critical_devices:
-    #         confirmed_count = dt_engine.forecast_auto_confirm_on_incident(
-    #             dev_id, scenario=scenario, note="障害シナリオ発生により自動確認"
-    #         )
-    #         if confirmed_count > 0:
-    #             logger.info(f"Auto-confirmed {confirmed_count} predictions for {dev_id} on scenario: {scenario}")
+    # ★ 障害発生時に予兆を自動確認（TP ラベリング）
+    if dt_engine and scenario != "正常稼働":
+        critical_devices = {a.device_id for a in alarms if a.severity == "CRITICAL"}
+        for dev_id in critical_devices:
+            confirmed_count = dt_engine.forecast_auto_confirm_on_incident(
+                dev_id, scenario=scenario, note="障害シナリオ発生により自動確認"
+            )
+            if confirmed_count > 0:
+                logger.info(f"Auto-confirmed {confirmed_count} predictions for {dev_id} on scenario: {scenario}")
 
     # 予兆シグナル注入
     injected = st.session_state.get("injected_weak_signal")
@@ -661,11 +660,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 st.session_state.pop(dt_err_key, None)
                 st.rerun()
 
-    # 期限切れ予兆を定期的に解消（rate limit: 5分に1回）
-    _expire_key = f"dt_expire_ts_{site_id}"
-    if dt_engine and (time.time() - st.session_state.get(_expire_key, 0)) > 300:
-        dt_engine.forecast_expire_open()
-        st.session_state[_expire_key] = time.time()
+    # ★ 自動チューニングサイクル（期限切れ解消 + 提案生成・適用を含む）
+    if dt_engine:
+        dt_engine.maybe_run_auto_tuning()
 
     # =====================================================
     # ★ 競合検出: 障害シナリオと予兆シミュレーションの排他制御
