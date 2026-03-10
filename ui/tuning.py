@@ -9,6 +9,73 @@ import time
 
 from ui.engine_cache import get_dt_engine_for_site
 
+import logging
+_logger = logging.getLogger(__name__)
+
+
+def _auto_label_outcomes(dt_engine) -> dict:
+    """提案生成前に未評価の予兆を自動ラベリングする。
+
+    1. 期限切れ (open & eval_deadline 超過) → false_alarm (FP)
+    2. 完了済みシミュレーションの対象デバイス × シナリオ → confirmed_incident (TP)
+
+    Returns:
+        {"expired": int, "sim_confirmed": int, "total_labeled": int}
+    """
+    result = {"expired": 0, "sim_confirmed": 0, "total_labeled": 0}
+
+    # 1. 期限切れ予兆を FP に自動変換
+    try:
+        expire_res = dt_engine.forecast_expire_open()
+        result["expired"] = expire_res.get("expired", 0)
+    except Exception as e:
+        _logger.warning("Auto-expire failed: %s", e)
+
+    # 2. 完了済みシミュレーション結果から TP を自動ラベリング
+    #    forecast_ledger に open 状態で残っている予兆のうち、
+    #    同じデバイス＋シナリオでストリーム完了 (GNN学習データ) が存在するものを確定
+    try:
+        from digital_twin_pkg.gnn_trainer import list_training_sessions, GNN_TRAINING_DIR
+        sessions = list_training_sessions()
+        if sessions and dt_engine.storage._conn:
+            import json as _json
+            # セッションからデバイス × シナリオのペアを収集
+            confirmed_pairs = set()
+            for spath in sessions:
+                try:
+                    with open(spath, 'r') as f:
+                        sdata = _json.load(f)
+                    dev = sdata.get("target_device", "")
+                    scenario = sdata.get("scenario_key", "")
+                    if dev and scenario:
+                        confirmed_pairs.add((dev, scenario))
+                except Exception:
+                    continue
+
+            # 各ペアについて open 予兆を confirmed に更新
+            for dev, scenario in confirmed_pairs:
+                try:
+                    n = dt_engine.forecast_auto_confirm_on_incident(
+                        device_id=dev,
+                        scenario=scenario,
+                        note=f"シミュレーション完了による自動確定 (scenario={scenario})",
+                    )
+                    result["sim_confirmed"] += n
+                except Exception:
+                    pass
+    except ImportError:
+        pass
+    except Exception as e:
+        _logger.warning("Auto-confirm from simulations failed: %s", e)
+
+    result["total_labeled"] = result["expired"] + result["sim_confirmed"]
+    if result["total_labeled"] > 0:
+        _logger.info(
+            "Auto-labeled outcomes: expired→FP=%d, sim→TP=%d",
+            result["expired"], result["sim_confirmed"],
+        )
+    return result
+
 
 def _get_or_init_dt_engine(site_id: str):
     """共通キャッシュ (engine_cache) 経由で DigitalTwinEngine を取得する。"""
@@ -67,14 +134,27 @@ def render_tuning_dashboard(site_id: str):
 
         col1, _ = st.columns([1, 3])
         if col1.button("🔄 提案を生成 (Generate)"):
-            with st.spinner("Analyzing prediction history..."):
+            with st.spinner("予兆データの自動ラベリング＆分析中..."):
                 try:
+                    # ★ 提案生成前にアウトカムを自動ラベリング
+                    auto_result = _auto_label_outcomes(dt_engine)
                     report = dt_engine.generate_tuning_report(days=30)
+                    # 自動ラベリング結果をレポートに含める
+                    if auto_result.get("total_labeled", 0) > 0:
+                        report["auto_label_result"] = auto_result
                     st.session_state["tuning_report"] = report
                 except Exception as e:
                     st.error(f"レポート生成エラー: {e}")
 
         report = st.session_state.get("tuning_report")
+        # ★ 自動ラベリング結果を表示
+        if report and report.get("auto_label_result"):
+            alr = report["auto_label_result"]
+            st.success(
+                f"🤖 **自動ラベリング実行済み**: "
+                f"期限切れ→誤検知(FP): {alr.get('expired', 0)}件 / "
+                f"シミュレーション結果→実障害確定(TP): {alr.get('sim_confirmed', 0)}件"
+            )
         if report and report.get("tuning_proposals"):
             for p in report["tuning_proposals"]:
                 rule_pattern = p.get('rule_pattern', '不明')
@@ -114,10 +194,11 @@ def render_tuning_dashboard(site_id: str):
                     "💡 提案が生成されるには、同一ルールパターンで最低"
                     f"**{stats['min_samples_required']}件以上**のラベル付きアウトカム"
                     "（TP: 実障害確定 / FP: 誤検知 / FN: 検知漏れ）が必要です。\n\n"
-                    "**次のステップ:**\n"
-                    "1. 予兆シミュレーションを複数回実行してください\n"
-                    "2. 障害シナリオで予兆が的中したか確認してください\n"
-                    "3. 十分なデータが蓄積されると、自動で提案が生成されます"
+                    "**自動ラベリング済み**: 期限切れ予兆→FP / シミュレーション完了→TP は"
+                    "自動的にラベル付けされました。さらにデータが必要な場合:\n\n"
+                    "1. Incident Cockpit で予兆シミュレーションを複数回実行してください\n"
+                    "2. 連続劣化ストリームを完了させてください\n"
+                    "3. 再度「提案を生成」を押すと、自動ラベリング後に提案が生成されます"
                 )
             else:
                 st.info("現在、適用すべき新しい提案はありません。\n\n"
