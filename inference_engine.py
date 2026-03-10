@@ -369,6 +369,10 @@ class LogicalRCA:
             topology=self.topology,
         )
 
+    # ── LLMスコアからHealthStatusへの変換閾値 ──
+    _LLM_CRITICAL_THRESHOLD = 0.7   # semantic+trend 平均がこれ以上 → RED
+    _LLM_WARNING_THRESHOLD  = 0.4   # これ以上 → YELLOW、未満 → GREEN
+
     def analyze_redundancy_depth(self, device_id: str, alerts: List[str]) -> Dict[str, Any]:
         if not alerts:
             return {"status": HealthStatus.NORMAL, "reason": "No active alerts.", "impact_type": "NONE"}
@@ -377,6 +381,7 @@ class LogicalRCA:
         joined = " ".join(safe_alerts)
         joined_lower = joined.lower()
 
+        # ── 既知ルール: ハードウェア障害 ──
         if ("Power Supply: Dual Loss" in joined) or ("Dual Loss" in joined) or ("Device Down" in joined) or ("Thermal Shutdown" in joined):
             return {"status": HealthStatus.CRITICAL, "reason": "Device down / dual PSU loss detected.", "impact_type": "Hardware/Physical"}
 
@@ -389,5 +394,68 @@ class LogicalRCA:
 
         if "critical" in joined_lower:
              return {"status": HealthStatus.CRITICAL, "reason": "Critical alert detected.", "impact_type": "Generic/Critical"}
-        
-        return {"status": HealthStatus.WARNING, "reason": "Alert detected.", "impact_type": "Generic/Warning"}
+
+        # ── 未知パターン: LLM による動的ステータス判定 ──
+        return self._llm_assess_severity(device_id, joined)
+
+    def _llm_assess_severity(self, device_id: str, alert_text: str) -> Dict[str, Any]:
+        """
+        既知ルールにマッチしないアラームに対し、LLMの semantic + trend
+        スコアでステータスを動的に判定する。
+        LLM未接続時は従来通り YELLOW フォールバック。
+        """
+        _fallback = {
+            "status": HealthStatus.WARNING,
+            "reason": "Alert detected.",
+            "impact_type": "Generic/Warning",
+        }
+
+        # Digital Twin 経由で LLM クライアントを取得
+        llm = getattr(self.digital_twin, "llm", None) if self.digital_twin else None
+        if llm is None or not llm.available:
+            return _fallback
+
+        try:
+            # デバイス種別をトポロジーから取得
+            info = self._get_device_info(device_id)
+            device_type = "network"
+            if isinstance(info, dict):
+                device_type = info.get("type", info.get("device_type", "network"))
+            elif hasattr(info, "type"):
+                device_type = getattr(info, "type", "network")
+
+            result = llm.score_alarm(
+                alarm_text=alert_text,
+                device_id=device_id,
+                device_type=str(device_type),
+            )
+
+            # semantic (意味的深刻度) と trend (悪化傾向) の平均で判定
+            avg_score = (result.scores.semantic + result.scores.trend) / 2.0
+            narrative = result.scores.narrative or ""
+
+            if avg_score >= self._LLM_CRITICAL_THRESHOLD:
+                return {
+                    "status": HealthStatus.CRITICAL,
+                    "reason": f"AI判定: 重大な障害の可能性 (スコア: {avg_score:.2f}). {narrative}",
+                    "impact_type": "AI/Critical",
+                }
+            elif avg_score >= self._LLM_WARNING_THRESHOLD:
+                return {
+                    "status": HealthStatus.WARNING,
+                    "reason": f"AI判定: 注意が必要 (スコア: {avg_score:.2f}). {narrative}",
+                    "impact_type": "AI/Warning",
+                }
+            else:
+                return {
+                    "status": HealthStatus.NORMAL,
+                    "reason": f"AI判定: 低リスク (スコア: {avg_score:.2f}). {narrative}",
+                    "impact_type": "AI/Normal",
+                }
+        except Exception as e:
+            # LLM 呼び出し失敗 → 従来フォールバック
+            import logging
+            logging.getLogger(__name__).warning(
+                f"LLM severity assessment failed for {device_id}: {e}"
+            )
+            return _fallback
