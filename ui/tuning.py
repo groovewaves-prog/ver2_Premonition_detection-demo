@@ -126,7 +126,7 @@ def render_tuning_dashboard(site_id: str):
         display_name = site_id
     st.caption(f"対象拠点: **{display_name}** | テナントID: `{site_id}`")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["⚡ Auto-Tuning", "📜 Audit Log", "🛑 Maintenance", "🧠 GNN Training"])
+    tab1, tab2, tab3, tab4 = st.tabs(["⚡ Auto-Tuning", "📜 Audit Log", "📊 Engine Status", "🧠 GNN Training"])
 
     # ── Tab1: Auto-Tuning ──────────────────────────────────
     with tab1:
@@ -251,37 +251,8 @@ def render_tuning_dashboard(site_id: str):
         else:
             st.warning(f"監査データベースが見つかりません。\n\nパス: `{db_path}`")
 
-    # ── Tab3: Maintenance ──────────────────────────────────
+    # ── Tab3: Engine Status ──────────────────────────────────
     with tab3:
-        st.markdown("#### System Maintenance")
-        col_m1, col_m2 = st.columns(2)
-
-        with col_m1:
-            if st.button("🚑 DB Repair (Self-Healing)"):
-                try:
-                    if dt_engine.repair_db_from_rules_json():
-                        st.success("DBを rules.json から復元しました。")
-                    else:
-                        st.error("復元に失敗しました。rules.json が存在しない可能性があります。")
-                except Exception as e:
-                    st.error(f"DB修復エラー: {e}")
-
-        with col_m2:
-            if st.button("🧹 Cache Clear"):
-                # グローバルキャッシュ（@st.cache_resource）をクリア
-                st.cache_resource.clear()
-                st.cache_data.clear()
-                
-                # セッションステートのポインタもクリア
-                for k in [f"dt_engine_{site_id}", f"dt_engine_error_{site_id}"]:
-                    if k in st.session_state:
-                        del st.session_state[k]
-                        
-                st.success("キャッシュを完全にクリアしました。次回アクセス時にエンジンが再起動・再初期化されます。")
-                time.sleep(1.5)
-                st.rerun()
-
-        st.divider()
         st.markdown("#### 📊 Engine Status")
         col_s1, col_s2, col_s3, col_s4 = st.columns(4)
         col_s1.metric("ルール数",   len(getattr(dt_engine, 'rules',   [])))
@@ -290,6 +261,32 @@ def render_tuning_dashboard(site_id: str):
         _llm_name = getattr(getattr(dt_engine, 'llm', None), 'backend_name', '未初期化')
         col_s4.metric("LLMバックエンド", _llm_name.split("(")[0].strip())
         st.caption(f"🤖 {_llm_name}")
+
+        # 開発者向けツール（通常運用では不要）
+        with st.expander("🔧 開発者向けメンテナンスツール", expanded=False):
+            st.caption("通常運用では使用しません。DB不整合やキャッシュ問題のトラブルシュート用です。")
+            col_m1, col_m2 = st.columns(2)
+
+            with col_m1:
+                if st.button("🚑 DB Repair (Self-Healing)"):
+                    try:
+                        if dt_engine.repair_db_from_rules_json():
+                            st.success("DBを rules.json から復元しました。")
+                        else:
+                            st.error("復元に失敗しました。rules.json が存在しない可能性があります。")
+                    except Exception as e:
+                        st.error(f"DB修復エラー: {e}")
+
+            with col_m2:
+                if st.button("🧹 Cache Clear"):
+                    st.cache_resource.clear()
+                    st.cache_data.clear()
+                    for k in [f"dt_engine_{site_id}", f"dt_engine_error_{site_id}"]:
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.success("キャッシュをクリアしました。再起動します…")
+                    time.sleep(1.5)
+                    st.rerun()
 
     # ── Tab4: GNN Training ──────────────────────────────────
     with tab4:

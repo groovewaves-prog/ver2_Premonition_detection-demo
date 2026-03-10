@@ -59,8 +59,9 @@ def get_dt_engine_for_site(site_id: str = None):
     if not site_id:
         return None
     try:
-        from registry import load_topology
-        topology = load_topology(site_id)
+        from registry import get_paths, load_topology
+        paths = get_paths(site_id)
+        topology = load_topology(paths.topology_path)
         topo_hash = compute_topo_hash(topology)
         return get_cached_dt_engine(site_id, topo_hash, topology)
     except Exception as e:
