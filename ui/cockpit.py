@@ -601,8 +601,13 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         st.error("トポロジーが読み込めませんでした。")
         return
 
-    # アラーム生成
-    alarms = generate_alarms_for_scenario(topology, scenario)
+    # アラーム生成（シナリオ不変ならキャッシュ利用）
+    _alarm_cache_key = f"_alarm_cache_{site_id}_{scenario}"
+    if _alarm_cache_key in st.session_state:
+        alarms = st.session_state[_alarm_cache_key]
+    else:
+        alarms = generate_alarms_for_scenario(topology, scenario)
+        st.session_state[_alarm_cache_key] = alarms
     status = get_status_from_alarms(scenario, alarms)
     
     # 予兆シグナル注入
@@ -621,8 +626,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # LogicalRCA エンジン
     engine = _get_cached_logical_rca(topology)
 
-    if alarms:
+    # 分析結果キャッシュ（アラーム内容が同じなら再計算不要）
+    _analysis_cache_key = f"_analysis_cache_{site_id}_{scenario}"
+    _alarm_hash = hash(tuple((a.device_id, a.message, a.severity) for a in alarms)) if alarms else 0
+    _cached_analysis = st.session_state.get(_analysis_cache_key)
+    if _cached_analysis and _cached_analysis.get("hash") == _alarm_hash:
+        analysis_results = _cached_analysis["results"]
+    elif alarms:
         analysis_results = engine.analyze(alarms)
+        st.session_state[_analysis_cache_key] = {"hash": _alarm_hash, "results": analysis_results}
     else:
         analysis_results = [{
             "id": "SYSTEM",
@@ -632,6 +644,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             "tier": 3,
             "reason": "アラームなし"
         }]
+        st.session_state[_analysis_cache_key] = {"hash": _alarm_hash, "results": analysis_results}
 
     # =====================================================
     # ★ Phase1: DigitalTwinEngine.predict_api() 接続 (爆速キャッシュ版)
@@ -767,6 +780,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         if _ck_pred_cache not in st.session_state:
             st.session_state[_ck_pred_cache] = {}
 
+        # ★ GenAI モデルをループ外で1回だけ初期化（デバイスごとの再初期化を防止）
+        _genai_model = None
+        if api_key and GENAI_AVAILABLE:
+            try:
+                genai.configure(api_key=api_key)
+                _genai_model = genai.GenerativeModel('gemma-3-4b-it')
+            except Exception:
+                pass
+
         for _dev_id, (_msgs_list, _src) in _grouped.items():
             try:
                 _combined_msg = "\n".join(_msgs_list)
@@ -827,12 +849,11 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     for _p in _preds_returned:
                         _actions = _p.get("recommended_actions", [])
                         if not _actions or len(_actions) <= 1:
-                            if api_key and GENAI_AVAILABLE:
+                            if _genai_model is not None:
                                 try:
                                     import json as _json
                                     import re as _re
-                                    genai.configure(api_key=api_key)
-                                    
+
                                     # ★ 機器情報をプロンプトに注入（初動トリアージ専用）
                                     _prompt = f"""
                                     あなたは熟練のネットワークAIOpsエンジニアです。
@@ -873,9 +894,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     ]
                                     """
                                     
-                                    # ★ gemma-3-4b-it を指定（高速推論）
-                                    _model = genai.GenerativeModel('gemma-3-4b-it') 
-                                    _response = _model.generate_content(_prompt)
+                                    # ★ ループ外で初期化済みモデルを使い回し
+                                    _response = _genai_model.generate_content(_prompt)
                                     
                                     _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
                                     
@@ -1891,9 +1911,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     st.session_state.balloons_shown = True
                                 st.success("✅ System Recovered Successfully!")
 
-                                # ★ 追加: 予兆対応の完了後、画面を再描画してスライダーを確実に0に戻す
+                                # ★ 予兆対応の完了後、画面を再描画してスライダーを確実に0に戻す
                                 if is_pred_rem:
-                                    time.sleep(2.5)  # 成功の風船アニメーションを見せるための待機時間
+                                    time.sleep(1.0)  # アニメーション表示（2.5s→1.0sに短縮）
                                     st.rerun()
                                 # ==========================================
                                 if not st.session_state.balloons_shown:
@@ -2092,7 +2112,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     # ==========================================
                                         
                                     st.success(f"✅ {_cnt}件のシグナルをクローズし、システムを正常状態に復旧しました")
-                                    time.sleep(1.5)
+                                    time.sleep(0.8)  # 1.5s→0.8sに短縮
                                     st.rerun()
                         
         else:

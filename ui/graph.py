@@ -21,6 +21,18 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
       5. Unrelated (ノイズ) — 薄紫ダイヤ
       6. Normal — グリーン
     """
+    # ★ トポロジーグラフHTML キャッシュ（入力が同一なら再構築スキップ）
+    _topo_cache_key = "_topo_graph_cache"
+    _alarm_sig = tuple(sorted((a.device_id, a.severity, a.is_root_cause) for a in alarms))
+    _analysis_sig = tuple(sorted((r.get("id", ""), r.get("status", ""), r.get("prob", 0)) for r in analysis_results))
+    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology)))
+    _cached = st.session_state.get(_topo_cache_key)
+    if _cached and _cached.get("sig") == _cache_sig:
+        # キャッシュヒット: HTML描画のみ
+        components.html(_cached["html"], height=680)
+        _render_legend(_cached["used_states"])
+        return
+
     # --- アラーム情報をデバイスIDでマッピング ---
     alarm_map = {}
     for a in alarms:
@@ -290,10 +302,14 @@ var network = new vis.Network(document.getElementById('mynetwork'), data, option
 network.fit({{ padding: 50 }});
 </script></body></html>
 """
+    # ★ キャッシュに保存（次回rerunで再利用）
+    st.session_state[_topo_cache_key] = {"sig": _cache_sig, "html": html, "used_states": used_states}
     components.html(html, height=680)
+    _render_legend(used_states)
 
-    # --- 凡例を Streamlit 側に描画（マップ外・被りなし） ---
-    # 現在使用中の状態のみ表示
+
+def _render_legend(used_states: set):
+    """凡例を Streamlit 側に描画（マップ外・被りなし）"""
     _LEGEND_ITEMS = [
         ("root_cause",  "#ffcdd2", "#A05050", "border-radius:50%", "Root Cause (真因)"),
         ("warning",     "#fff9c4", "#C49840", "",                  "Warning (警告)"),
