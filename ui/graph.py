@@ -4,7 +4,7 @@ import json
 import streamlit as st
 import streamlit.components.v1 as components
 from alarm_generator import NodeColor, Alarm
-from typing import List
+from typing import List, Dict, Any, Tuple
 
 
 def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results: List[dict]):
@@ -308,3 +308,162 @@ network.fit({{ padding: 40 }});
             f'<b>Legend:</b>&nbsp;&nbsp;{legend_row}</div>',
             unsafe_allow_html=True,
         )
+
+
+# =====================================================
+# BFS 影響伝搬グラフ
+# =====================================================
+
+# ホップ距離ごとの色
+_HOP_COLORS = {
+    0: {"bg": "#EF5350", "border": "#C62828"},   # Root Cause — 赤
+    1: {"bg": "#FF7043", "border": "#D84315"},   # 1hop — 濃オレンジ
+    2: {"bg": "#FFA726", "border": "#EF6C00"},   # 2hop — オレンジ
+    3: {"bg": "#FFCC80", "border": "#FF9800"},   # 3hop — 薄オレンジ
+}
+
+
+def render_impact_graph(
+    root_device_id: str,
+    downstream_impacts: List[Tuple[str, int]],
+    topology: dict,
+):
+    """
+    BFS影響伝搬グラフを vis.js で描画する。
+
+    Args:
+        root_device_id: 真因デバイスID
+        downstream_impacts: [(device_id, hop_distance), ...] — _get_downstream_impact() の出力
+        topology: トポロジー辞書（parent_id 参照用）
+    """
+    if not downstream_impacts:
+        st.caption("影響範囲なし（配下デバイスなし）")
+        return
+
+    # --- ノード生成 ---
+    nodes = []
+
+    def _get_node_type(dev_id: str) -> str:
+        node = topology.get(dev_id, {})
+        if isinstance(node, dict):
+            return node.get('type', 'UNKNOWN')
+        return getattr(node, 'type', 'UNKNOWN')
+
+    # Root Cause ノード
+    rc_type = _get_node_type(root_device_id)
+    hop_col = _HOP_COLORS[0]
+    nodes.append({
+        "id": root_device_id,
+        "label": f"{root_device_id}\n({rc_type})\n[ROOT CAUSE]",
+        "color": {"background": hop_col["bg"], "border": hop_col["border"]},
+        "shape": "ellipse",
+        "borderWidth": 3,
+        "font": {"color": "white", "size": 14, "face": "Arial", "bold": True},
+        "widthConstraint": {"minimum": 110, "maximum": 200},
+        "level": 0,
+    })
+
+    # 影響デバイスノード
+    for dev_id, hop in downstream_impacts:
+        dev_type = _get_node_type(dev_id)
+        hop_col = _HOP_COLORS.get(hop, _HOP_COLORS[3])
+        nodes.append({
+            "id": dev_id,
+            "label": f"{dev_id}\n({dev_type})\n[{hop}hop]",
+            "color": {"background": hop_col["bg"], "border": hop_col["border"]},
+            "shape": "box",
+            "borderWidth": 2,
+            "font": {"color": "white" if hop <= 1 else "#333", "size": 12, "face": "Arial"},
+            "widthConstraint": {"minimum": 100, "maximum": 180},
+            "level": hop,
+        })
+
+    # --- エッジ生成（トポロジーの parent_id から） ---
+    impact_ids = {root_device_id} | {d[0] for d in downstream_impacts}
+    edges = []
+    added = set()
+    for dev_id, hop in downstream_impacts:
+        node = topology.get(dev_id, {})
+        parent_id = node.get('parent_id') if isinstance(node, dict) else getattr(node, 'parent_id', None)
+        if parent_id and parent_id in impact_ids:
+            key = (parent_id, dev_id)
+            if key not in added:
+                # エッジの太さをホップ距離で変える
+                width = max(1, 4 - hop)
+                edges.append({
+                    "from": parent_id, "to": dev_id,
+                    "arrows": {"to": {"enabled": True, "scaleFactor": 0.8}},
+                    "color": {"color": hop_col["border"], "opacity": 0.8},
+                    "width": width,
+                    "smooth": {"type": "cubicBezier", "forceDirection": "vertical", "roundness": 0.3},
+                })
+                added.add(key)
+
+    # --- 統計サマリ ---
+    hop_counts = {}
+    for _, hop in downstream_impacts:
+        hop_counts[hop] = hop_counts.get(hop, 0) + 1
+    total = len(downstream_impacts)
+
+    nodes_json = json.dumps(nodes, ensure_ascii=False)
+    edges_json = json.dumps(edges, ensure_ascii=False)
+
+    html = f"""
+<html><head>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<style>
+  body {{ margin:0; padding:0; overflow:hidden; }}
+  #impact-net {{ width:100%; height:350px; border:1px solid #e0e0e0; border-radius:4px; }}
+</style>
+</head>
+<body>
+<div id="impact-net"></div>
+<script>
+var nodes = new vis.DataSet({nodes_json});
+var edges = new vis.DataSet({edges_json});
+var data = {{ nodes: nodes, edges: edges }};
+var options = {{
+    layout: {{
+        hierarchical: {{
+            enabled: true,
+            direction: "UD",
+            sortMethod: "directed",
+            levelSeparation: 90,
+            nodeSpacing: 180,
+            treeSpacing: 200,
+            parentCentralization: true
+        }}
+    }},
+    physics: {{ enabled: false }},
+    interaction: {{ hover: true, zoomView: true, dragView: true, dragNodes: false }},
+    nodes: {{
+        font: {{ size: 12, face: 'Arial' }},
+        margin: {{ top: 6, bottom: 6, left: 8, right: 8 }}
+    }},
+    edges: {{
+        smooth: {{ type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.3 }}
+    }}
+}};
+var network = new vis.Network(document.getElementById('impact-net'), data, options);
+network.fit({{ padding: 30 }});
+</script></body></html>
+"""
+    components.html(html, height=370)
+
+    # ホップ距離内訳バー
+    hop_labels = []
+    for h in sorted(hop_counts.keys()):
+        hop_col = _HOP_COLORS.get(h, _HOP_COLORS[3])
+        hop_labels.append(
+            f'<span style="display:inline-block;width:12px;height:12px;'
+            f'background:{hop_col["bg"]};border:1px solid {hop_col["border"]};'
+            f'vertical-align:middle;margin-right:4px;border-radius:2px;"></span>'
+            f'{h}hop: {hop_counts[h]}台'
+        )
+    summary = f"影響範囲: 計 {total}台&nbsp;&nbsp;|&nbsp;&nbsp;" + "&nbsp;&nbsp;&nbsp;".join(hop_labels)
+    st.markdown(
+        f'<div style="font-size:12px;font-family:Arial,sans-serif;'
+        f'padding:5px 12px;background:#fff3e0;border:1px solid #ffe0b2;'
+        f'border-radius:4px;margin-top:4px;">{summary}</div>',
+        unsafe_allow_html=True,
+    )
