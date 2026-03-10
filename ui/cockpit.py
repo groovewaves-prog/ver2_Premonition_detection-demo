@@ -588,7 +588,12 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     with col_header[0]:
         st.markdown(f"### 🛡️ AIOps インシデント・コックピット")
     with col_header[1]:
-        if st.button("🔙 一覧に戻る", key="back_to_list"):
+        if st.button(
+            "🔙 一覧に戻る",
+            key="back_to_list",
+            type="primary",
+            use_container_width=True,
+        ):
             st.session_state.active_site = None
             st.rerun()
 
@@ -1133,7 +1138,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 </body></html>
 """
     import streamlit.components.v1 as _kpi_components
-    _kpi_components.html(_kpi_full_html, height=170)
+    # 分類バー有り→高さ拡大、無し→コンパクト
+    _kpi_height = 200 if _total_classified > 0 else 160
+    _kpi_components.html(_kpi_full_html, height=_kpi_height)
 
     # =====================================================
     # 🔮 AIOps Future Radar（予兆専用表示エリア）
