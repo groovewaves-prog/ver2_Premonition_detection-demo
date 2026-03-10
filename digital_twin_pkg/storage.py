@@ -203,6 +203,96 @@ class StorageManager:
                 self._conn.commit()
         except Exception: pass
 
+    def run_retention_cleanup(self):
+        """全データストアに対して保持期間ベースのクリーンアップを実行する。
+
+        起動時に1回呼び出される。DATA_RETENTION_DAYS (90日) を超えるデータを削除。
+        """
+        retention_days = DATA_RETENTION_DAYS
+        cutoff_ts = time.time() - retention_days * 86400
+        cleaned = {}
+
+        if self._conn:
+            with self._db_lock:
+                try:
+                    # metrics テーブル
+                    cur = self._conn.execute(
+                        'DELETE FROM metrics WHERE timestamp < ?', (cutoff_ts,))
+                    cleaned["metrics"] = cur.rowcount
+
+                    # audit_log テーブル
+                    cur = self._conn.execute(
+                        'DELETE FROM audit_log WHERE timestamp < ?', (cutoff_ts,))
+                    cleaned["audit_log"] = cur.rowcount
+
+                    # forecast_ledger テーブル
+                    cur = self._conn.execute(
+                        'DELETE FROM forecast_ledger WHERE created_at < ?', (cutoff_ts,))
+                    cleaned["forecast_ledger"] = cur.rowcount
+
+                    self._conn.commit()
+
+                    # VACUUM で空き領域を回収 (WALモード下でも有効)
+                    if sum(cleaned.values()) > 100:
+                        self._conn.execute('VACUUM')
+
+                except Exception as e:
+                    logger.warning("SQLite retention cleanup error: %s", e)
+
+        # event_log.jsonl のトリミング
+        try:
+            jsonl_path = self.paths.get("event_log_jsonl")
+            if jsonl_path and os.path.exists(jsonl_path):
+                kept_lines = []
+                with open(jsonl_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line)
+                            ts = entry.get("timestamp", entry.get("ts", 0))
+                            if ts >= cutoff_ts:
+                                kept_lines.append(line)
+                        except json.JSONDecodeError:
+                            pass
+                removed = 0
+                with open(jsonl_path, 'r', encoding='utf-8') as f:
+                    total = sum(1 for _ in f)
+                removed = total - len(kept_lines)
+                if removed > 0:
+                    tmp = jsonl_path + ".tmp." + uuid.uuid4().hex
+                    with open(tmp, 'w', encoding='utf-8') as f:
+                        f.writelines(kept_lines)
+                    os.replace(tmp, jsonl_path)
+                    cleaned["event_log_jsonl"] = removed
+        except Exception as e:
+            logger.warning("Event log cleanup error: %s", e)
+
+        # GNN学習データ (data/gnn_training/*.json)
+        try:
+            gnn_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "data", "gnn_training"
+            )
+            if os.path.isdir(gnn_dir):
+                removed_gnn = 0
+                for fname in os.listdir(gnn_dir):
+                    fpath = os.path.join(gnn_dir, fname)
+                    if fname.endswith('.json') and os.path.isfile(fpath):
+                        if os.path.getmtime(fpath) < cutoff_ts:
+                            os.remove(fpath)
+                            removed_gnn += 1
+                if removed_gnn:
+                    cleaned["gnn_training_files"] = removed_gnn
+        except Exception as e:
+            logger.warning("GNN training data cleanup error: %s", e)
+
+        if any(v > 0 for v in cleaned.values()):
+            logger.info(
+                "Retention cleanup (>%dd): %s",
+                retention_days,
+                ", ".join(f"{k}={v}" for k, v in cleaned.items() if v > 0),
+            )
+        return cleaned
+
     # --- Rule Config DB ---
     def rule_config_upsert(self, rp, pt, lt, rule_json_str):
         if not self._conn: return False

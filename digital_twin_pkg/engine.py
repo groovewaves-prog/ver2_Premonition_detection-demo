@@ -198,6 +198,17 @@ class DigitalTwinEngine:
         self.evaluation_state = self.storage.load_json("evaluation_state", {})
         self.shadow_eval_state = self.storage.load_json("shadow_eval_state", {})
         self._init_forecast_ledger()
+        # ★ 起動時に保持期間超過データを自動クリーンアップ（メンテ不要化）
+        try:
+            cleaned = self.storage.run_retention_cleanup()
+            # ChromaDB も同じ保持期間でクリーンアップ
+            if self.vector_store and self.vector_store.is_ready:
+                cutoff = time.time() - DATA_RETENTION_DAYS * 86400
+                vs_removed = self.vector_store.cleanup_old(cutoff)
+                if vs_removed:
+                    logger.info("ChromaDB cleanup: removed %d entries", vs_removed)
+        except Exception as e:
+            logger.warning("Retention cleanup skipped: %s", e)
 
     def _sanitize_rule_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in data.items() if not k.startswith('_')}

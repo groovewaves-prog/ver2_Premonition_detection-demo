@@ -328,6 +328,28 @@ class VectorStore:
         except Exception as e:
             return {"ready": False, "error": str(e)}
 
+    def cleanup_old(self, cutoff_ts: float) -> int:
+        """cutoff_ts より古いエントリを削除する。
+
+        Returns:
+            削除件数
+        """
+        if not self._ready:
+            return 0
+        try:
+            # ChromaDB の where フィルタで古いエントリを取得
+            results = self._collection.get(
+                where={"created_at": {"$lt": cutoff_ts}},
+            )
+            ids = results.get("ids", [])
+            if ids:
+                self._collection.delete(ids=ids)
+                logger.info("VectorStore.cleanup_old: removed %d entries older than cutoff", len(ids))
+            return len(ids)
+        except Exception as e:
+            logger.warning("VectorStore.cleanup_old failed: %s", e)
+            return 0
+
     def delete_all(self) -> bool:
         """全インシデントを削除（テスト用）。"""
         if not self._ready:
