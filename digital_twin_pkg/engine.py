@@ -1581,6 +1581,50 @@ class DigitalTwinEngine:
                 continue
         results.sort(key=lambda x: x.confidence, reverse=True)
 
+        # ★ Embedding フォールバック: regex/semantic で一致しなかった場合、
+        #   BERT 類似度で最も近いルールにマッチを試みる（未知アラーム対応）
+        if not results:
+            try:
+                _emb_rule, _emb_score = self._match_rule(msg_n)
+                if _emb_rule and _emb_score >= 0.30 and _emb_rule.pattern != "generic_error":
+                    _base_conf = float(getattr(_emb_rule, "base_confidence", 0.5) or 0.5)
+                    # Embedding 一致は品質に応じて信頼度を減衰
+                    _adj_conf = _base_conf * _emb_score
+                    _low, _high = _LEVEL_CONF_RANGE.get(_level, (0.50, 0.60))
+                    conf = _low + (_high - _low) * min(1.0, _adj_conf)
+                    if conf >= _min_conf:
+                        _base_ttc   = int(getattr(_emb_rule, "time_to_critical_min", 60) or 60)
+                        _base_early = int(getattr(_emb_rule, "early_warning_hours", 24) or 24)
+                        _ttc   = max(5,  int(_base_ttc   * _ttc_factor))
+                        _early = max(1,  int(_base_early * _early_factor))
+                        _base_ttf_hours = int(getattr(_emb_rule, "early_warning_hours", 336) or 336)
+                        _ttf_hours = self._predict_rul_with_trend(
+                            device_id=device_id, current_level=_level,
+                            base_ttf_hours=_base_ttf_hours, source=source,
+                        )
+                        _failure_dt = datetime.now() + timedelta(hours=_ttf_hours)
+                        pr = PredictResult(
+                            predicted_state      = str(getattr(_emb_rule, "escalated_state", "unknown")),
+                            confidence           = conf,
+                            rule_pattern         = str(getattr(_emb_rule, "pattern", "unknown")),
+                            category             = str(getattr(_emb_rule, "category", "Generic")),
+                            reasons              = [f"embedding similarity: {_emb_score:.2f} → {_emb_rule.pattern}"],
+                            recommended_actions  = list(getattr(_emb_rule, "recommended_actions", []) or []),
+                            runbook_url          = str(getattr(_emb_rule, "runbook_url", "") or ""),
+                            criticality          = str(getattr(_emb_rule, "criticality", "standard") or "standard"),
+                            time_to_critical_min = _ttc,
+                            early_warning_hours  = _early,
+                            time_to_failure_hours = _ttf_hours,
+                            predicted_failure_datetime = _failure_dt.strftime("%Y-%m-%d %H:%M"),
+                        )
+                        results.append(pr)
+                        logger.info(
+                            "Embedding fallback matched: %s → %s (score=%.2f, conf=%.2f)",
+                            device_id, _emb_rule.pattern, _emb_score, conf,
+                        )
+            except Exception as _emb_err:
+                logger.debug("Embedding fallback failed: %s", _emb_err)
+
         # Phase 6a: LLM スコアリング + vendor コンテキスト抽出（最上位ルールに対して実行）
         _llm_narrative    = ""
         _llm_anomaly_type = "point"
