@@ -1039,7 +1039,16 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     suspect_count = len([r for r in analysis_results if r.get('prob', 0) > 0.5])
 
     # --- ステータス色・テキスト決定 ---
-    if any(r.get('status') in ('RED', 'CRITICAL') for r in analysis_results if not r.get('is_prediction')):
+    # root_cause 分類デバイスの存在もインシデント判定に含める
+    _has_critical_status = any(
+        r.get('status') in ('RED', 'CRITICAL')
+        for r in analysis_results if not r.get('is_prediction')
+    )
+    _has_root_cause = any(
+        r.get('classification') == 'root_cause'
+        for r in analysis_results if not r.get('is_prediction')
+    )
+    if _has_critical_status or _has_root_cause:
         _banner_color = "#D32F2F"
         _banner_bg = "#FFEBEE"
         _banner_icon = "&#9888;"  # ⚠
