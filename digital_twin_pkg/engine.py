@@ -1197,14 +1197,39 @@ class DigitalTwinEngine:
                 lt = float(prop.get("logging_threshold", 0.0))
                 old_json_str = self.storage.rule_config_get_json_str(rp)
                 rj_str = old_json_str
+                # 変更前の閾値を記録
+                old_pt = None
+                old_lt = None
                 if rj_str:
                     d = json.loads(rj_str)
+                    old_pt = d.get("paging_threshold")
+                    old_lt = d.get("logging_threshold")
                     d["paging_threshold"] = pt
                     d["logging_threshold"] = lt
                     rj_str = json.dumps(d, ensure_ascii=False)
                 success = self.storage.rule_config_upsert(rp, pt, lt, rj_str)
                 if success:
                     applied.append({"rule": rp, "paging": pt})
+                    # ★ 監査ログ: 閾値変更を記録
+                    stats = p.get("current_stats", {})
+                    impact = p.get("expected_impact", {})
+                    self.storage.audit_log_generic({
+                        "event_id":    str(uuid.uuid4()),
+                        "timestamp":   time.time(),
+                        "event_type":  "threshold_change",
+                        "actor":       "auto",
+                        "rule_pattern": rp,
+                        "details": {
+                            "action": "apply_tuning_proposal",
+                            "old_paging_threshold": old_pt,
+                            "new_paging_threshold": pt,
+                            "old_logging_threshold": old_lt,
+                            "new_logging_threshold": lt,
+                            "recall": stats.get("recall"),
+                            "fp_reduction": impact.get("fp_reduction"),
+                            "shadow_note": rec.get("shadow_note", ""),
+                        },
+                    })
                 else:
                     skipped.append({"rule": rp, "reason": "db_write_fail"})
         return {"applied": applied, "skipped": skipped}
@@ -1269,6 +1294,25 @@ class DigitalTwinEngine:
 
         if result["expired"] or result["proposals_generated"]:
             logger.info("auto_tuning_cycle: %s", result)
+
+        # ★ 監査ログ: サイクル実行記録（何かアクションがあった場合のみ）
+        _has_action = (result["expired"] > 0 or result["proposals_generated"] > 0
+                       or len(result["auto_applied"]) > 0)
+        if _has_action:
+            self.storage.audit_log_generic({
+                "event_id":    str(uuid.uuid4()),
+                "timestamp":   time.time(),
+                "event_type":  "auto_tuning_cycle",
+                "actor":       "auto",
+                "rule_pattern": "*",
+                "details": {
+                    "expired_to_fp": result["expired"],
+                    "proposals_generated": result["proposals_generated"],
+                    "auto_applied_count": len(result["auto_applied"]),
+                    "auto_applied_rules": [a["rule"] for a in result["auto_applied"]],
+                    "skipped_count": len(result["skipped"]),
+                },
+            })
 
         # 最終実行時刻を記録
         self.storage.save_state_sqlite("auto_tuning_last_run", {
@@ -1975,6 +2019,7 @@ class DigitalTwinEngine:
             return {"ok": False}
         now = float(now_ts or time.time())
         expired = 0
+        expired_details = []
         try:
             with self.storage._db_lock:
                 cur = self.storage._conn.cursor()
@@ -1988,10 +2033,25 @@ class DigitalTwinEngine:
                         "UPDATE forecast_ledger SET status='expired', outcome_type='false_alarm', outcome_ts=? "
                         "WHERE forecast_id=?", (now, fid))
                     expired += 1
+                    expired_details.append({"forecast_id": fid, "rule_pattern": rp})
                 if expired:
                     self.storage._conn.commit()
         except Exception as e:
             logger.warning(f"forecast_expire_open: {e}")
+        # ★ 監査ログ: 期限切れ→FP 自動ラベリング
+        if expired > 0:
+            self.storage.audit_log_generic({
+                "event_id":    str(uuid.uuid4()),
+                "timestamp":   now,
+                "event_type":  "forecast_auto_expire",
+                "actor":       "auto",
+                "rule_pattern": expired_details[0]["rule_pattern"] if len(expired_details) == 1 else f"({expired} rules)",
+                "details": {
+                    "action": "expire_open_to_false_alarm",
+                    "count": expired,
+                    "forecasts": expired_details[:20],
+                },
+            })
         return {"ok": True, "expired": expired}
 
     def forecast_auto_resolve(self, device_id: str, outcome_type: str,
