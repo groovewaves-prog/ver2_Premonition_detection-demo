@@ -263,14 +263,17 @@ class LogicalRCA:
             # 親がサイレント疑い
             if device_id in silent_suspects:
                 info = silent_suspects[device_id]
+                # サイレント疑いは根本原因候補 → 確信度に応じてステータス決定
+                _silent_prob = 0.8
+                _silent_status = "RED" if _silent_prob >= 0.6 else "YELLOW"
                 results.append({
                     "id": device_id,
                     "label": " / ".join(messages),
-                    "prob": 0.8,
+                    "prob": _silent_prob,
                     "type": "Network/SilentFailure",
                     "tier": 1,
                     "reason": f"Silent failure suspected.",
-                    "status": "YELLOW",
+                    "status": _silent_status,
                     "is_prediction": False,
                     "classification": "root_cause"
                 })
