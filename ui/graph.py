@@ -1,6 +1,7 @@
 # ui/graph.py  ―  vis.js インタラクティブトポロジー描画
 #   色優先順位・予兆アンバーハイライト・3分類対応
 import json
+import streamlit as st
 import streamlit.components.v1 as components
 from alarm_generator import NodeColor, Alarm
 from typing import List
@@ -10,6 +11,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     """
     vis.js でインタラクティブなトポロジーグラフを描画し、
     Streamlit の components.html() で埋め込む。
+    凡例はマップ外に Streamlit ウィジェットとして表示。
 
     色優先順位（高→低）:
       1. Root Cause CRITICAL（赤）/ WARNING（黄）/ SILENT（紫）
@@ -49,6 +51,9 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         if r.get('classification'):
             classification_map[r['id']] = r['classification']
 
+    # --- 各状態の使用有無を追跡（凡例表示用） ---
+    used_states = set()
+
     # --- ノード生成 ---
     nodes = []
     for node_id, node in topology.items():
@@ -72,6 +77,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         font_bg = None
         label_parts = [node_id, f"({node_type})"]
         status_tag = ""
+        state_key = "normal"
 
         if redundancy_type:
             label_parts.append(f"[{redundancy_type}]")
@@ -88,6 +94,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                     border_width = 3
                     shape = "ellipse"
                     status_tag = "SILENT SUSPECT"
+                    state_key = "silent"
                 elif info['max_severity'] == 'CRITICAL':
                     bg_color = NodeColor.ROOT_CAUSE_CRITICAL
                     border_color = "#C62828"
@@ -95,11 +102,13 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                     shape = "ellipse"
                     font_color = "#B71C1C"
                     status_tag = "ROOT CAUSE"
+                    state_key = "root_cause"
                 else:
                     bg_color = NodeColor.ROOT_CAUSE_WARNING
                     border_color = "#F9A825"
                     border_width = 2
                     status_tag = "WARNING"
+                    state_key = "warning"
             else:
                 # 非root_cause のアラーム
                 if node_id in predicted_ids_real:
@@ -108,32 +117,37 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                     border_width = 4
                     font_color = "#E65100"
                     status_tag = "PREDICTION"
+                    state_key = "prediction"
                 elif node_id in predicted_ids_sim:
                     bg_color = "#FFE082"
                     border_color = "#BF360C"
                     border_width = 3
                     font_color = "#BF360C"
                     status_tag = "SIM-PRED"
+                    state_key = "prediction"
                 else:
                     # 3分類: symptom vs unrelated
                     cls = classification_map.get(node_id, "")
                     if cls == "symptom":
-                        bg_color = "#FFE0B2"  # オレンジ系（派生）
+                        bg_color = "#FFE0B2"
                         border_color = "#E65100"
                         font_color = "#BF360C"
                         status_tag = "Symptom"
+                        state_key = "symptom"
                     elif cls == "unrelated":
-                        bg_color = "#E1BEE7"  # 薄紫（ノイズ）
+                        bg_color = "#E1BEE7"
                         border_color = "#7B1FA2"
                         shape = "diamond"
                         font_color = "#4A148C"
                         font_bg = "rgba(255,255,255,0.9)"
                         status_tag = "Unrelated"
+                        state_key = "unrelated"
                     else:
                         bg_color = NodeColor.UNREACHABLE
                         border_color = "#78909C"
                         font_color = "#546e7a"
                         status_tag = "Unreachable"
+                        state_key = "unreachable"
 
         # 2. 予兆ハイライト（アラームなし）
         elif node_id in predicted_ids_real:
@@ -142,17 +156,21 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             border_width = 4
             font_color = "#E65100"
             status_tag = "PREDICTION"
+            state_key = "prediction"
         elif node_id in predicted_ids_sim:
             bg_color = "#FFE082"
             border_color = "#BF360C"
             border_width = 3
             font_color = "#BF360C"
             status_tag = "SIM-PRED"
+            state_key = "prediction"
 
-        # ラベル構築
+        used_states.add(state_key)
+
+        # ラベル構築 — "\n" (実際の改行文字) で結合して vis.js が改行描画する
         if status_tag:
             label_parts.append(f"[{status_tag}]")
-        label_text = "\\n".join(label_parts)
+        label_text = "\n".join(label_parts)
 
         font_config = {
             "color": font_color,
@@ -204,32 +222,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                                 })
                                 added_edges.add(edge_key2)
 
-    # --- 凡例HTML ---
-    legend_html = """
-    <div style="position:absolute;top:10px;right:10px;background:rgba(255,255,255,0.95);
-                padding:10px 14px;border:1px solid #ccc;border-radius:6px;font-size:11px;
-                font-family:Arial,sans-serif;line-height:1.8;z-index:100;">
-        <div style="font-weight:bold;margin-bottom:4px;">Legend</div>
-        <div><span style="display:inline-block;width:14px;height:14px;background:#ffcdd2;
-             border:2px solid #C62828;border-radius:50%;vertical-align:middle;margin-right:5px;"></span>Root Cause (真因)</div>
-        <div><span style="display:inline-block;width:14px;height:14px;background:#fff9c4;
-             border:2px solid #F9A825;vertical-align:middle;margin-right:5px;"></span>Warning (警告)</div>
-        <div><span style="display:inline-block;width:14px;height:14px;background:#e1bee7;
-             border:2px solid #9C27B0;border-radius:50%;vertical-align:middle;margin-right:5px;"></span>Silent Suspect</div>
-        <div><span style="display:inline-block;width:14px;height:14px;background:#FFB300;
-             border:2px solid #E65100;vertical-align:middle;margin-right:5px;"></span>Prediction (予兆)</div>
-        <div><span style="display:inline-block;width:14px;height:14px;background:#FFE0B2;
-             border:2px solid #E65100;vertical-align:middle;margin-right:5px;"></span>Symptom (派生)</div>
-        <div><span style="display:inline-block;width:14px;height:14px;background:#E1BEE7;
-             border:2px solid #7B1FA2;transform:rotate(45deg);vertical-align:middle;margin-right:5px;"></span>Unrelated (ノイズ)</div>
-        <div><span style="display:inline-block;width:14px;height:14px;background:#cfd8dc;
-             border:1px solid #78909C;vertical-align:middle;margin-right:5px;"></span>Unreachable</div>
-        <div><span style="display:inline-block;width:14px;height:14px;background:#e8f5e9;
-             border:1px solid #a5d6a7;vertical-align:middle;margin-right:5px;"></span>Normal (正常)</div>
-    </div>
-    """
-
-    # --- vis.js HTML ---
+    # --- vis.js HTML (凡例なし — マップ外に Streamlit で描画) ---
     nodes_json = json.dumps(nodes, ensure_ascii=False)
     edges_json = json.dumps(edges, ensure_ascii=False)
 
@@ -238,15 +231,11 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 <style>
   body {{ margin:0; padding:0; overflow:hidden; }}
-  #container {{ position:relative; width:100%; height:600px; }}
-  #mynetwork {{ height:600px; border:1px solid #e0e0e0; border-radius:4px; }}
+  #mynetwork {{ width:100%; height:600px; border:1px solid #e0e0e0; border-radius:4px; }}
 </style>
 </head>
 <body>
-<div id="container">
-    <div id="mynetwork"></div>
-    {legend_html}
-</div>
+<div id="mynetwork"></div>
 <script>
 var nodes = new vis.DataSet({nodes_json});
 var edges = new vis.DataSet({edges_json});
@@ -255,7 +244,7 @@ var options = {{
     layout: {{
         hierarchical: {{
             enabled: true,
-            direction: "DU",
+            direction: "UD",
             sortMethod: "directed",
             levelSeparation: 120,
             nodeSpacing: 220,
@@ -274,7 +263,7 @@ var options = {{
         dragNodes: false
     }},
     nodes: {{
-        font: {{ size: 13, face: 'Arial' }},
+        font: {{ size: 13, face: 'Arial', multi: false }},
         margin: {{ top: 8, bottom: 8, left: 10, right: 10 }}
     }},
     edges: {{
@@ -286,3 +275,36 @@ network.fit({{ padding: 40 }});
 </script></body></html>
 """
     components.html(html, height=620)
+
+    # --- 凡例を Streamlit 側に描画（マップ外・被りなし） ---
+    # 現在使用中の状態のみ表示
+    _LEGEND_ITEMS = [
+        ("root_cause",  "#ffcdd2", "#C62828", "border-radius:50%", "Root Cause (真因)"),
+        ("warning",     "#fff9c4", "#F9A825", "",                  "Warning (警告)"),
+        ("silent",      "#e1bee7", "#9C27B0", "border-radius:50%", "Silent Suspect"),
+        ("prediction",  "#FFB300", "#E65100", "",                  "Prediction (予兆)"),
+        ("symptom",     "#FFE0B2", "#E65100", "",                  "Symptom (派生)"),
+        ("unrelated",   "#E1BEE7", "#7B1FA2", "transform:rotate(45deg)", "Unrelated (ノイズ)"),
+        ("unreachable", "#cfd8dc", "#78909C", "",                  "Unreachable"),
+        ("normal",      "#e8f5e9", "#a5d6a7", "",                  "Normal (正常)"),
+    ]
+
+    legend_items_html = []
+    for key, bg, border, extra_style, text in _LEGEND_ITEMS:
+        if key in used_states:
+            swatch = (
+                f'<span style="display:inline-block;width:13px;height:13px;'
+                f'background:{bg};border:2px solid {border};{extra_style};'
+                f'vertical-align:middle;margin-right:6px;"></span>'
+            )
+            legend_items_html.append(f"{swatch} {text}")
+
+    if legend_items_html:
+        legend_row = "&nbsp;&nbsp;&nbsp;".join(legend_items_html)
+        st.markdown(
+            f'<div style="font-size:12px;font-family:Arial,sans-serif;'
+            f'padding:6px 12px;background:#fafafa;border:1px solid #e0e0e0;'
+            f'border-radius:4px;margin-top:4px;">'
+            f'<b>Legend:</b>&nbsp;&nbsp;{legend_row}</div>',
+            unsafe_allow_html=True,
+        )
