@@ -4,7 +4,10 @@ import pandas as pd
 import json
 import time
 import hashlib
+import logging
 from typing import Optional, List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import google.generativeai as genai
@@ -577,7 +580,7 @@ def _get_cached_dt_engine(site_id: str, topo_hash: str, _topology):
 # =====================================================
 def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     display_name = get_display_name(site_id)
-    scenario = st.session_state.site_scenarios.get(site_id, "正常稼働")
+    scenario = getattr(st.session_state, 'site_scenarios', {}).get(site_id, "正常稼働")
 
     # ヘッダー
     col_header = st.columns([4, 1])
