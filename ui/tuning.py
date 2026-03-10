@@ -265,7 +265,7 @@ def _render_gnn_training_tab(site_id: str, dt_engine):
                 progress_callback=on_progress,
             )
 
-        if result:
+        if result and "error" not in result:
             progress_bar.progress(1.0, text="完了!")
             st.success(
                 f"✅ **学習完了** | "
@@ -288,7 +288,12 @@ def _render_gnn_training_tab(site_id: str, dt_engine):
                 "「🧹 Cache Clear」（Maintenanceタブ）を実行してエンジンを再初期化してください。"
             )
         else:
-            st.error("学習に失敗しました。ログを確認してください。")
+            # エラー詳細を表示
+            error_msg = result.get("error", "不明なエラー") if isinstance(result, dict) else "不明なエラー"
+            st.error(f"学習に失敗しました: {error_msg}")
+            if isinstance(result, dict) and result.get("traceback"):
+                with st.expander("🔍 詳細エラーログ", expanded=False):
+                    st.code(result["traceback"], language="python")
 
     # ── 蓄積データによるファインチューニング ──
     st.divider()
@@ -370,7 +375,7 @@ def _render_finetune_section(dt_engine):
                 progress_callback=on_ft_progress,
             )
 
-        if result:
+        if result and "error" not in result:
             progress_bar.progress(1.0, text="完了!")
             st.success(
                 f"✅ **ファインチューニング完了** | "
@@ -392,4 +397,8 @@ def _render_finetune_section(dt_engine):
                 "エンジンを再初期化するとモデルが反映されます。"
             )
         else:
-            st.error("ファインチューニングに失敗しました。")
+            error_msg = result.get("error", "不明なエラー") if isinstance(result, dict) else "不明なエラー"
+            st.error(f"ファインチューニングに失敗しました: {error_msg}")
+            if isinstance(result, dict) and result.get("traceback"):
+                with st.expander("🔍 詳細エラーログ", expanded=False):
+                    st.code(result["traceback"], language="python")

@@ -214,10 +214,12 @@ def pretrain_gnn(
 
     Returns:
         学習結果の統計情報 or None (失敗時)
+        失敗時でも {"error": "..."} の辞書を返す場合がある
     """
     if not HAS_PYTORCH_GEOMETRIC:
-        logger.error("PyTorch Geometric not available. Cannot pretrain GNN.")
-        return None
+        msg = "PyTorch Geometric が利用できません。GNN学習にはインストールが必要です。"
+        logger.error(msg)
+        return {"error": msg}
 
     if model_save_path is None:
         model_save_path = DEFAULT_MODEL_PATH
@@ -228,109 +230,118 @@ def pretrain_gnn(
     logger.info(f"Starting GNN pretraining: epochs={epochs}, samples/rule={samples_per_rule}")
     start_time = time.time()
 
-    # 1. 合成データ生成
-    training_data = generate_training_data(
-        topology, children_map,
-        samples_per_rule=samples_per_rule,
-    )
-    if not training_data:
-        logger.error("No training data generated")
-        return None
+    try:
+        # 1. 合成データ生成
+        training_data = generate_training_data(
+            topology, children_map,
+            samples_per_rule=samples_per_rule,
+        )
+        if not training_data:
+            msg = "合成データの生成に失敗しました。トポロジーまたはEscalationRuleを確認してください。"
+            logger.error("No training data generated")
+            return {"error": msg}
 
-    # 2. GNNエンジン作成
-    engine = GNNPredictionEngine(topology, children_map)
-    if engine.model is None:
-        logger.error("Failed to create GNN model")
-        return None
+        # 2. GNNエンジン作成
+        engine = GNNPredictionEngine(topology, children_map)
+        if engine.model is None:
+            msg = "GNNモデルの作成に失敗しました。PyTorch Geometric の依存関係を確認してください。"
+            logger.error("Failed to create GNN model")
+            return {"error": msg}
 
-    # 3. 学習実行
-    optimizer = torch.optim.Adam(engine.model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    criterion_conf = torch.nn.BCELoss()
-    criterion_ttf = torch.nn.MSELoss()
+        # 3. 学習実行
+        optimizer = torch.optim.Adam(engine.model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        criterion_conf = torch.nn.BCELoss()
+        criterion_ttf = torch.nn.MSELoss()
 
-    engine.model.train()
-    loss_history = []
-    best_loss = float('inf')
-    best_state = None
+        engine.model.train()
+        loss_history = []
+        best_loss = float('inf')
+        best_state = None
 
-    for epoch in range(epochs):
-        epoch_loss = 0.0
-        n_samples = 0
-        random.shuffle(training_data)
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+            n_samples = 0
+            random.shuffle(training_data)
 
-        for sample in training_data:
-            optimizer.zero_grad()
+            for sample in training_data:
+                optimizer.zero_grad()
 
-            data = engine.topology_to_graph(sample['alarm_embeddings'])
-            if data is None:
-                continue
+                data = engine.topology_to_graph(sample['alarm_embeddings'])
+                if data is None:
+                    continue
 
-            data = data.to(engine.device)
-            pred_conf, pred_ttf, _ = engine.model(data.x_dict, data.edge_index_dict)
+                data = data.to(engine.device)
+                pred_conf, pred_ttf, _ = engine.model(data.x_dict, data.edge_index_dict)
 
-            target_idx = data.device_to_idx.get(sample['device_id'])
-            if target_idx is None:
-                continue
+                target_idx = data.device_to_idx.get(sample['device_id'])
+                if target_idx is None:
+                    continue
 
-            target_conf = torch.tensor(
-                [1.0 if sample['actual_failure'] else 0.0],
-                dtype=torch.float, device=engine.device
-            )
-            target_ttf_val = torch.tensor(
-                [sample['time_to_failure']],
-                dtype=torch.float, device=engine.device
-            )
+                target_conf = torch.tensor(
+                    [1.0 if sample['actual_failure'] else 0.0],
+                    dtype=torch.float, device=engine.device
+                )
+                target_ttf_val = torch.tensor(
+                    [sample['time_to_failure']],
+                    dtype=torch.float, device=engine.device
+                )
 
-            loss_conf = criterion_conf(pred_conf[target_idx], target_conf)
-            loss_ttf = criterion_ttf(pred_ttf[target_idx], target_ttf_val)
-            loss = loss_conf + 0.1 * loss_ttf
+                loss_conf = criterion_conf(pred_conf[target_idx], target_conf)
+                loss_ttf = criterion_ttf(pred_ttf[target_idx], target_ttf_val)
+                loss = loss_conf + 0.1 * loss_ttf
 
-            loss.backward()
-            # 勾配クリッピング
-            torch.nn.utils.clip_grad_norm_(engine.model.parameters(), max_norm=1.0)
-            optimizer.step()
+                loss.backward()
+                # 勾配クリッピング
+                torch.nn.utils.clip_grad_norm_(engine.model.parameters(), max_norm=1.0)
+                optimizer.step()
 
-            epoch_loss += loss.item()
-            n_samples += 1
+                epoch_loss += loss.item()
+                n_samples += 1
 
-        scheduler.step()
-        avg_loss = epoch_loss / max(n_samples, 1)
-        loss_history.append(avg_loss)
+            scheduler.step()
+            avg_loss = epoch_loss / max(n_samples, 1)
+            loss_history.append(avg_loss)
 
-        # ベストモデル保存
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            best_state = {k: v.clone() for k, v in engine.model.state_dict().items()}
+            # ベストモデル保存
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                best_state = {k: v.clone() for k, v in engine.model.state_dict().items()}
 
-        if progress_callback:
-            progress_callback(epoch + 1, epochs, avg_loss)
+            if progress_callback:
+                progress_callback(epoch + 1, epochs, avg_loss)
 
-        if (epoch + 1) % 10 == 0:
-            logger.info(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
+            if (epoch + 1) % 10 == 0:
+                logger.info(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
 
-    # 4. ベストモデルを保存
-    if best_state is not None:
-        torch.save(best_state, model_save_path)
-        logger.info(f"Pretrained GNN model saved to {model_save_path}")
+        # 4. ベストモデルを保存
+        if best_state is not None:
+            torch.save(best_state, model_save_path)
+            logger.info(f"Pretrained GNN model saved to {model_save_path}")
 
-    elapsed = time.time() - start_time
+        elapsed = time.time() - start_time
 
-    result = {
-        "epochs": epochs,
-        "total_samples": len(training_data),
-        "final_loss": loss_history[-1] if loss_history else None,
-        "best_loss": best_loss,
-        "elapsed_sec": elapsed,
-        "model_path": model_save_path,
-        "loss_history": loss_history,
-    }
+        result = {
+            "epochs": epochs,
+            "total_samples": len(training_data),
+            "final_loss": loss_history[-1] if loss_history else None,
+            "best_loss": best_loss,
+            "elapsed_sec": elapsed,
+            "model_path": model_save_path,
+            "loss_history": loss_history,
+        }
 
-    logger.info(
-        f"GNN pretraining complete: {elapsed:.1f}s, "
-        f"best_loss={best_loss:.4f}, samples={len(training_data)}"
-    )
-    return result
+        logger.info(
+            f"GNN pretraining complete: {elapsed:.1f}s, "
+            f"best_loss={best_loss:.4f}, samples={len(training_data)}"
+        )
+        return result
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        logger.error("GNN pretraining failed: %s\n%s", e, tb)
+        return {"error": f"{type(e).__name__}: {e}", "traceback": tb}
 
 
 def get_pretrained_model_path() -> Optional[str]:
@@ -464,112 +475,122 @@ def finetune_gnn(
     なければ新規学習。
     """
     if not HAS_PYTORCH_GEOMETRIC:
-        logger.error("PyTorch Geometric not available.")
-        return None
+        msg = "PyTorch Geometric が利用できません。"
+        logger.error(msg)
+        return {"error": msg}
 
     if model_save_path is None:
         model_save_path = DEFAULT_MODEL_PATH
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
 
-    training_data = convert_sessions_to_training_data(
-        session_files, topology, children_map
-    )
-    if not training_data:
-        logger.error("No training data from sessions")
-        return None
+    try:
+        training_data = convert_sessions_to_training_data(
+            session_files, topology, children_map
+        )
+        if not training_data:
+            msg = "蓄積セッションから学習データを生成できませんでした。セッションデータの形式を確認してください。"
+            logger.error("No training data from sessions")
+            return {"error": msg}
 
-    # 合成データも混合（過学習防止）
-    synthetic_data = generate_training_data(
-        topology, children_map, samples_per_rule=20, seed=int(time.time()),
-    )
-    combined_data = training_data + synthetic_data
+        # 合成データも混合（過学習防止）
+        synthetic_data = generate_training_data(
+            topology, children_map, samples_per_rule=20, seed=int(time.time()),
+        )
+        combined_data = training_data + synthetic_data
 
-    # モデル初期化（既存モデルがあればロード）
-    existing_path = get_pretrained_model_path()
-    engine = GNNPredictionEngine(
-        topology, children_map,
-        model_path=existing_path,
-    )
-    if engine.model is None:
-        logger.error("Failed to create GNN model")
-        return None
+        # モデル初期化（既存モデルがあればロード）
+        existing_path = get_pretrained_model_path()
+        engine = GNNPredictionEngine(
+            topology, children_map,
+            model_path=existing_path,
+        )
+        if engine.model is None:
+            msg = "GNNモデルの作成に失敗しました。PyTorch Geometric の依存関係を確認してください。"
+            logger.error("Failed to create GNN model")
+            return {"error": msg}
 
-    logger.info(
-        "Fine-tuning GNN: %d stream + %d synthetic = %d samples, epochs=%d",
-        len(training_data), len(synthetic_data), len(combined_data), epochs,
-    )
-    start_time = time.time()
+        logger.info(
+            "Fine-tuning GNN: %d stream + %d synthetic = %d samples, epochs=%d",
+            len(training_data), len(synthetic_data), len(combined_data), epochs,
+        )
+        start_time = time.time()
 
-    optimizer = torch.optim.Adam(engine.model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    criterion_conf = torch.nn.BCELoss()
-    criterion_ttf = torch.nn.MSELoss()
+        optimizer = torch.optim.Adam(engine.model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        criterion_conf = torch.nn.BCELoss()
+        criterion_ttf = torch.nn.MSELoss()
 
-    engine.model.train()
-    loss_history = []
-    best_loss = float('inf')
-    best_state = None
+        engine.model.train()
+        loss_history = []
+        best_loss = float('inf')
+        best_state = None
 
-    for epoch in range(epochs):
-        epoch_loss = 0.0
-        n_samples = 0
-        random.shuffle(combined_data)
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+            n_samples = 0
+            random.shuffle(combined_data)
 
-        for sample in combined_data:
-            optimizer.zero_grad()
-            data = engine.topology_to_graph(sample['alarm_embeddings'])
-            if data is None:
-                continue
-            data = data.to(engine.device)
-            pred_conf, pred_ttf, _ = engine.model(data.x_dict, data.edge_index_dict)
-            target_idx = data.device_to_idx.get(sample['device_id'])
-            if target_idx is None:
-                continue
+            for sample in combined_data:
+                optimizer.zero_grad()
+                data = engine.topology_to_graph(sample['alarm_embeddings'])
+                if data is None:
+                    continue
+                data = data.to(engine.device)
+                pred_conf, pred_ttf, _ = engine.model(data.x_dict, data.edge_index_dict)
+                target_idx = data.device_to_idx.get(sample['device_id'])
+                if target_idx is None:
+                    continue
 
-            target_conf = torch.tensor(
-                [1.0 if sample['actual_failure'] else 0.0],
-                dtype=torch.float, device=engine.device
-            )
-            target_ttf_val = torch.tensor(
-                [sample['time_to_failure']],
-                dtype=torch.float, device=engine.device
-            )
-            loss_conf = criterion_conf(pred_conf[target_idx], target_conf)
-            loss_ttf = criterion_ttf(pred_ttf[target_idx], target_ttf_val)
-            loss = loss_conf + 0.1 * loss_ttf
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(engine.model.parameters(), max_norm=1.0)
-            optimizer.step()
-            epoch_loss += loss.item()
-            n_samples += 1
+                target_conf = torch.tensor(
+                    [1.0 if sample['actual_failure'] else 0.0],
+                    dtype=torch.float, device=engine.device
+                )
+                target_ttf_val = torch.tensor(
+                    [sample['time_to_failure']],
+                    dtype=torch.float, device=engine.device
+                )
+                loss_conf = criterion_conf(pred_conf[target_idx], target_conf)
+                loss_ttf = criterion_ttf(pred_ttf[target_idx], target_ttf_val)
+                loss = loss_conf + 0.1 * loss_ttf
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(engine.model.parameters(), max_norm=1.0)
+                optimizer.step()
+                epoch_loss += loss.item()
+                n_samples += 1
 
-        scheduler.step()
-        avg_loss = epoch_loss / max(n_samples, 1)
-        loss_history.append(avg_loss)
+            scheduler.step()
+            avg_loss = epoch_loss / max(n_samples, 1)
+            loss_history.append(avg_loss)
 
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            best_state = {k: v.clone() for k, v in engine.model.state_dict().items()}
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                best_state = {k: v.clone() for k, v in engine.model.state_dict().items()}
 
-        if progress_callback:
-            progress_callback(epoch + 1, epochs, avg_loss)
+            if progress_callback:
+                progress_callback(epoch + 1, epochs, avg_loss)
 
-    if best_state is not None:
-        torch.save(best_state, model_save_path)
-        logger.info("Fine-tuned GNN model saved to %s", model_save_path)
+        if best_state is not None:
+            torch.save(best_state, model_save_path)
+            logger.info("Fine-tuned GNN model saved to %s", model_save_path)
 
-    elapsed = time.time() - start_time
-    return {
-        "epochs": epochs,
-        "total_samples": len(combined_data),
-        "stream_samples": len(training_data),
-        "synthetic_samples": len(synthetic_data),
-        "final_loss": loss_history[-1] if loss_history else None,
-        "best_loss": best_loss,
-        "elapsed_sec": elapsed,
-        "model_path": model_save_path,
-        "loss_history": loss_history,
-    }
+        elapsed = time.time() - start_time
+        return {
+            "epochs": epochs,
+            "total_samples": len(combined_data),
+            "stream_samples": len(training_data),
+            "synthetic_samples": len(synthetic_data),
+            "final_loss": loss_history[-1] if loss_history else None,
+            "best_loss": best_loss,
+            "elapsed_sec": elapsed,
+            "model_path": model_save_path,
+            "loss_history": loss_history,
+        }
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        logger.error("GNN fine-tuning failed: %s\n%s", e, tb)
+        return {"error": f"{type(e).__name__}: {e}", "traceback": tb}
 
 
 def load_pretrained_gnn(
