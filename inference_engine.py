@@ -224,12 +224,25 @@ class LogicalRCA:
                 "type": "Normal",
                 "tier": 0,
                 "reason": "No active alerts detected.",
-                "status": "GREEN"
+                "status": "GREEN",
+                "classification": "unrelated"
             }]
 
         msg_map: Dict[str, List[str]] = {}
         for a in alarms:
             msg_map.setdefault(a.device_id, []).append(a.message)
+
+        # アラームの is_root_cause フラグをデバイス単位で集約
+        root_cause_device_ids: set = set()
+        alarm_severity_map: Dict[str, str] = {}
+        for a in alarms:
+            if getattr(a, 'is_root_cause', False):
+                root_cause_device_ids.add(a.device_id)
+            # 最大 severity を保持
+            sev_order = {'CRITICAL': 3, 'WARNING': 2, 'INFO': 1}
+            cur = alarm_severity_map.get(a.device_id, 'INFO')
+            if sev_order.get(a.severity, 0) > sev_order.get(cur, 0):
+                alarm_severity_map[a.device_id] = a.severity
 
         silent_suspects = self._detect_silent_failures(msg_map)
         for parent_id, info in silent_suspects.items():
@@ -238,6 +251,14 @@ class LogicalRCA:
         results: List[Dict[str, Any]] = []
 
         for device_id, messages in msg_map.items():
+            # --- 3分類ロジック ---
+            # root_cause: is_root_cause フラグ、サイレント疑い、または親が障害でないのに自身が障害
+            # symptom:    is_root_cause=False かつ親デバイスが root_cause
+            # unrelated:  上記のいずれにも該当しない（ノイズアラート）
+            classification = self._classify_device(
+                device_id, root_cause_device_ids, silent_suspects, alarm_severity_map
+            )
+
             # 親がサイレント疑い
             if device_id in silent_suspects:
                 info = silent_suspects[device_id]
@@ -249,14 +270,15 @@ class LogicalRCA:
                     "tier": 1,
                     "reason": f"Silent failure suspected.",
                     "status": "YELLOW",
-                    "is_prediction": False
+                    "is_prediction": False,
+                    "classification": "root_cause"
                 })
                 continue
 
             # 通常分析
             analysis = self.analyze_redundancy_depth(device_id, messages)
-            
-            status_val = analysis["status"].value 
+
+            status_val = analysis["status"].value
 
             if analysis.get("impact_type") == "UNKNOWN" and "API key not configured" in analysis.get("reason", ""):
                 prob = 0.5
@@ -280,7 +302,8 @@ class LogicalRCA:
                 "tier": tier,
                 "reason": analysis.get("reason", "AI provided no reason"),
                 "status": status_val,
-                "is_prediction": False
+                "is_prediction": False,
+                "classification": classification
             })
 
         # ==========================================================
@@ -318,6 +341,44 @@ class LogicalRCA:
         ))
 
         return results
+
+    def _classify_device(
+        self,
+        device_id: str,
+        root_cause_device_ids: set,
+        silent_suspects: Dict[str, Any],
+        alarm_severity_map: Dict[str, str],
+    ) -> str:
+        """
+        デバイスを3分類する:
+          root_cause — 真因（障害の根本原因）
+          symptom    — 派生（真因の影響で発生した二次的アラート）
+          unrelated  — 無関係（トポロジー上の因果関係がないノイズ）
+        """
+        # サイレント障害疑い → root_cause
+        if device_id in silent_suspects:
+            return "root_cause"
+
+        # is_root_cause フラグが立っている → root_cause
+        if device_id in root_cause_device_ids:
+            return "root_cause"
+
+        # 親デバイスが root_cause → symptom（上流障害の影響）
+        parent_id = self._get_parent_id(device_id)
+        if parent_id and parent_id in root_cause_device_ids:
+            return "symptom"
+
+        # 親の親まで遡って root_cause を探索（多段カスケード対応）
+        visited = set()
+        current = parent_id
+        while current and current not in visited:
+            visited.add(current)
+            if current in root_cause_device_ids or current in silent_suspects:
+                return "symptom"
+            current = self._get_parent_id(current)
+
+        # 上記のいずれにも該当しない → unrelated（ノイズ）
+        return "unrelated"
 
     def analyze_redundancy_depth(self, device_id: str, alerts: List[str]) -> Dict[str, Any]:
         if not alerts:

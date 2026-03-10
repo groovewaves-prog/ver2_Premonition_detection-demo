@@ -972,70 +972,105 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         st.session_state[_sim_state_key] = _sim_state_now
 
     # =====================================================
-    # KPIメトリクス
+    # 3分類による分離: root_cause / symptom / unrelated
     # =====================================================
-    root_cause_alarms = [a for a in alarms if a.is_root_cause]
-    total_alarms = len(alarms)
-    noise_reduction = ((total_alarms - len(root_cause_alarms)) / total_alarms * 100) if total_alarms > 0 else 0.0
-    action_required = len(set(a.device_id for a in root_cause_alarms))
-    prediction_results = [r for r in analysis_results if r.get('is_prediction')]
-    prediction_count = len(prediction_results)
-
-    st.markdown("---")
-    cols = st.columns(3)
-    cols[0].metric("🚨 ステータス", f"{get_status_icon(status)} {status}")
-    cols[1].metric("📊 アラーム数", f"{total_alarms}件")
-    suspect_count = len([r for r in analysis_results if r.get('prob', 0) > 0.5])
-    if prediction_count > 0:
-        cols[2].metric("🎯 被疑箇所", f"{suspect_count}件",
-                       delta=f"うち🔮予兆 {prediction_count}件", delta_color="off")
-    else:
-        cols[2].metric("🎯 被疑箇所", f"{suspect_count}件")
-
-    kpi_cols = st.columns(3)
-    with kpi_cols[0]:
-        delta_text = "↑ 高効率稼働中" if noise_reduction > 90 else ("→ 通常稼働" if noise_reduction > 50 else "↓ 要確認")
-        delta_color = "normal" if noise_reduction > 90 else ("off" if noise_reduction > 50 else "inverse")
-        kpi_cols[0].metric("📉 ノイズ削減率", f"{noise_reduction:.1f}%", delta=delta_text, delta_color=delta_color)
-    with kpi_cols[1]:
-        kpi_cols[1].metric("🔮 予兆検知", f"{prediction_count}件",
-                           delta="⚡ 要注意" if prediction_count > 0 else "問題なし",
-                           delta_color="inverse" if prediction_count > 0 else "normal")
-    with kpi_cols[2]:
-        kpi_cols[2].metric("🚨 要対応インシデント", f"{action_required}件",
-                           delta="↑ 対処が必要" if action_required > 0 else "問題なし",
-                           delta_color="inverse" if action_required > 0 else "normal")
-
-    st.markdown("---")
-
-    # =====================================================
-    # 根本原因候補とダウンストリームの分離
-    # =====================================================
-    root_cause_device_ids = set(a.device_id for a in alarms if a.is_root_cause)
-    downstream_device_ids = set(a.device_id for a in alarms if not a.is_root_cause)
-
     root_cause_candidates = []
-    downstream_devices = []
+    symptom_devices = []
+    unrelated_devices = []
+    downstream_devices = []  # 後方互換
 
     for cand in analysis_results:
         device_id = cand.get('id', '')
+        cls = cand.get('classification', '')
+
         if cand.get('is_prediction'):
             root_cause_candidates.append(cand)
-        elif device_id in root_cause_device_ids:
+        elif cls == 'root_cause':
             root_cause_candidates.append(cand)
-        elif device_id in downstream_device_ids:
+        elif cls == 'symptom':
+            symptom_devices.append(cand)
             downstream_devices.append(cand)
-        elif cand.get('prob', 0) > 0.5:
-            root_cause_candidates.append(cand)
+        elif cls == 'unrelated':
+            unrelated_devices.append(cand)
+        else:
+            # classification が未設定の場合（後方互換）
+            if device_id in set(a.device_id for a in alarms if a.is_root_cause):
+                root_cause_candidates.append(cand)
+            elif device_id in set(a.device_id for a in alarms if not a.is_root_cause):
+                symptom_devices.append(cand)
+                downstream_devices.append(cand)
+            elif cand.get('prob', 0) > 0.5:
+                root_cause_candidates.append(cand)
 
     if not root_cause_candidates:
         root_cause_candidates = [{
             "id": "SYSTEM", "label": "正常稼働", "prob": 0.0,
-            "type": "Normal", "tier": 3, "reason": "異常は検知されていません"
+            "type": "Normal", "tier": 3, "reason": "異常は検知されていません",
+            "classification": "unrelated"
         }]
 
-    if root_cause_candidates and downstream_devices:
-        st.info(f"📍 **根本原因**: {root_cause_candidates[0]['id']} → 影響範囲: 配下 {len(downstream_devices)} 機器")
+    # =====================================================
+    # KPIメトリクス（3分類ベースのノイズ削減率）
+    # =====================================================
+    total_alarms = len(alarms)
+    root_cause_count = len(root_cause_candidates)
+    symptom_count = len(symptom_devices)
+    unrelated_count = len(unrelated_devices)
+    prediction_results = [r for r in analysis_results if r.get('is_prediction')]
+    prediction_count = len(prediction_results)
+    # ノイズ削減率: 総アラート数から真因数を引いた割合
+    noise_reduction = ((total_alarms - root_cause_count) / total_alarms * 100) if total_alarms > 0 else 0.0
+    action_required = root_cause_count
+
+    st.markdown("---")
+
+    # 上段: ステータス・アラーム数・3分類内訳
+    cols = st.columns(3)
+    cols[0].metric("🚨 ステータス", f"{get_status_icon(status)} {status}")
+    cols[1].metric("📊 総アラート数", f"{total_alarms}件")
+    suspect_count = len([r for r in analysis_results if r.get('prob', 0) > 0.5])
+    if prediction_count > 0:
+        cols[2].metric("🎯 被疑箇所", f"{suspect_count}件",
+                       delta=f"うち予兆 {prediction_count}件", delta_color="off")
+    else:
+        cols[2].metric("🎯 被疑箇所", f"{suspect_count}件")
+
+    # 中段: 3分類内訳 + ノイズ削減率
+    cls_cols = st.columns(4)
+    cls_cols[0].metric(
+        "🔴 真因 (Root Cause)", f"{root_cause_count}件",
+        delta=f"-{total_alarms - root_cause_count}件削減" if total_alarms > root_cause_count else None,
+        delta_color="normal"
+    )
+    cls_cols[1].metric("🔗 派生 (Symptom)", f"{symptom_count}件",
+                       help="真因の影響で発生した二次的アラート")
+    cls_cols[2].metric("📢 無関係 (Unrelated)", f"{unrelated_count}件",
+                       help="トポロジー上の因果関係がないノイズアラート")
+    with cls_cols[3]:
+        delta_text = "高効率" if noise_reduction > 90 else ("通常" if noise_reduction > 50 else "要確認")
+        delta_color = "normal" if noise_reduction > 90 else ("off" if noise_reduction > 50 else "inverse")
+        cls_cols[3].metric("📉 ノイズ削減率", f"{noise_reduction:.1f}%",
+                           delta=delta_text, delta_color=delta_color)
+
+    # 下段: 予兆・要対応
+    kpi_cols = st.columns(3)
+    with kpi_cols[0]:
+        kpi_cols[0].metric("🔮 予兆検知", f"{prediction_count}件",
+                           delta="要注意" if prediction_count > 0 else "問題なし",
+                           delta_color="inverse" if prediction_count > 0 else "normal")
+    with kpi_cols[1]:
+        kpi_cols[1].metric("🚨 要対応インシデント", f"{action_required}件",
+                           delta="対処が必要" if action_required > 0 else "問題なし",
+                           delta_color="inverse" if action_required > 0 else "normal")
+    with kpi_cols[2]:
+        pass  # 余白
+
+    st.markdown("---")
+
+    if root_cause_candidates and (symptom_devices or downstream_devices):
+        rc_id = root_cause_candidates[0]['id']
+        total_impact = len(symptom_devices) + len(unrelated_devices)
+        st.info(f"📍 **根本原因**: {rc_id} → 派生: {len(symptom_devices)}件 / 無関係: {len(unrelated_devices)}件")
 
     # =====================================================
     # 🔮 AIOps Future Radar（予兆専用表示エリア）
@@ -1290,18 +1325,29 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             selected_incident_candidate = root_cause_candidates[0]
             target_device_id = root_cause_candidates[0]['id']
 
-        # 影響デバイス（下流）一覧
-        if downstream_devices:
-            with st.expander(f"▼ 影響を受けている機器 ({len(downstream_devices)}台) - 上流復旧待ち", expanded=False):
+        # 派生アラート（Symptom）一覧
+        if symptom_devices:
+            with st.expander(f"🔗 派生アラート (Symptom): {len(symptom_devices)}件 - 上流復旧待ち", expanded=False):
                 dd_df = pd.DataFrame([
-                    {"No": i+1, "デバイス": d['id'], "状態": "⚫ 応答なし", "備考": "上流復旧待ち"}
-                    for i, d in enumerate(downstream_devices)
+                    {"No": i+1, "デバイス": d['id'], "状態": "⚫ 応答なし",
+                     "原因": d.get('label', ''), "備考": "上流復旧待ち"}
+                    for i, d in enumerate(symptom_devices)
                 ])
-                if len(downstream_devices) >= 10:
+                if len(symptom_devices) >= 10:
                     with st.container(height=300):
                         st.dataframe(dd_df, use_container_width=True, hide_index=True)
                 else:
                     st.dataframe(dd_df, use_container_width=True, hide_index=True)
+
+        # 無関係アラート（Unrelated / ノイズ）一覧
+        if unrelated_devices:
+            with st.expander(f"📢 無関係アラート (Unrelated): {len(unrelated_devices)}件", expanded=False):
+                ur_df = pd.DataFrame([
+                    {"No": i+1, "デバイス": d['id'],
+                     "アラート": d.get('label', ''), "確信度": f"{d.get('prob', 0)*100:.0f}%"}
+                    for i, d in enumerate(unrelated_devices)
+                ])
+                st.dataframe(ur_df, use_container_width=True, hide_index=True)
 
     # =====================================================
     # 2カラムレイアウト
@@ -1311,8 +1357,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # === 左カラム: トポロジー & Auto-Diagnostics ===
     with col_map:
         st.subheader("🌐 Network Topology")
-        graph = render_topology_graph(topology, alarms, analysis_results)
-        st.graphviz_chart(graph, use_container_width=True)
+        render_topology_graph(topology, alarms, analysis_results)
 
         st.markdown("---")
         st.subheader("🛠️ Auto-Diagnostics")
