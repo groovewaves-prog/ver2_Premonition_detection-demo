@@ -314,12 +314,14 @@ network.fit({{ padding: 40 }});
 # BFS 影響伝搬グラフ
 # =====================================================
 
-# ホップ距離ごとの色
-_HOP_COLORS = {
-    0: {"bg": "#EF5350", "border": "#C62828"},   # Root Cause — 赤
-    1: {"bg": "#FF7043", "border": "#D84315"},   # 1hop — 濃オレンジ
-    2: {"bg": "#FFA726", "border": "#EF6C00"},   # 2hop — オレンジ
-    3: {"bg": "#FFCC80", "border": "#FF9800"},   # 3hop — 薄オレンジ
+# トポロジーマップと同じ色定義（状態ベース）
+_IMPACT_STATE_COLORS = {
+    "root_cause_critical": {"bg": "#ffcdd2", "border": "#C62828", "font": "#B71C1C"},
+    "root_cause_warning":  {"bg": "#fff9c4", "border": "#F9A825", "font": "#333"},
+    "silent":              {"bg": "#e1bee7", "border": "#9C27B0", "font": "#333"},
+    "symptom":             {"bg": "#FFE0B2", "border": "#E65100", "font": "#BF360C"},
+    "unreachable":         {"bg": "#cfd8dc", "border": "#78909C", "font": "#546e7a"},
+    "normal":              {"bg": "#e8f5e9", "border": "#a5d6a7", "font": "#333"},
 }
 
 
@@ -327,18 +329,62 @@ def render_impact_graph(
     root_device_id: str,
     downstream_impacts: List[Tuple[str, int]],
     topology: dict,
+    analysis_results: List[Dict[str, Any]] = None,
+    alarms: list = None,
 ):
     """
     BFS影響伝搬グラフを vis.js で描画する。
+    色はトポロジーマップと統一された状態ベースの配色を使用。
 
     Args:
         root_device_id: 真因デバイスID
         downstream_impacts: [(device_id, hop_distance), ...] — _get_downstream_impact() の出力
         topology: トポロジー辞書（parent_id 参照用）
+        analysis_results: 分析結果（ノード色決定用）
+        alarms: アラーム一覧（severity/silent判定用）
     """
     if not downstream_impacts:
         st.caption("影響範囲なし（配下デバイスなし）")
         return
+
+    # --- 状態マップ構築 ---
+    classification_map = {}
+    severity_map = {}
+    if analysis_results:
+        for r in analysis_results:
+            classification_map[r.get('id', '')] = r.get('classification', '')
+            severity_map[r.get('id', '')] = r.get('status', '')
+
+    alarm_info_map = {}
+    if alarms:
+        for a in alarms:
+            if a.device_id not in alarm_info_map:
+                alarm_info_map[a.device_id] = {'severity': 'INFO', 'is_silent': False}
+            if a.severity == 'CRITICAL':
+                alarm_info_map[a.device_id]['severity'] = 'CRITICAL'
+            elif a.severity == 'WARNING' and alarm_info_map[a.device_id]['severity'] != 'CRITICAL':
+                alarm_info_map[a.device_id]['severity'] = 'WARNING'
+            if hasattr(a, 'is_silent_suspect') and a.is_silent_suspect:
+                alarm_info_map[a.device_id]['is_silent'] = True
+
+    def _get_node_state(dev_id: str, is_root: bool = False) -> str:
+        """トポロジーマップと同じロジックで状態を判定"""
+        alarm_info = alarm_info_map.get(dev_id, {})
+        cls = classification_map.get(dev_id, '')
+
+        if is_root or cls == 'root_cause':
+            if alarm_info.get('is_silent'):
+                return "silent"
+            elif alarm_info.get('severity') == 'CRITICAL' or severity_map.get(dev_id) in ('RED', 'CRITICAL'):
+                return "root_cause_critical"
+            else:
+                return "root_cause_warning"
+        elif cls == 'symptom':
+            return "symptom"
+        elif alarm_info.get('severity') in ('CRITICAL', 'WARNING'):
+            return "symptom"
+        else:
+            return "unreachable"
 
     # --- ノード生成 ---
     nodes = []
@@ -351,14 +397,15 @@ def render_impact_graph(
 
     # Root Cause ノード
     rc_type = _get_node_type(root_device_id)
-    hop_col = _HOP_COLORS[0]
+    rc_state = _get_node_state(root_device_id, is_root=True)
+    rc_col = _IMPACT_STATE_COLORS[rc_state]
     nodes.append({
         "id": root_device_id,
         "label": f"{root_device_id}\n({rc_type})\n[ROOT CAUSE]",
-        "color": {"background": hop_col["bg"], "border": hop_col["border"]},
+        "color": {"background": rc_col["bg"], "border": rc_col["border"]},
         "shape": "ellipse",
         "borderWidth": 3,
-        "font": {"color": "white", "size": 14, "face": "Arial", "bold": True},
+        "font": {"color": rc_col["font"], "size": 14, "face": "Arial", "bold": True},
         "widthConstraint": {"minimum": 110, "maximum": 200},
         "level": 0,
     })
@@ -366,14 +413,15 @@ def render_impact_graph(
     # 影響デバイスノード
     for dev_id, hop in downstream_impacts:
         dev_type = _get_node_type(dev_id)
-        hop_col = _HOP_COLORS.get(hop, _HOP_COLORS[3])
+        dev_state = _get_node_state(dev_id, is_root=False)
+        dev_col = _IMPACT_STATE_COLORS[dev_state]
         nodes.append({
             "id": dev_id,
             "label": f"{dev_id}\n({dev_type})\n[{hop}hop]",
-            "color": {"background": hop_col["bg"], "border": hop_col["border"]},
+            "color": {"background": dev_col["bg"], "border": dev_col["border"]},
             "shape": "box",
             "borderWidth": 2,
-            "font": {"color": "white" if hop <= 1 else "#333", "size": 12, "face": "Arial"},
+            "font": {"color": dev_col["font"], "size": 12, "face": "Arial"},
             "widthConstraint": {"minimum": 100, "maximum": 180},
             "level": hop,
         })
@@ -388,12 +436,11 @@ def render_impact_graph(
         if parent_id and parent_id in impact_ids:
             key = (parent_id, dev_id)
             if key not in added:
-                # エッジの太さをホップ距離で変える
                 width = max(1, 4 - hop)
                 edges.append({
                     "from": parent_id, "to": dev_id,
                     "arrows": {"to": {"enabled": True, "scaleFactor": 0.8}},
-                    "color": {"color": hop_col["border"], "opacity": 0.8},
+                    "color": {"color": "#999", "opacity": 0.7},
                     "width": width,
                     "smooth": {"type": "cubicBezier", "forceDirection": "vertical", "roundness": 0.3},
                 })
@@ -452,11 +499,11 @@ network.fit({{ padding: 30 }});
 
     # ホップ距離内訳バー
     hop_labels = []
+    sym_col = _IMPACT_STATE_COLORS["symptom"]
     for h in sorted(hop_counts.keys()):
-        hop_col = _HOP_COLORS.get(h, _HOP_COLORS[3])
         hop_labels.append(
             f'<span style="display:inline-block;width:12px;height:12px;'
-            f'background:{hop_col["bg"]};border:1px solid {hop_col["border"]};'
+            f'background:{sym_col["bg"]};border:1px solid {sym_col["border"]};'
             f'vertical-align:middle;margin-right:4px;border-radius:2px;"></span>'
             f'{h}hop: {hop_counts[h]}台'
         )

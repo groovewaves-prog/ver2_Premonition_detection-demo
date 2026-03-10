@@ -307,6 +307,43 @@ class LogicalRCA:
             })
 
         # ==========================================================
+        # ★ 派生アラート自動生成: 真因デバイスの配下に symptom を付与
+        #   alarm_generator が配下デバイスにアラームを生成しない
+        #   シナリオでも、トポロジー上の影響範囲を正確に表示する
+        # ==========================================================
+        analyzed_ids = {r["id"] for r in results}
+        rc_ids_final = {r["id"] for r in results if r.get("classification") == "root_cause"}
+
+        if rc_ids_final:
+            for rc_id in list(rc_ids_final):
+                # 配下デバイスを再帰的に探索
+                queue = [rc_id]
+                visited = {rc_id}
+                while queue:
+                    current = queue.pop(0)
+                    for node_id, node in self.topology.items():
+                        if node_id in visited:
+                            continue
+                        pid = node.get('parent_id') if isinstance(node, dict) else getattr(node, 'parent_id', None)
+                        if pid == current:
+                            visited.add(node_id)
+                            queue.append(node_id)
+                            if node_id not in analyzed_ids:
+                                # 配下デバイスを symptom として追加
+                                results.append({
+                                    "id": node_id,
+                                    "label": f"上流障害 ({rc_id}) の影響",
+                                    "prob": 0.5,
+                                    "type": "Network/Downstream",
+                                    "tier": 2,
+                                    "reason": f"上流デバイス {rc_id} の障害による影響範囲内。通信断の可能性あり。",
+                                    "status": "YELLOW",
+                                    "is_prediction": False,
+                                    "classification": "symptom"
+                                })
+                                analyzed_ids.add(node_id)
+
+        # ==========================================================
         # ★ Digital Twin: 予兆検知
         # ==========================================================
         if self.digital_twin is not None:

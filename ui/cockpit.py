@@ -1388,24 +1388,32 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         render_topology_graph(topology, alarms, analysis_results)
 
         # --- BFS 影響伝搬グラフ（選択インシデントの影響範囲） ---
-        if (selected_incident_candidate
-                and selected_incident_candidate.get('id') != 'SYSTEM'
-                and not selected_incident_candidate.get('is_prediction')):
-            _impact_rc_id = selected_incident_candidate['id']
-            _impact_data = None
-            # DT Engine から BFS 影響範囲を取得
-            if dt_engine and hasattr(dt_engine, '_get_downstream_impact'):
-                try:
-                    _impact_data = dt_engine._get_downstream_impact(_impact_rc_id)
-                except Exception:
-                    pass
-            # DT Engine がない場合、children_map からフォールバック計算
-            if not _impact_data:
-                _impact_data = _compute_downstream_fallback(topology, _impact_rc_id)
+        try:
+            if (selected_incident_candidate
+                    and selected_incident_candidate.get('id') != 'SYSTEM'
+                    and not selected_incident_candidate.get('is_prediction')):
+                _impact_rc_id = selected_incident_candidate['id']
+                _impact_data = None
+                # DT Engine から BFS 影響範囲を取得
+                if dt_engine and hasattr(dt_engine, '_get_downstream_impact'):
+                    try:
+                        _impact_data = dt_engine._get_downstream_impact(_impact_rc_id)
+                    except Exception:
+                        pass
+                # DT Engine がない場合、children_map からフォールバック計算
+                if not _impact_data:
+                    _impact_data = _compute_downstream_fallback(topology, _impact_rc_id)
 
-            if _impact_data:
-                with st.expander(f"🌊 影響伝搬マップ: {_impact_rc_id} → {len(_impact_data)}台", expanded=True):
-                    render_impact_graph(_impact_rc_id, _impact_data, topology)
+                if _impact_data:
+                    with st.expander(f"🌊 影響伝搬マップ: {_impact_rc_id} → {len(_impact_data)}台", expanded=True):
+                        render_impact_graph(
+                            _impact_rc_id, _impact_data, topology,
+                            analysis_results=analysis_results,
+                            alarms=alarms,
+                        )
+        except Exception as _impact_err:
+            import logging as _log
+            _log.getLogger(__name__).warning(f"影響伝搬マップ描画エラー: {_impact_err}")
 
         st.markdown("---")
         st.subheader("🛠️ Auto-Diagnostics")
