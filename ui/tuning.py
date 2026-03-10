@@ -130,16 +130,38 @@ def render_tuning_dashboard(site_id: str):
 
     # ── Tab1: Auto-Tuning ──────────────────────────────────
     with tab1:
-        st.caption("AIによる閾値自動調整の提案を確認し、適用します。")
+        st.caption("AIエージェントが自動的に予兆のアウトカムをラベリングし、閾値最適化の提案を生成・適用します。")
+
+        # ★ 自動チューニング最終実行状態を表示
+        _auto_status = dt_engine.storage.load_state_sqlite("auto_tuning_last_run", None)
+        if _auto_status:
+            _last_ts = _auto_status.get("timestamp", 0)
+            _last_result = _auto_status.get("result", {})
+            _elapsed = time.time() - _last_ts
+            if _elapsed < 60:
+                _elapsed_str = f"{int(_elapsed)}秒前"
+            elif _elapsed < 3600:
+                _elapsed_str = f"{int(_elapsed / 60)}分前"
+            else:
+                _elapsed_str = f"{int(_elapsed / 3600)}時間前"
+
+            _applied_count = len(_last_result.get("auto_applied", []))
+            _expired_count = _last_result.get("expired", 0)
+            _proposals_count = _last_result.get("proposals_generated", 0)
+
+            st.markdown(
+                f"**自動チューニング最終実行**: {_elapsed_str} | "
+                f"期限切れ→FP: {_expired_count}件 | "
+                f"提案生成: {_proposals_count}件 | "
+                f"自動適用: {_applied_count}件"
+            )
 
         col1, _ = st.columns([1, 3])
         if col1.button("🔄 提案を生成 (Generate)"):
             with st.spinner("予兆データの自動ラベリング＆分析中..."):
                 try:
-                    # ★ 提案生成前にアウトカムを自動ラベリング
                     auto_result = _auto_label_outcomes(dt_engine)
                     report = dt_engine.generate_tuning_report(days=30)
-                    # 自動ラベリング結果をレポートに含める
                     if auto_result.get("total_labeled", 0) > 0:
                         report["auto_label_result"] = auto_result
                     st.session_state["tuning_report"] = report
@@ -182,7 +204,6 @@ def render_tuning_dashboard(site_id: str):
                         except Exception as e:
                             st.error(f"適用エラー: {e}")
         else:
-            # ★ 統計情報を表示して、なぜ提案がないかを説明
             if report and report.get("stats"):
                 stats = report["stats"]
                 st.info(
@@ -191,18 +212,20 @@ def render_tuning_dashboard(site_id: str):
                     f"- 評価済み（outcome付き）: **{stats['total_with_outcome']}件**\n"
                     f"- ルールパターン数: **{stats['rules_analyzed']}種類**\n"
                     f"- 提案生成に必要な最低サンプル数: **{stats['min_samples_required']}件/ルール**\n\n"
-                    "💡 提案が生成されるには、同一ルールパターンで最低"
-                    f"**{stats['min_samples_required']}件以上**のラベル付きアウトカム"
-                    "（TP: 実障害確定 / FP: 誤検知 / FN: 検知漏れ）が必要です。\n\n"
-                    "**自動ラベリング済み**: 期限切れ予兆→FP / シミュレーション完了→TP は"
-                    "自動的にラベル付けされました。さらにデータが必要な場合:\n\n"
-                    "1. Incident Cockpit で予兆シミュレーションを複数回実行してください\n"
-                    "2. 連続劣化ストリームを完了させてください\n"
-                    "3. 再度「提案を生成」を押すと、自動ラベリング後に提案が生成されます"
+                    "**自動運用状態**: アウトカムの自動ラベリングは有効です。\n"
+                    "- 障害発生時 → 該当予兆を **TP (実障害確定)** に自動更新\n"
+                    "- 予兆の評価期限超過 → **FP (誤検知)** に自動変換\n"
+                    "- 5分ごとのバックグラウンドサイクルで提案を自動生成・適用\n\n"
+                    f"現在、同一ルールパターンで **{stats['min_samples_required']}件以上**の"
+                    "ラベル付きアウトカムが蓄積されると提案が自動生成されます。"
                 )
             else:
-                st.info("現在、適用すべき新しい提案はありません。\n\n"
-                       "「🔄 提案を生成 (Generate)」ボタンを押して分析を開始してください。")
+                st.info(
+                    "自動チューニングが有効です。\n\n"
+                    "予兆の蓄積に応じてアウトカムを自動ラベリングし、"
+                    "提案の生成・適用をバックグラウンドで実行します。\n\n"
+                    "「🔄 提案を生成 (Generate)」で即時分析も可能です。"
+                )
 
     # ── Tab2: Audit Log ────────────────────────────────────
     with tab2:

@@ -181,6 +181,8 @@ class DigitalTwinEngine:
         # ★ 予測結果キャッシュ（再描画時の冗長API呼び出し防止）
         self._predict_cache: Dict[str, Any] = {}   # key: "dev_id|pattern|level" → predictions
         self._predict_cache_ttl = 30.0              # 30秒間キャッシュ有効
+        self._auto_tuning_interval = 300.0          # 自動チューニングサイクル間隔（5分）
+        self._auto_tuning_last_ts = 0.0
         self._rules_sot = (os.environ.get(ENV_RULES_SOT, "json") or "json").strip().lower()
         self.reload_all()
         # ★ BUG FIX: _ensure_model_loaded() を __init__ から除去
@@ -1206,6 +1208,74 @@ class DigitalTwinEngine:
                 else:
                     skipped.append({"rule": rp, "reason": "db_write_fail"})
         return {"applied": applied, "skipped": skipped}
+
+    # ------------------------------------------------------------------
+    # Auto-Tuning Cycle（本番運用向け自動チューニング）
+    # ------------------------------------------------------------------
+    def maybe_run_auto_tuning(self) -> Optional[Dict[str, Any]]:
+        """間隔制御付きの自動チューニング呼び出し。
+
+        ダッシュボード描画や predict_api から呼ばれても、
+        _auto_tuning_interval (5分) 以内の再実行をスキップする。
+        """
+        now = time.time()
+        if (now - self._auto_tuning_last_ts) < self._auto_tuning_interval:
+            return None
+        self._auto_tuning_last_ts = now
+        try:
+            return self.auto_tuning_cycle()
+        except Exception as e:
+            logger.warning("maybe_run_auto_tuning: %s", e)
+            return None
+
+    def auto_tuning_cycle(self) -> Dict[str, Any]:
+        """バックグラウンドで実行される自動チューニングサイクル。
+
+        本番運用ではボタン押下や手動シミュレーションに依存せず、
+        予兆の自然な蓄積（実障害 or 期限切れ）からアウトカムを自動ラベリングし、
+        十分なサンプルが揃えば提案を自動生成・適用する。
+
+        Returns:
+            {
+                "expired": int,         # 期限切れ→FP に変換した件数
+                "proposals_generated": int,
+                "auto_applied": list,   # 自動適用されたルール
+                "skipped": list,        # スキップされたルール
+            }
+        """
+        result = {"expired": 0, "proposals_generated": 0,
+                  "auto_applied": [], "skipped": []}
+
+        # Step 1: 期限切れ予兆を自動的に false_alarm (FP) に変換
+        try:
+            expire_res = self.forecast_expire_open()
+            result["expired"] = expire_res.get("expired", 0)
+        except Exception as e:
+            logger.warning("auto_tuning_cycle: expire failed: %s", e)
+
+        # Step 2: 提案を生成
+        try:
+            report = self.generate_tuning_report(days=30)
+            proposals = report.get("tuning_proposals", [])
+            result["proposals_generated"] = len(proposals)
+
+            # Step 3: auto-eligible な提案を自動適用
+            if proposals:
+                apply_res = self.apply_tuning_proposals_if_auto(proposals)
+                result["auto_applied"] = apply_res.get("applied", [])
+                result["skipped"] = apply_res.get("skipped", [])
+        except Exception as e:
+            logger.warning("auto_tuning_cycle: report/apply failed: %s", e)
+
+        if result["expired"] or result["proposals_generated"]:
+            logger.info("auto_tuning_cycle: %s", result)
+
+        # 最終実行時刻を記録
+        self.storage.save_state_sqlite("auto_tuning_last_run", {
+            "timestamp": time.time(),
+            "result": result,
+        })
+        return result
 
     def repair_db_from_rules_json(self) -> bool:
         try:
