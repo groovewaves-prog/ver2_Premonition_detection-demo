@@ -1795,12 +1795,14 @@ class DigitalTwinEngine:
         ]
 
         # ★ 高速化: 結果をキャッシュに保存
-        self._predict_cache[_cache_key] = {"ts": time.time(), "results": _final_results}
-        # キャッシュサイズ制限（最大50件）
-        if len(self._predict_cache) > 50:
-            _oldest = sorted(self._predict_cache.items(), key=lambda x: x[1]["ts"])[:20]
-            for k, _ in _oldest:
-                self._predict_cache.pop(k, None)
+        _now_ts = time.time()
+        self._predict_cache[_cache_key] = {"ts": _now_ts, "results": _final_results}
+        # キャッシュサイズ制限: TTL切れのみ削除（ソート不要で O(n)）
+        if len(self._predict_cache) > 100:
+            self._predict_cache = {
+                k: v for k, v in self._predict_cache.items()
+                if (_now_ts - v["ts"]) < self._predict_cache_ttl
+            }
 
         return _final_results
 

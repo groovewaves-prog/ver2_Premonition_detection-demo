@@ -4,7 +4,10 @@ import pandas as pd
 import json
 import time
 import hashlib
+import logging
 from typing import Optional, List, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import google.generativeai as genai
@@ -125,9 +128,14 @@ def _build_ci_context_for_chat(topology: dict, target_node_id: str) -> dict:
         else:
             ci["parent_device"] = None  # ルートデバイス
 
-        # 子デバイス一覧（直接の配下）
+        # 子/冗長ペア/同レイヤーを1パスで収集（トポロジー走査を3→1に削減）
         children = []
+        peers = []
+        same_layer = []
         for nid, n in topology.items():
+            if nid == target_node_id:
+                continue
+            # 子デバイス
             if _get(n, 'parent_id') == target_node_id:
                 n_md = _get(n, 'metadata') or {}
                 children.append({
@@ -136,30 +144,21 @@ def _build_ci_context_for_chat(topology: dict, target_node_id: str) -> dict:
                     "vendor": _pick_first(n_md, ["vendor", "manufacturer"], default=""),
                     "os":     _pick_first(n_md, ["os", "platform"], default=""),
                 })
+            # 冗長ペア
+            if redundancy_group and _get(n, 'redundancy_group') == redundancy_group:
+                n_md = _get(n, 'metadata') or {}
+                peers.append({
+                    "id":     nid,
+                    "type":   _get(n, 'type', ''),
+                    "vendor": _pick_first(n_md, ["vendor", "manufacturer"], default=""),
+                    "os":     _pick_first(n_md, ["os", "platform"], default=""),
+                })
+            # 同一レイヤー
+            if _get(n, 'layer') == node_layer:
+                same_layer.append(nid)
         ci["children_devices"] = children
         ci["children_count"]   = len(children)
-
-        # 冗長ペアデバイス（同じredundancy_groupに属する他のデバイス）
-        if redundancy_group:
-            peers = []
-            for nid, n in topology.items():
-                if nid == target_node_id:
-                    continue
-                if _get(n, 'redundancy_group') == redundancy_group:
-                    n_md = _get(n, 'metadata') or {}
-                    peers.append({
-                        "id":     nid,
-                        "type":   _get(n, 'type', ''),
-                        "vendor": _pick_first(n_md, ["vendor", "manufacturer"], default=""),
-                        "os":     _pick_first(n_md, ["os", "platform"], default=""),
-                    })
-            ci["redundancy_peers"] = peers
-        else:
-            ci["redundancy_peers"] = []  # SPOFであることを明示
-
-        # 同一レイヤーのデバイス一覧（参考情報）
-        same_layer = [nid for nid, n in topology.items()
-                      if _get(n, 'layer') == node_layer and nid != target_node_id]
+        ci["redundancy_peers"] = peers
         ci["same_layer_devices"] = same_layer
 
     # ---- コンフィグファイル（configsフォルダ） ----
@@ -581,7 +580,7 @@ def _get_cached_dt_engine(site_id: str, topo_hash: str, _topology):
 # =====================================================
 def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     display_name = get_display_name(site_id)
-    scenario = st.session_state.site_scenarios.get(site_id, "正常稼働")
+    scenario = getattr(st.session_state, 'site_scenarios', {}).get(site_id, "正常稼働")
 
     # ヘッダー
     col_header = st.columns([4, 1])
@@ -605,8 +604,13 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         st.error("トポロジーが読み込めませんでした。")
         return
 
-    # アラーム生成
-    alarms = generate_alarms_for_scenario(topology, scenario)
+    # アラーム生成（シナリオ不変ならキャッシュ利用）
+    _alarm_cache_key = f"_alarm_cache_{site_id}_{scenario}"
+    if _alarm_cache_key in st.session_state:
+        alarms = st.session_state[_alarm_cache_key]
+    else:
+        alarms = generate_alarms_for_scenario(topology, scenario)
+        st.session_state[_alarm_cache_key] = alarms
     status = get_status_from_alarms(scenario, alarms)
     
     # 予兆シグナル注入
@@ -625,8 +629,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # LogicalRCA エンジン
     engine = _get_cached_logical_rca(topology)
 
-    if alarms:
+    # 分析結果キャッシュ（アラーム内容が同じなら再計算不要）
+    _analysis_cache_key = f"_analysis_cache_{site_id}_{scenario}"
+    _alarm_hash = hash(tuple((a.device_id, a.message, a.severity) for a in alarms)) if alarms else 0
+    _cached_analysis = st.session_state.get(_analysis_cache_key)
+    if _cached_analysis and _cached_analysis.get("hash") == _alarm_hash:
+        analysis_results = _cached_analysis["results"]
+    elif alarms:
         analysis_results = engine.analyze(alarms)
+        st.session_state[_analysis_cache_key] = {"hash": _alarm_hash, "results": analysis_results}
     else:
         analysis_results = [{
             "id": "SYSTEM",
@@ -636,6 +647,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             "tier": 3,
             "reason": "アラームなし"
         }]
+        st.session_state[_analysis_cache_key] = {"hash": _alarm_hash, "results": analysis_results}
 
     # =====================================================
     # ★ Phase1: DigitalTwinEngine.predict_api() 接続 (爆速キャッシュ版)
@@ -771,6 +783,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         if _ck_pred_cache not in st.session_state:
             st.session_state[_ck_pred_cache] = {}
 
+        # ★ GenAI モデルをループ外で1回だけ初期化（デバイスごとの再初期化を防止）
+        _genai_model = None
+        if api_key and GENAI_AVAILABLE:
+            try:
+                genai.configure(api_key=api_key)
+                _genai_model = genai.GenerativeModel('gemma-3-4b-it')
+            except Exception:
+                pass
+
         for _dev_id, (_msgs_list, _src) in _grouped.items():
             try:
                 _combined_msg = "\n".join(_msgs_list)
@@ -831,12 +852,11 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     for _p in _preds_returned:
                         _actions = _p.get("recommended_actions", [])
                         if not _actions or len(_actions) <= 1:
-                            if api_key and GENAI_AVAILABLE:
+                            if _genai_model is not None:
                                 try:
                                     import json as _json
                                     import re as _re
-                                    genai.configure(api_key=api_key)
-                                    
+
                                     # ★ 機器情報をプロンプトに注入（初動トリアージ専用）
                                     _prompt = f"""
                                     あなたは熟練のネットワークAIOpsエンジニアです。
@@ -877,9 +897,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     ]
                                     """
                                     
-                                    # ★ gemma-3-4b-it を指定（高速推論）
-                                    _model = genai.GenerativeModel('gemma-3-4b-it') 
-                                    _response = _model.generate_content(_prompt)
+                                    # ★ ループ外で初期化済みモデルを使い回し
+                                    _response = _genai_model.generate_content(_prompt)
                                     
                                     _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
                                     
@@ -1895,9 +1914,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     st.session_state.balloons_shown = True
                                 st.success("✅ System Recovered Successfully!")
 
-                                # ★ 追加: 予兆対応の完了後、画面を再描画してスライダーを確実に0に戻す
+                                # ★ 予兆対応の完了後、画面を再描画してスライダーを確実に0に戻す
                                 if is_pred_rem:
-                                    time.sleep(2.5)  # 成功の風船アニメーションを見せるための待機時間
+                                    time.sleep(1.0)  # アニメーション表示（2.5s→1.0sに短縮）
                                     st.rerun()
                                 # ==========================================
                                 if not st.session_state.balloons_shown:
@@ -2096,7 +2115,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     # ==========================================
                                         
                                     st.success(f"✅ {_cnt}件のシグナルをクローズし、システムを正常状態に復旧しました")
-                                    time.sleep(1.5)
+                                    time.sleep(0.8)  # 1.5s→0.8sに短縮
                                     st.rerun()
                         
         else:

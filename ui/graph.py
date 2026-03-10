@@ -21,6 +21,18 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
       5. Unrelated (ノイズ) — 薄紫ダイヤ
       6. Normal — グリーン
     """
+    # ★ トポロジーグラフHTML キャッシュ（入力が同一なら再構築スキップ）
+    _topo_cache_key = "_topo_graph_cache"
+    _alarm_sig = tuple(sorted((a.device_id, a.severity, a.is_root_cause) for a in alarms))
+    _analysis_sig = tuple(sorted((r.get("id", ""), r.get("status", ""), r.get("prob", 0)) for r in analysis_results))
+    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology)))
+    _cached = st.session_state.get(_topo_cache_key)
+    if _cached and _cached.get("sig") == _cache_sig:
+        # キャッシュヒット: HTML描画のみ
+        components.html(_cached["html"], height=680)
+        _render_legend(_cached["used_states"])
+        return
+
     # --- アラーム情報をデバイスIDでマッピング ---
     alarm_map = {}
     for a in alarms:
@@ -202,6 +214,13 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         }
         nodes.append(node_obj)
 
+    # --- 冗長グループインデックスを事前構築 O(n) ---
+    _rg_index: Dict[str, List[str]] = {}
+    for _nid, _n in topology.items():
+        _rg = _n.get('redundancy_group') if isinstance(_n, dict) else getattr(_n, 'redundancy_group', None)
+        if _rg:
+            _rg_index.setdefault(_rg, []).append(_nid)
+
     # --- エッジ生成 ---
     edges = []
     added_edges = set()
@@ -213,18 +232,17 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                 edges.append({"from": parent_id, "to": node_id, "arrows": "to", "color": "#999"})
                 added_edges.add(edge_key)
 
-            # 冗長ペア
+            # 冗長ペア（O(1)ルックアップ）
             p_node = topology.get(parent_id)
             if p_node:
                 rg = p_node.get('redundancy_group') if isinstance(p_node, dict) else getattr(p_node, 'redundancy_group', None)
-                if rg:
-                    for nid, n in topology.items():
-                        n_rg = n.get('redundancy_group') if isinstance(n, dict) else getattr(n, 'redundancy_group', None)
-                        if n_rg == rg and nid != parent_id:
-                            edge_key2 = (nid, node_id)
+                if rg and rg in _rg_index:
+                    for peer_id in _rg_index[rg]:
+                        if peer_id != parent_id:
+                            edge_key2 = (peer_id, node_id)
                             if edge_key2 not in added_edges:
                                 edges.append({
-                                    "from": nid, "to": node_id,
+                                    "from": peer_id, "to": node_id,
                                     "arrows": "to",
                                     "color": {"color": "#B0BEC5", "opacity": 0.6},
                                     "dashes": True,
@@ -284,10 +302,14 @@ var network = new vis.Network(document.getElementById('mynetwork'), data, option
 network.fit({{ padding: 50 }});
 </script></body></html>
 """
+    # ★ キャッシュに保存（次回rerunで再利用）
+    st.session_state[_topo_cache_key] = {"sig": _cache_sig, "html": html, "used_states": used_states}
     components.html(html, height=680)
+    _render_legend(used_states)
 
-    # --- 凡例を Streamlit 側に描画（マップ外・被りなし） ---
-    # 現在使用中の状態のみ表示
+
+def _render_legend(used_states: set):
+    """凡例を Streamlit 側に描画（マップ外・被りなし）"""
     _LEGEND_ITEMS = [
         ("root_cause",  "#ffcdd2", "#A05050", "border-radius:50%", "Root Cause (真因)"),
         ("warning",     "#fff9c4", "#C49840", "",                  "Warning (警告)"),
