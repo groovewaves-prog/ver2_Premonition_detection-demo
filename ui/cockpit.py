@@ -1466,6 +1466,51 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             import logging as _log
             _log.getLogger(__name__).warning(f"影響伝搬マップ描画エラー: {_impact_err}")
 
+        # ── AI学習ルール候補 ──
+        try:
+            _ai_candidates = engine.get_ai_rule_candidates()
+            _ai_stats = engine.get_ai_severity_cache_stats()
+            _total_learned = _ai_stats.get("total_patterns", 0)
+
+            if _total_learned > 0:
+                st.markdown("---")
+                _promoted_count = len(_ai_candidates)
+                st.subheader("🧠 AI学習ルール")
+                st.caption(
+                    f"学習済みパターン: {_total_learned}件 ｜ "
+                    f"ルール昇格候補: {_promoted_count}件 "
+                    f"（同一判定{engine._ai_severity_store.PROMOTION_THRESHOLD}回以上で昇格）"
+                )
+
+                if _promoted_count > 0:
+                    # 昇格候補テーブル
+                    _status_badge = {
+                        "RED": "🔴 CRITICAL",
+                        "YELLOW": "🟡 WARNING",
+                        "GREEN": "🟢 NORMAL",
+                    }
+                    _rows = []
+                    for c in _ai_candidates:
+                        _rows.append({
+                            "ステータス": _status_badge.get(c["status"], c["status"]),
+                            "スコア": f"{c['avg_score']:.2f}",
+                            "検出回数": c["hit_count"],
+                            "パターン例": c["pattern_sample"][:80],
+                            "AI説明": (c.get("narrative") or "")[:60],
+                            "初回検出": c.get("first_seen", ""),
+                            "最終検出": c.get("last_seen", ""),
+                        })
+                    st.dataframe(_rows, use_container_width=True, hide_index=True)
+                else:
+                    st.info(
+                        "AI判定の蓄積中です。同一パターンが"
+                        f"{engine._ai_severity_store.PROMOTION_THRESHOLD}回以上"
+                        "検出されるとルール候補に昇格します。"
+                    )
+        except Exception as _ai_rule_err:
+            import logging as _log
+            _log.getLogger(__name__).debug(f"AI rule candidates display error: {_ai_rule_err}")
+
         st.markdown("---")
         st.subheader("🛠️ Auto-Diagnostics")
 

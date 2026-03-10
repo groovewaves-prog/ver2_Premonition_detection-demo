@@ -1,10 +1,169 @@
 # inference_engine.py
 import json
+import hashlib
+import logging
 import os
 import re
+import threading
+import time
 from enum import Enum
 from typing import List, Dict, Any, Optional, Set
 from digital_twin_pkg.common import inject_downstream_symptoms, classify_device as _common_classify
+
+_logger = logging.getLogger(__name__)
+
+
+# ==========================================================
+# AI判定結果の永続キャッシュ + 自動ルール昇格
+# ==========================================================
+
+class _AISeverityStore:
+    """
+    AI (LLM) が判定したアラーム重要度を永続保存するストア。
+
+    機能:
+      1. 永続キャッシュ: 同一アラームパターンに対するAI判定結果を
+         JSONファイルに保存し、再起動後もLLM不要で即座に返す
+      2. 自動ルール昇格: 同一パターンが N回以上同じステータスで
+         判定されたら「ルール候補」として昇格フラグを立てる
+
+    保存先: {data_dir}/ai_severity_cache.json
+    """
+
+    PROMOTION_THRESHOLD = 3   # 同一判定N回でルール候補に昇格
+
+    def __init__(self, data_dir: str = "./config"):
+        self._data_dir = data_dir
+        self._file_path = os.path.join(data_dir, "ai_severity_cache.json")
+        self._lock = threading.Lock()
+        self._store: Dict[str, Dict[str, Any]] = {}
+        self._load()
+
+    def _pattern_key(self, alert_text: str) -> str:
+        """アラームテキストを正規化してキーを生成。
+        デバイスID等の固有名詞を除いた汎用パターンとして保存。"""
+        normalized = re.sub(r'[A-Z0-9_]+-[A-Z0-9_]+', '<DEVICE>', alert_text)
+        normalized = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', '<IP>', normalized)
+        normalized = re.sub(r'\d+', '<N>', normalized)
+        normalized = normalized.strip().lower()
+        return hashlib.md5(normalized.encode()).hexdigest()
+
+    def _load(self):
+        """JSONファイルからストアを読み込む。"""
+        if os.path.exists(self._file_path):
+            try:
+                with open(self._file_path, 'r', encoding='utf-8') as f:
+                    self._store = json.load(f)
+                _logger.info(
+                    f"AI severity cache loaded: {len(self._store)} patterns "
+                    f"from {self._file_path}"
+                )
+            except Exception as e:
+                _logger.warning(f"AI severity cache load failed: {e}")
+                self._store = {}
+        else:
+            self._store = {}
+
+    def _save(self):
+        """ストアをJSONファイルに永続保存する。"""
+        try:
+            os.makedirs(self._data_dir, exist_ok=True)
+            with open(self._file_path, 'w', encoding='utf-8') as f:
+                json.dump(self._store, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            _logger.warning(f"AI severity cache save failed: {e}")
+
+    def lookup(self, alert_text: str) -> Optional[Dict[str, Any]]:
+        """キャッシュ済みの判定結果を検索。なければ None。"""
+        key = self._pattern_key(alert_text)
+        with self._lock:
+            entry = self._store.get(key)
+        if entry is None:
+            return None
+        return {
+            "status": entry["status"],
+            "avg_score": entry["avg_score"],
+            "narrative": entry.get("narrative", ""),
+            "hit_count": entry.get("hit_count", 0),
+            "is_promoted": entry.get("is_promoted", False),
+        }
+
+    def record(
+        self,
+        alert_text: str,
+        status: str,
+        avg_score: float,
+        narrative: str = "",
+    ):
+        """AI判定結果を記録。同一パターンの累積カウントを更新し、
+        閾値超えでルール候補に昇格する。"""
+        key = self._pattern_key(alert_text)
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                entry = {
+                    "pattern_sample": alert_text[:200],
+                    "status": status,
+                    "avg_score": avg_score,
+                    "narrative": narrative,
+                    "hit_count": 1,
+                    "is_promoted": False,
+                    "first_seen": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "last_seen": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "status_history": {status: 1},
+                }
+            else:
+                entry["hit_count"] = entry.get("hit_count", 0) + 1
+                entry["last_seen"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                # ステータス履歴を更新
+                sh = entry.get("status_history", {})
+                sh[status] = sh.get(status, 0) + 1
+                entry["status_history"] = sh
+                # 最頻ステータスで上書き
+                dominant_status = max(sh, key=sh.get)
+                dominant_count = sh[dominant_status]
+                entry["status"] = dominant_status
+                entry["avg_score"] = avg_score
+                entry["narrative"] = narrative
+                # 昇格判定: 同一ステータスが N回以上
+                if dominant_count >= self.PROMOTION_THRESHOLD:
+                    entry["is_promoted"] = True
+
+            self._store[key] = entry
+            self._save()
+
+    def get_promoted_rules(self) -> List[Dict[str, Any]]:
+        """ルール昇格候補の一覧を返す。"""
+        with self._lock:
+            return [
+                {
+                    "pattern_sample": v.get("pattern_sample", ""),
+                    "status": v["status"],
+                    "avg_score": v.get("avg_score", 0),
+                    "hit_count": v.get("hit_count", 0),
+                    "first_seen": v.get("first_seen", ""),
+                    "last_seen": v.get("last_seen", ""),
+                    "narrative": v.get("narrative", ""),
+                }
+                for v in self._store.values()
+                if v.get("is_promoted", False)
+            ]
+
+    def get_all_entries(self) -> List[Dict[str, Any]]:
+        """全キャッシュエントリを返す（管理画面用）。"""
+        with self._lock:
+            return [
+                {
+                    "pattern_sample": v.get("pattern_sample", ""),
+                    "status": v["status"],
+                    "avg_score": v.get("avg_score", 0),
+                    "hit_count": v.get("hit_count", 0),
+                    "is_promoted": v.get("is_promoted", False),
+                    "first_seen": v.get("first_seen", ""),
+                    "last_seen": v.get("last_seen", ""),
+                }
+                for v in self._store.values()
+            ]
 
 # 新SDK優先、旧SDKにフォールバック
 try:
@@ -75,12 +234,15 @@ class LogicalRCA:
                 # V45 Engine Initialization
                 # tenant_id defaults to "default", data is stored in ./data/default
                 self.digital_twin = DigitalTwinEngine(
-                    topology=self.topology, 
+                    topology=self.topology,
                     children_map=self.children_map,
-                    tenant_id="default" 
+                    tenant_id="default"
                 )
             except Exception as e:
                 print(f"[!] Digital Twin initialization failed: {e}")
+
+        # AI判定結果の永続ストア
+        self._ai_severity_store = _AISeverityStore(data_dir=config_dir)
 
     # ----------------------------
     # Topology helpers
@@ -398,11 +560,37 @@ class LogicalRCA:
         # ── 未知パターン: LLM による動的ステータス判定 ──
         return self._llm_assess_severity(device_id, joined)
 
+    def _score_to_result(
+        self, status_str: str, avg_score: float, narrative: str, source: str,
+    ) -> Dict[str, Any]:
+        """スコアと判定ステータスから統一結果辞書を生成する。"""
+        status_map = {"RED": HealthStatus.CRITICAL, "YELLOW": HealthStatus.WARNING, "GREEN": HealthStatus.NORMAL}
+        hs = status_map.get(status_str, HealthStatus.WARNING)
+
+        if hs == HealthStatus.CRITICAL:
+            reason = f"AI判定: 重大な障害の可能性 (スコア: {avg_score:.2f}). {narrative}"
+            impact = "AI/Critical"
+        elif hs == HealthStatus.WARNING:
+            reason = f"AI判定: 注意が必要 (スコア: {avg_score:.2f}). {narrative}"
+            impact = "AI/Warning"
+        else:
+            reason = f"AI判定: 低リスク (スコア: {avg_score:.2f}). {narrative}"
+            impact = "AI/Normal"
+
+        if source == "cache":
+            reason = f"[学習済] {reason}"
+
+        return {"status": hs, "reason": reason, "impact_type": impact}
+
     def _llm_assess_severity(self, device_id: str, alert_text: str) -> Dict[str, Any]:
         """
-        既知ルールにマッチしないアラームに対し、LLMの semantic + trend
-        スコアでステータスを動的に判定する。
-        LLM未接続時は従来通り YELLOW フォールバック。
+        既知ルールにマッチしないアラームに対する AI ステータス判定。
+
+        フロー:
+          1. 永続キャッシュを参照 → ヒットすればLLM不要で即返却
+          2. キャッシュミス → LLM呼び出し → 結果を永続保存
+          3. 同一パターンが N回蓄積 → 自動ルール候補に昇格
+          4. LLM未接続時は従来通り YELLOW フォールバック
         """
         _fallback = {
             "status": HealthStatus.WARNING,
@@ -410,13 +598,31 @@ class LogicalRCA:
             "impact_type": "Generic/Warning",
         }
 
-        # Digital Twin 経由で LLM クライアントを取得
+        # ── 1. 永続キャッシュ参照 ──
+        cached = self._ai_severity_store.lookup(alert_text)
+        if cached is not None:
+            _logger.debug(
+                f"AI severity cache hit for {device_id}: "
+                f"{cached['status']} (count={cached['hit_count']})"
+            )
+            # キャッシュヒットでもカウント加算（昇格判定の更新）
+            self._ai_severity_store.record(
+                alert_text=alert_text,
+                status=cached["status"],
+                avg_score=cached["avg_score"],
+                narrative=cached.get("narrative", ""),
+            )
+            return self._score_to_result(
+                cached["status"], cached["avg_score"],
+                cached.get("narrative", ""), source="cache",
+            )
+
+        # ── 2. LLM 呼び出し ──
         llm = getattr(self.digital_twin, "llm", None) if self.digital_twin else None
         if llm is None or not llm.available:
             return _fallback
 
         try:
-            # デバイス種別をトポロジーから取得
             info = self._get_device_info(device_id)
             device_type = "network"
             if isinstance(info, dict):
@@ -430,32 +636,40 @@ class LogicalRCA:
                 device_type=str(device_type),
             )
 
-            # semantic (意味的深刻度) と trend (悪化傾向) の平均で判定
             avg_score = (result.scores.semantic + result.scores.trend) / 2.0
             narrative = result.scores.narrative or ""
 
             if avg_score >= self._LLM_CRITICAL_THRESHOLD:
-                return {
-                    "status": HealthStatus.CRITICAL,
-                    "reason": f"AI判定: 重大な障害の可能性 (スコア: {avg_score:.2f}). {narrative}",
-                    "impact_type": "AI/Critical",
-                }
+                status_str = "RED"
             elif avg_score >= self._LLM_WARNING_THRESHOLD:
-                return {
-                    "status": HealthStatus.WARNING,
-                    "reason": f"AI判定: 注意が必要 (スコア: {avg_score:.2f}). {narrative}",
-                    "impact_type": "AI/Warning",
-                }
+                status_str = "YELLOW"
             else:
-                return {
-                    "status": HealthStatus.NORMAL,
-                    "reason": f"AI判定: 低リスク (スコア: {avg_score:.2f}). {narrative}",
-                    "impact_type": "AI/Normal",
-                }
-        except Exception as e:
-            # LLM 呼び出し失敗 → 従来フォールバック
-            import logging
-            logging.getLogger(__name__).warning(
-                f"LLM severity assessment failed for {device_id}: {e}"
+                status_str = "GREEN"
+
+            # ── 3. 永続保存（自動昇格判定を含む）──
+            self._ai_severity_store.record(
+                alert_text=alert_text,
+                status=status_str,
+                avg_score=avg_score,
+                narrative=narrative,
             )
+
+            return self._score_to_result(status_str, avg_score, narrative, source="llm")
+
+        except Exception as e:
+            _logger.warning(f"LLM severity assessment failed for {device_id}: {e}")
             return _fallback
+
+    def get_ai_rule_candidates(self) -> List[Dict[str, Any]]:
+        """自動ルール昇格候補の一覧を返す（UI向け公開API）。"""
+        return self._ai_severity_store.get_promoted_rules()
+
+    def get_ai_severity_cache_stats(self) -> Dict[str, Any]:
+        """AI判定キャッシュの統計情報を返す。"""
+        entries = self._ai_severity_store.get_all_entries()
+        promoted = [e for e in entries if e.get("is_promoted")]
+        return {
+            "total_patterns": len(entries),
+            "promoted_rules": len(promoted),
+            "entries": entries,
+        }
