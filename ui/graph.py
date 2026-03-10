@@ -61,17 +61,21 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             node_type = node.get('type', 'UNKNOWN')
             metadata = node.get('metadata', {})
             redundancy_type = metadata.get('redundancy_type') if isinstance(metadata, dict) else None
+            vendor = metadata.get('vendor') if isinstance(metadata, dict) else None
         else:
             node_type = getattr(node, 'type', 'UNKNOWN')
             metadata = getattr(node, 'metadata', {})
             redundancy_type = (metadata.get('redundancy_type')
                                if isinstance(metadata, dict)
                                else getattr(metadata, 'redundancy_type', None))
+            vendor = (metadata.get('vendor')
+                      if isinstance(metadata, dict)
+                      else getattr(metadata, 'vendor', None))
 
         # デフォルト（正常）
         bg_color = NodeColor.NORMAL
-        border_color = NodeColor.NORMAL
-        border_width = 1
+        border_color = "#a5d6a7"
+        border_width = 2
         font_color = "#333"
         shape = "box"
         font_bg = None
@@ -79,8 +83,13 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         status_tag = ""
         state_key = "normal"
 
+        # 冗長タイプ: "PSU" → "PSU Redundancy"
         if redundancy_type:
-            label_parts.append(f"[{redundancy_type}]")
+            rt_display = f"{redundancy_type} Redundancy" if redundancy_type in ("PSU", "HA", "STACK") else redundancy_type
+            label_parts.append(f"[{rt_display}]")
+        # ベンダー名
+        if vendor:
+            label_parts.append(f"[{vendor}]")
 
         # --- 色決定（優先順位順） ---
 
@@ -106,7 +115,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                 else:
                     bg_color = NodeColor.ROOT_CAUSE_WARNING
                     border_color = "#F9A825"
-                    border_width = 2
+                    border_width = 3
                     status_tag = "WARNING"
                     state_key = "warning"
             else:
@@ -174,8 +183,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 
         font_config = {
             "color": font_color,
-            "size": 13,
-            "face": "Arial",
+            "size": 14,
+            "face": "Arial, sans-serif",
             "bold": status_tag in ("ROOT CAUSE", "PREDICTION"),
         }
         if font_bg:
@@ -188,8 +197,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             "shape": shape,
             "borderWidth": border_width,
             "font": font_config,
-            "widthConstraint": {"minimum": 100, "maximum": 180},
-            "heightConstraint": {"minimum": 35},
+            "widthConstraint": {"minimum": 150, "maximum": 220},
+            "heightConstraint": {"minimum": 50},
         }
         nodes.append(node_obj)
 
@@ -246,9 +255,9 @@ var options = {{
             enabled: true,
             direction: "UD",
             sortMethod: "directed",
-            levelSeparation: 120,
-            nodeSpacing: 220,
-            treeSpacing: 250,
+            levelSeparation: 140,
+            nodeSpacing: 240,
+            treeSpacing: 280,
             blockShifting: true,
             edgeMinimization: true,
             parentCentralization: true
@@ -263,18 +272,19 @@ var options = {{
         dragNodes: false
     }},
     nodes: {{
-        font: {{ size: 13, face: 'Arial', multi: false }},
-        margin: {{ top: 8, bottom: 8, left: 10, right: 10 }}
+        font: {{ size: 14, face: 'Arial, sans-serif', multi: false }},
+        margin: {{ top: 10, bottom: 10, left: 14, right: 14 }},
+        shapeProperties: {{ borderRadius: 8 }}
     }},
     edges: {{
         smooth: {{ type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 }}
     }}
 }};
 var network = new vis.Network(document.getElementById('mynetwork'), data, options);
-network.fit({{ padding: 40 }});
+network.fit({{ padding: 50 }});
 </script></body></html>
 """
-    components.html(html, height=620)
+    components.html(html, height=680)
 
     # --- 凡例を Streamlit 側に描画（マップ外・被りなし） ---
     # 現在使用中の状態のみ表示

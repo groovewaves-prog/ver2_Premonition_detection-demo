@@ -22,6 +22,10 @@ AIOps Agent - Alarm Generator Module
 
 from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass, field
+from digital_twin_pkg.common import (
+    get_node_attr, get_redundancy_group as _common_get_rg,
+    get_downstream_devices, get_all_downstream, build_children_map,
+)
 
 
 # =====================================================
@@ -99,79 +103,18 @@ def _find_redundancy_group_members(topology: dict, group_name: str) -> List[str]
 
 
 def _get_redundancy_group(topology: dict, node_id: str) -> Optional[str]:
-    """ノードが属する冗長グループを取得"""
-    node = topology.get(node_id)
-    if not node:
-        return None
-    
-    if hasattr(node, 'redundancy_group'):
-        return node.redundancy_group
-    else:
-        return node.get('redundancy_group')
+    """後方互換ラッパー → common.get_redundancy_group に委譲"""
+    return _common_get_rg(topology, node_id)
 
 
 def _get_all_downstream_devices(topology: dict, root_ids: List[str]) -> List[str]:
-    """
-    指定デバイス群の配下にある全デバイスを再帰的に取得
-    冗長グループを考慮：冗長グループの場合、グループ全体の配下を取得
-    """
-    downstream = set()
-    visited = set(root_ids)
-    
-    def _get_children(parent_id: str) -> List[str]:
-        children = []
-        for node_id, node in topology.items():
-            if node_id in visited:
-                continue
-            
-            if hasattr(node, 'parent_id'):
-                pid = node.parent_id
-            else:
-                pid = node.get('parent_id')
-            
-            # 親IDが直接一致、または親が冗長グループのメンバー
-            if pid == parent_id:
-                children.append(node_id)
-            elif pid:
-                # 親が冗長グループのメンバーかチェック
-                parent_rg = _get_redundancy_group(topology, pid)
-                root_rg = _get_redundancy_group(topology, parent_id)
-                if parent_rg and root_rg and parent_rg == root_rg:
-                    children.append(node_id)
-        return children
-    
-    # 各root_idから配下を探索
-    for root_id in root_ids:
-        queue = [root_id]
-        while queue:
-            current = queue.pop(0)
-            children = _get_children(current)
-            for child in children:
-                if child not in downstream and child not in root_ids:
-                    downstream.add(child)
-                    visited.add(child)
-                    queue.append(child)
-    
-    return list(downstream)
+    """後方互換ラッパー → common.get_all_downstream に委譲"""
+    return get_all_downstream(topology, root_ids, consider_redundancy=True)
 
 
 def _get_downstream_of_single_device(topology: dict, root_id: str) -> List[str]:
-    """単一デバイスの直接配下を取得（冗長グループ考慮なし）"""
-    downstream = []
-    
-    def _recurse(parent_id: str):
-        for node_id, node in topology.items():
-            if hasattr(node, 'parent_id'):
-                pid = node.parent_id
-            else:
-                pid = node.get('parent_id')
-            
-            if pid == parent_id:
-                downstream.append(node_id)
-                _recurse(node_id)
-    
-    _recurse(root_id)
-    return downstream
+    """後方互換ラッパー → common.get_downstream_devices に委譲"""
+    return get_downstream_devices(topology, root_id)
 
 
 # =====================================================

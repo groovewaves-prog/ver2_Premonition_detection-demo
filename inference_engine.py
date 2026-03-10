@@ -3,7 +3,8 @@ import json
 import os
 import re
 from enum import Enum
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
+from digital_twin_pkg.common import inject_downstream_symptoms, classify_device as _common_classify
 
 # 新SDK優先、旧SDKにフォールバック
 try:
@@ -308,40 +309,9 @@ class LogicalRCA:
 
         # ==========================================================
         # ★ 派生アラート自動生成: 真因デバイスの配下に symptom を付与
-        #   alarm_generator が配下デバイスにアラームを生成しない
-        #   シナリオでも、トポロジー上の影響範囲を正確に表示する
+        #   → digital_twin_pkg.common.inject_downstream_symptoms() に委譲
         # ==========================================================
-        analyzed_ids = {r["id"] for r in results}
-        rc_ids_final = {r["id"] for r in results if r.get("classification") == "root_cause"}
-
-        if rc_ids_final:
-            for rc_id in list(rc_ids_final):
-                # 配下デバイスを再帰的に探索
-                queue = [rc_id]
-                visited = {rc_id}
-                while queue:
-                    current = queue.pop(0)
-                    for node_id, node in self.topology.items():
-                        if node_id in visited:
-                            continue
-                        pid = node.get('parent_id') if isinstance(node, dict) else getattr(node, 'parent_id', None)
-                        if pid == current:
-                            visited.add(node_id)
-                            queue.append(node_id)
-                            if node_id not in analyzed_ids:
-                                # 配下デバイスを symptom として追加
-                                results.append({
-                                    "id": node_id,
-                                    "label": f"上流障害 ({rc_id}) の影響",
-                                    "prob": 0.5,
-                                    "type": "Network/Downstream",
-                                    "tier": 2,
-                                    "reason": f"上流デバイス {rc_id} の障害による影響範囲内。通信断の可能性あり。",
-                                    "status": "YELLOW",
-                                    "is_prediction": False,
-                                    "classification": "symptom"
-                                })
-                                analyzed_ids.add(node_id)
+        inject_downstream_symptoms(self.topology, results)
 
         # ==========================================================
         # ★ Digital Twin: 予兆検知
@@ -387,35 +357,14 @@ class LogicalRCA:
         alarm_severity_map: Dict[str, str],
     ) -> str:
         """
-        デバイスを3分類する:
-          root_cause — 真因（障害の根本原因）
-          symptom    — 派生（真因の影響で発生した二次的アラート）
-          unrelated  — 無関係（トポロジー上の因果関係がないノイズ）
+        デバイスを3分類する → digital_twin_pkg.common.classify_device に委譲
         """
-        # サイレント障害疑い → root_cause
-        if device_id in silent_suspects:
-            return "root_cause"
-
-        # is_root_cause フラグが立っている → root_cause
-        if device_id in root_cause_device_ids:
-            return "root_cause"
-
-        # 親デバイスが root_cause → symptom（上流障害の影響）
-        parent_id = self._get_parent_id(device_id)
-        if parent_id and parent_id in root_cause_device_ids:
-            return "symptom"
-
-        # 親の親まで遡って root_cause を探索（多段カスケード対応）
-        visited = set()
-        current = parent_id
-        while current and current not in visited:
-            visited.add(current)
-            if current in root_cause_device_ids or current in silent_suspects:
-                return "symptom"
-            current = self._get_parent_id(current)
-
-        # 上記のいずれにも該当しない → unrelated（ノイズ）
-        return "unrelated"
+        return _common_classify(
+            device_id,
+            root_cause_ids=root_cause_device_ids,
+            silent_suspect_ids=set(silent_suspects.keys()),
+            topology=self.topology,
+        )
 
     def analyze_redundancy_depth(self, device_id: str, alerts: List[str]) -> Dict[str, Any]:
         if not alerts:
