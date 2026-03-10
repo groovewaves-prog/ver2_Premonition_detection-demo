@@ -42,6 +42,121 @@ def _st_html(html: str, height: int = 0) -> None:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# vis-timeline イベントタイムライン
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_SEVERITY_COLORS = {
+    "CRITICAL": "#D32F2F",
+    "WARNING":  "#FF9800",
+    "NORMAL":   "#4CAF50",
+    "INFO":     "#2196F3",
+}
+
+
+def _render_event_timeline(events: List, sim) -> None:
+    """
+    vis-timeline でアラームイベントをインタラクティブに描画する。
+
+    Args:
+        events: List[StreamEvent] — 時系列イベントリスト
+        sim: AlarmStreamSimulator — 開始時刻の取得用
+    """
+    import json as _json
+    import streamlit.components.v1 as _components
+
+    sim_start_ts = getattr(sim, '_start_time', None) or time.time()
+    sim_start_dt = datetime.fromtimestamp(sim_start_ts)
+
+    # 直近30件に制限（vis-timeline のパフォーマンス考慮）
+    display_events = events[-30:]
+
+    items = []
+    for idx, ev in enumerate(display_events):
+        ev_dt = sim_start_dt + timedelta(seconds=ev.elapsed_sec)
+        iso_str = ev_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+        msg = ev.messages[0][:80] if ev.messages else ""
+        extra = f" (+{len(ev.messages)-1})" if len(ev.messages) > 1 else ""
+        severity_color = _SEVERITY_COLORS.get(ev.severity, "#999")
+
+        items.append({
+            "id": idx,
+            "content": f"<b>L{ev.level}</b> {msg}{extra}",
+            "start": iso_str,
+            "style": f"background-color:{severity_color};color:white;"
+                     f"border-color:{severity_color};border-radius:3px;"
+                     f"font-size:11px;padding:2px 6px;",
+            "title": f"[{ev.elapsed_sec:.1f}s] {ev.severity} L{ev.level}\n"
+                     + "\n".join(ev.messages[:5]),
+        })
+
+    items_json = _json.dumps(items, ensure_ascii=False)
+
+    # タイムライン範囲
+    first_dt = sim_start_dt + timedelta(seconds=display_events[0].elapsed_sec - 2)
+    last_dt = sim_start_dt + timedelta(seconds=display_events[-1].elapsed_sec + 5)
+    min_iso = first_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    max_iso = last_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    html = f"""
+<html><head>
+<script src="https://unpkg.com/vis-timeline/standalone/umd/vis-timeline-graph2d.min.js"></script>
+<link href="https://unpkg.com/vis-timeline/styles/vis-timeline-graph2d.min.css" rel="stylesheet" />
+<style>
+  body {{ margin:0; padding:0; }}
+  #timeline {{ width:100%; height:240px; font-family:Arial,sans-serif; }}
+  .vis-item {{ cursor: pointer; }}
+  .vis-item .vis-item-overflow {{ overflow: visible; }}
+</style>
+</head>
+<body>
+<div id="timeline"></div>
+<script>
+var items = new vis.DataSet({items_json});
+var options = {{
+    height: '240px',
+    min: '{min_iso}',
+    max: '{max_iso}',
+    zoomMin: 5000,
+    zoomMax: 600000,
+    margin: {{ item: 8, axis: 5 }},
+    orientation: {{ axis: 'top' }},
+    stack: true,
+    showCurrentTime: false,
+    tooltip: {{
+        followMouse: true,
+        overflowMethod: 'cap'
+    }},
+    format: {{
+        minorLabels: {{ second: 's', minute: 'HH:mm', hour: 'HH:mm' }},
+        majorLabels: {{ second: 'HH:mm', minute: 'HH:mm', hour: 'MMM D' }}
+    }}
+}};
+var timeline = new vis.Timeline(document.getElementById('timeline'), items, options);
+timeline.fit({{ animation: false }});
+</script></body></html>
+"""
+    _components.html(html, height=260)
+
+    # 凡例バー
+    sev_items = []
+    for sev, color in _SEVERITY_COLORS.items():
+        if sev in ("NORMAL", "INFO"):
+            continue
+        sev_items.append(
+            f'<span style="display:inline-block;width:12px;height:12px;'
+            f'background:{color};border-radius:2px;vertical-align:middle;'
+            f'margin-right:4px;"></span>{sev}'
+        )
+    st.markdown(
+        f'<div style="font-size:11px;color:#666;margin-top:2px;">'
+        + "&nbsp;&nbsp;&nbsp;".join(sev_items)
+        + "&nbsp;&nbsp;|&nbsp;&nbsp;ズーム・スクロールで時間範囲を調整できます</div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # セッションステート管理
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -736,40 +851,12 @@ def render_stream_dashboard():
 
         st.markdown("---")
 
-        # ── 4. イベントログ ──
+        # ── 4. イベントログ（vis-timeline） ──
         st.markdown("**📋 アラームイベントログ**")
         if events:
-            # 最新5件を表示（新しい順）
-            for ev in reversed(events[-5:]):
-                border_color = ev.color
-                severity_badge = (
-                    f"<span style='background:#D32F2F;color:white;padding:1px 6px;"
-                    f"border-radius:3px;font-size:10px;'>CRITICAL</span>"
-                    if ev.severity == "CRITICAL"
-                    else f"<span style='background:#FF9800;color:white;padding:1px 6px;"
-                    f"border-radius:3px;font-size:10px;'>WARNING</span>"
-                )
-                time_display = f"{ev.elapsed_sec:.1f}s"
-                msg_display = ev.messages[0][:100] + ("..." if len(ev.messages[0]) > 100 else "")
-
-                extra_line = ""
-                if len(ev.messages) > 1:
-                    extra_count = len(ev.messages) - 1
-                    extra_line = f"<br><span style='color:#999;font-size:10px;'>+ {extra_count} more alerts</span>"
-
-                _st_html(
-                    f"<div style='border-left:3px solid {border_color};padding:4px 8px;"
-                    f"margin:3px 0;font-size:12px;background:#FAFAFA;border-radius:2px;'>"
-                    f"<span style='color:#999;'>[{time_display}]</span> "
-                    f"{severity_badge} "
-                    f"<span style='color:#333;'>L{ev.level}</span> "
-                    f"<code style='font-size:11px;'>{msg_display}</code>"
-                    f"{extra_line}"
-                    f"</div>"
-                )
-
-            if len(events) > 5:
-                st.caption(f"...他 {len(events) - 5} 件のイベント")
+            _render_event_timeline(events, sim)
+            if len(events) > 30:
+                st.caption(f"直近30件を表示中（全{len(events)}件）")
         else:
             st.caption("イベント待機中...")
 

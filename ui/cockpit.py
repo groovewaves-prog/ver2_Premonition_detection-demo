@@ -24,7 +24,7 @@ from network_ops import (
 from utils.helpers import get_status_from_alarms, get_status_icon, load_config_by_id
 from utils.llm_helper import get_rate_limiter, generate_content_with_retry
 from verifier import verify_log_content
-from .graph import render_topology_graph
+from .graph import render_topology_graph, render_impact_graph
 
 
 def _st_html(html: str, height: int = 0) -> None:
@@ -52,6 +52,34 @@ def _compute_topo_hash(topology: dict) -> str:
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _compute_downstream_fallback(topology: dict, root_id: str, max_hops: int = 3):
+    """
+    DT Engine が利用できない場合、topology の parent_id から
+    BFS で配下デバイスと hop 距離を計算するフォールバック。
+    Returns: List[Tuple[str, int]]  — [(device_id, hop_distance), ...]
+    """
+    # parent → children マップ構築
+    children_map: Dict[str, List[str]] = {}
+    for dev_id, node in topology.items():
+        pid = node.get('parent_id') if isinstance(node, dict) else getattr(node, 'parent_id', None)
+        if pid:
+            children_map.setdefault(pid, []).append(dev_id)
+
+    results = []
+    queue = [(root_id, 0)]
+    visited = {root_id}
+    while queue:
+        current, hop = queue.pop(0)
+        if hop > 0:
+            results.append((current, hop))
+        if hop < max_hops:
+            for child in children_map.get(current, []):
+                if child not in visited:
+                    visited.add(child)
+                    queue.append((child, hop + 1))
+    return results
 
 
 def _pick_first(mapping: dict, keys: list, default: str = "") -> str:
@@ -1358,6 +1386,26 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     with col_map:
         st.subheader("🌐 Network Topology")
         render_topology_graph(topology, alarms, analysis_results)
+
+        # --- BFS 影響伝搬グラフ（選択インシデントの影響範囲） ---
+        if (selected_incident_candidate
+                and selected_incident_candidate.get('id') != 'SYSTEM'
+                and not selected_incident_candidate.get('is_prediction')):
+            _impact_rc_id = selected_incident_candidate['id']
+            _impact_data = None
+            # DT Engine から BFS 影響範囲を取得
+            if dt_engine and hasattr(dt_engine, '_get_downstream_impact'):
+                try:
+                    _impact_data = dt_engine._get_downstream_impact(_impact_rc_id)
+                except Exception:
+                    pass
+            # DT Engine がない場合、children_map からフォールバック計算
+            if not _impact_data:
+                _impact_data = _compute_downstream_fallback(topology, _impact_rc_id)
+
+            if _impact_data:
+                with st.expander(f"🌊 影響伝搬マップ: {_impact_rc_id} → {len(_impact_data)}台", expanded=True):
+                    render_impact_graph(_impact_rc_id, _impact_data, topology)
 
         st.markdown("---")
         st.subheader("🛠️ Auto-Diagnostics")
