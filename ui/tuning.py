@@ -385,9 +385,16 @@ def _render_gnn_training_tab(site_id: str, dt_engine):
                 st.line_chart(loss_df, x="epoch", y="loss", height=250)
 
             st.info(
-                "💡 モデルが保存されました。エンジンを再起動すると自動的にロードされます。\n\n"
-                "「🧹 Cache Clear」（Maintenanceタブ）を実行してエンジンを再初期化してください。"
+                "💡 モデルが保存されました。エンジンを再初期化して新しいモデルをロードします…"
             )
+
+            # 学習完了後、エンジンを自動的に再初期化
+            st.cache_resource.clear()
+            for k in [f"dt_engine_{site_id}", f"dt_engine_error_{site_id}"]:
+                if k in st.session_state:
+                    del st.session_state[k]
+            time.sleep(1.0)
+            st.rerun()
         else:
             # エラー詳細を表示
             error_msg = result.get("error", "不明なエラー") if isinstance(result, dict) else "不明なエラー"
