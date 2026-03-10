@@ -828,7 +828,7 @@ def render_stream_dashboard():
         st.markdown("---")
 
         # ── 2. メトリクスゲージ + KPI ──
-        col_gauge, col_kpi1, col_kpi2, col_kpi3 = st.columns([2, 1, 1, 1])
+        col_gauge, col_kpi1 = st.columns([1, 2])
 
         current_metric = events[-1].metric_value if events else seq.normal_value
         with col_gauge:
@@ -842,33 +842,136 @@ def render_stream_dashboard():
             _st_html(gauge_svg, height=190)
 
         with col_kpi1:
-            st.metric(
-                "現在レベル",
-                f"{current_level}/5",
-                delta=f"+{current_level - (events[-2].level if len(events) >= 2 else 0)}" if len(events) >= 2 and events[-1].level != events[-2].level else None,
-                delta_color="inverse",
-            )
-            st.metric("イベント数", f"{len(events)}")
-
-        with col_kpi2:
-            # 実時間ベースの予測情報を表示
+            # ── KPI データ準備 ──
             _base_ttf = SCENARIO_BASE_TTF_HOURS.get(seq.pattern, 336)
             _decay = _DETERMINISTIC_DECAY.get(current_level, 1.0)
             _rul_hours = max(1, int(_base_ttf * _decay))
-            if _rul_hours >= 24:
-                st.metric("障害予測", f"{_rul_hours // 24}日後")
-            else:
-                st.metric("障害予測", f"{_rul_hours}時間後")
+            ttf_display = f"{_rul_hours // 24}日後" if _rul_hours >= 24 else f"{_rul_hours}時間後"
+
+            severity = events[-1].severity if events else "NORMAL"
             elapsed = sim.current_elapsed_sec
             remaining = max(0, sim.total_duration_sec - elapsed)
-            st.metric("シミュ残", f"{remaining:.0f}s")
-
-        with col_kpi3:
-            severity = events[-1].severity if events else "NORMAL"
-            severity_display = "🔴 CRITICAL" if severity == "CRITICAL" else "🟡 WARNING" if severity == "WARNING" else "🟢 NORMAL"
-            st.metric("重要度", severity_display)
             latest_stage = events[-1].stage_label if events else "-"
-            st.metric("ステージ", latest_stage)
+
+            # ── カード色ロジック ──
+            # レベル色
+            if current_level >= 4:
+                lvl_bg, lvl_border, lvl_text = "#FDE8E8", "#D32F2F", "#B71C1C"
+            elif current_level >= 2:
+                lvl_bg, lvl_border, lvl_text = "#FFF3E0", "#FF9800", "#E65100"
+            else:
+                lvl_bg, lvl_border, lvl_text = "#E8F5E9", "#4CAF50", "#1B5E20"
+
+            # 障害予測色
+            if _rul_hours <= 6:
+                ttf_bg, ttf_border, ttf_text = "#FDE8E8", "#D32F2F", "#B71C1C"
+            elif _rul_hours <= 24:
+                ttf_bg, ttf_border, ttf_text = "#FFF3E0", "#FF9800", "#E65100"
+            else:
+                ttf_bg, ttf_border, ttf_text = "#E3F2FD", "#1976D2", "#0D47A1"
+
+            # 重要度色
+            if severity == "CRITICAL":
+                sev_bg, sev_border, sev_text = "#FDE8E8", "#D32F2F", "#B71C1C"
+                sev_icon, sev_label = "●", "CRITICAL"
+            elif severity == "WARNING":
+                sev_bg, sev_border, sev_text = "#FFF3E0", "#FF9800", "#E65100"
+                sev_icon, sev_label = "●", "WARNING"
+            else:
+                sev_bg, sev_border, sev_text = "#E8F5E9", "#4CAF50", "#1B5E20"
+                sev_icon, sev_label = "●", "NORMAL"
+
+            # ステージ色
+            _stage_critical = any(k in latest_stage for k in ["障害直前", "障害", "Critical", "Failure"])
+            if _stage_critical:
+                stg_bg, stg_border, stg_text = "#FDE8E8", "#D32F2F", "#B71C1C"
+            else:
+                stg_bg, stg_border, stg_text = "#F3E5F5", "#7B1FA2", "#4A148C"
+
+            # パルスアニメーション判定
+            _pulse_level = current_level >= 4
+            _pulse_ttf = _rul_hours <= 6
+            _pulse_severity = severity == "CRITICAL"
+            _pulse_stage = _stage_critical
+
+            def _pulse_cls(flag: bool) -> str:
+                return " kpi-pulse" if flag else ""
+
+            kpi_html = f"""
+            <style>
+              @keyframes kpiPulse {{
+                0%   {{ box-shadow: 0 0 0 0 rgba(211,47,47,0.4); }}
+                70%  {{ box-shadow: 0 0 0 8px rgba(211,47,47,0); }}
+                100% {{ box-shadow: 0 0 0 0 rgba(211,47,47,0); }}
+              }}
+              .kpi-grid {{
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 8px;
+              }}
+              .kpi-card {{
+                border-radius: 8px;
+                padding: 10px 14px;
+                border-left: 4px solid;
+                min-height: 62px;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+              }}
+              .kpi-card.kpi-pulse {{
+                animation: kpiPulse 1.8s ease-in-out infinite;
+              }}
+              .kpi-label {{
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                margin-bottom: 2px;
+                opacity: 0.8;
+              }}
+              .kpi-value {{
+                font-size: 20px;
+                font-weight: 700;
+                line-height: 1.2;
+              }}
+            </style>
+            <div class="kpi-grid">
+              <!-- Row 1 -->
+              <div class="kpi-card{_pulse_cls(_pulse_level)}"
+                   style="background:{lvl_bg};border-color:{lvl_border};">
+                <div class="kpi-label" style="color:{lvl_text};">現在レベル</div>
+                <div class="kpi-value" style="color:{lvl_text};">{current_level}/5</div>
+              </div>
+              <div class="kpi-card{_pulse_cls(_pulse_ttf)}"
+                   style="background:{ttf_bg};border-color:{ttf_border};">
+                <div class="kpi-label" style="color:{ttf_text};">障害予測</div>
+                <div class="kpi-value" style="color:{ttf_text};">{ttf_display}</div>
+              </div>
+              <div class="kpi-card{_pulse_cls(_pulse_severity)}"
+                   style="background:{sev_bg};border-color:{sev_border};">
+                <div class="kpi-label" style="color:{sev_text};">重要度</div>
+                <div class="kpi-value" style="color:{sev_text};">
+                  <span style="color:{sev_border};font-size:14px;">&#11044;</span> {sev_label}
+                </div>
+              </div>
+              <!-- Row 2 -->
+              <div class="kpi-card"
+                   style="background:#F5F5F5;border-color:#9E9E9E;">
+                <div class="kpi-label" style="color:#616161;">イベント数</div>
+                <div class="kpi-value" style="color:#424242;">{len(events)}</div>
+              </div>
+              <div class="kpi-card"
+                   style="background:#F5F5F5;border-color:#9E9E9E;">
+                <div class="kpi-label" style="color:#616161;">シミュ残</div>
+                <div class="kpi-value" style="color:#424242;">{remaining:.0f}s</div>
+              </div>
+              <div class="kpi-card{_pulse_cls(_pulse_stage)}"
+                   style="background:{stg_bg};border-color:{stg_border};">
+                <div class="kpi-label" style="color:{stg_text};">ステージ</div>
+                <div class="kpi-value" style="color:{stg_text};">{latest_stage}</div>
+              </div>
+            </div>
+            """
+            _st_html(kpi_html, height=155)
 
         st.markdown("---")
 
