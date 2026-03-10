@@ -1093,45 +1093,47 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             f'</div>'
         )
 
-    _kpi_html = f"""
-    <div style="border:1px solid #e0e0e0;border-radius:10px;overflow:hidden;margin:12px 0 16px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-      <!-- ステータスバナー -->
-      <div style="background:{_banner_bg};border-bottom:2px solid {_banner_color};padding:14px 20px;display:flex;align-items:center;gap:14px;">
-        <div style="font-size:28px;color:{_banner_color};line-height:1;">{_banner_icon}</div>
-        <div>
-          <div style="font-size:18px;font-weight:700;color:{_banner_color};line-height:1.2;">{_banner_text}</div>
-          <div style="font-size:13px;color:#666;margin-top:2px;">{_banner_sub}</div>
-        </div>
-        <div style="margin-left:auto;display:flex;gap:12px;align-items:center;">
-          {_prediction_chip}
-        </div>
-      </div>
-      <!-- KPI数値 -->
-      <div style="display:flex;padding:12px 20px;gap:0;background:#fff;">
-        <div style="flex:1;text-align:center;border-right:1px solid #eee;">
-          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Alerts</div>
-          <div style="font-size:26px;font-weight:700;color:#333;line-height:1.3;">{total_alarms}</div>
-        </div>
-        <div style="flex:1;text-align:center;border-right:1px solid #eee;">
-          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Root Cause</div>
-          <div style="font-size:26px;font-weight:700;color:#EF5350;line-height:1.3;">{root_cause_count}</div>
-        </div>
-        <div style="flex:1;text-align:center;border-right:1px solid #eee;">
-          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Impact</div>
-          <div style="font-size:26px;font-weight:700;color:#FFA726;line-height:1.3;">{symptom_count}</div>
-        </div>
-        <div style="flex:1;text-align:center;">
-          <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Noise Reduction</div>
-          <div style="font-size:26px;font-weight:700;color:#333;line-height:1.3;">{noise_reduction:.0f}%</div>
-        </div>
-      </div>
-      <!-- 分類バー -->
-      <div style="padding:0 20px 12px 20px;background:#fff;">
-        {_bar_html}
-      </div>
+    _kpi_full_html = f"""
+<html><head><style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: transparent; }}
+</style></head>
+<body>
+<div style="border:1px solid #e0e0e0;border-radius:10px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="background:{_banner_bg};border-bottom:2px solid {_banner_color};padding:14px 20px;display:flex;align-items:center;gap:14px;">
+    <div style="font-size:28px;color:{_banner_color};line-height:1;">{_banner_icon}</div>
+    <div style="flex:1;">
+      <div style="font-size:18px;font-weight:700;color:{_banner_color};line-height:1.2;">{_banner_text}</div>
+      <div style="font-size:13px;color:#666;margin-top:2px;">{_banner_sub}</div>
     </div>
-    """
-    st.markdown(_kpi_html, unsafe_allow_html=True)
+    {_prediction_chip}
+  </div>
+  <div style="display:flex;padding:12px 20px;gap:0;background:#fff;">
+    <div style="flex:1;text-align:center;border-right:1px solid #eee;">
+      <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Alerts</div>
+      <div style="font-size:26px;font-weight:700;color:#333;line-height:1.3;">{total_alarms}</div>
+    </div>
+    <div style="flex:1;text-align:center;border-right:1px solid #eee;">
+      <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Root Cause</div>
+      <div style="font-size:26px;font-weight:700;color:#EF5350;line-height:1.3;">{root_cause_count}</div>
+    </div>
+    <div style="flex:1;text-align:center;border-right:1px solid #eee;">
+      <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Impact</div>
+      <div style="font-size:26px;font-weight:700;color:#FFA726;line-height:1.3;">{symptom_count}</div>
+    </div>
+    <div style="flex:1;text-align:center;">
+      <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:0.5px;">Noise Reduction</div>
+      <div style="font-size:26px;font-weight:700;color:#333;line-height:1.3;">{noise_reduction:.0f}%</div>
+    </div>
+  </div>
+  <div style="padding:0 20px 12px 20px;background:#fff;">
+    {_bar_html}
+  </div>
+</div>
+</body></html>
+"""
+    import streamlit.components.v1 as _kpi_components
+    _kpi_components.html(_kpi_full_html, height=170)
 
     # =====================================================
     # 🔮 AIOps Future Radar（予兆専用表示エリア）
