@@ -1003,26 +1003,31 @@ def render_stream_dashboard():
         st.markdown("---")
 
         # ── 3. 劣化曲線チャート（実時間軸） ──
-        metric_history = sim.get_metric_history(events=events)
-        realtime_history, rt_x_start, rt_x_end = sim.get_realtime_metric_history(events=events)
-        _sim_start_dt = datetime.fromtimestamp(sim._start_time) if sim._start_time else datetime.now()
-        # イベント数が変わった時だけ再生成（最もコストの高いSVG）
+        # ★ 高速化: キャッシュチェックを先に行い、ヒット時はmetric_history計算をスキップ
         _chart_cache_key = f"{len(events)}|{current_level}|{start_lvl}|{seq.pattern}"
-        chart_svg = _svg_cached("degradation", _chart_cache_key,
-            _render_degradation_chart_svg,
-            metric_history=metric_history,
-            normal_value=seq.normal_value,
-            failure_value=seq.failure_value,
-            metric_name=seq.metric_name,
-            metric_unit=seq.metric_unit,
-            total_duration=sim.total_duration_sec,
-            realtime_history=realtime_history,
-            realtime_x_start=rt_x_start,
-            realtime_x_end=rt_x_end,
-            scenario_key=seq.pattern,
-            start_level=start_lvl,
-            sim_start_dt=_sim_start_dt,
-        )
+        _chart_full_key = f"degradation:{_chart_cache_key}"
+        _chart_cache = st.session_state.get(_SVG_CACHE_KEY, {})
+        if _chart_full_key in _chart_cache:
+            chart_svg = _chart_cache[_chart_full_key]
+        else:
+            metric_history = sim.get_metric_history(events=events)
+            realtime_history, rt_x_start, rt_x_end = sim.get_realtime_metric_history(events=events)
+            _sim_start_dt = datetime.fromtimestamp(sim._start_time) if sim._start_time else datetime.now()
+            chart_svg = _svg_cached("degradation", _chart_cache_key,
+                _render_degradation_chart_svg,
+                metric_history=metric_history,
+                normal_value=seq.normal_value,
+                failure_value=seq.failure_value,
+                metric_name=seq.metric_name,
+                metric_unit=seq.metric_unit,
+                total_duration=sim.total_duration_sec,
+                realtime_history=realtime_history,
+                realtime_x_start=rt_x_start,
+                realtime_x_end=rt_x_end,
+                scenario_key=seq.pattern,
+                start_level=start_lvl,
+                sim_start_dt=_sim_start_dt,
+            )
         # 横スクロール対応ラッパー
         import streamlit.components.v1 as _components
         _scroll_html = (
