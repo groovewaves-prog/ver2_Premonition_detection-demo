@@ -29,7 +29,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
         # キャッシュヒット: HTML描画のみ
-        components.html(_cached["html"], height=680)
+        components.html(_cached["html"], height=650)
         _render_legend(_cached["used_states"])
         return
 
@@ -261,7 +261,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 <style>
   body {{ margin:0; padding:0; overflow:hidden; }}
-  #mynetwork {{ width:100%; height:600px; border:1px solid #e0e0e0; border-radius:4px; }}
+  #mynetwork {{ width:100%; height:640px; border:1px solid #e0e0e0; border-radius:4px; }}
 </style>
 </head>
 <body>
@@ -307,7 +307,7 @@ network.fit({{ padding: 50 }});
 """
     # ★ キャッシュに保存（次回rerunで再利用）
     st.session_state[_topo_cache_key] = {"sig": _cache_sig, "html": html, "used_states": used_states}
-    components.html(html, height=680)
+    components.html(html, height=650)
     _render_legend(used_states)
 
 
@@ -339,7 +339,7 @@ def _render_legend(used_states: set):
         st.markdown(
             f'<div style="font-size:12px;font-family:Arial,sans-serif;'
             f'padding:6px 12px;background:#fafafa;border:1px solid #e0e0e0;'
-            f'border-radius:4px;margin-top:4px;">'
+            f'border-radius:4px;margin-top:-8px;">'
             f'<b>Legend:</b>&nbsp;&nbsp;{legend_row}</div>',
             unsafe_allow_html=True,
         )

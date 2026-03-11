@@ -4,11 +4,11 @@ import os
 from typing import List
 from utils.const import ImpactLevel, SCENARIO_IMPACT_MAP
 
-# Alarm型の簡易定義（cockpit.py から import される想定）
+# Alarm型: alarm_generator から直接 import
 try:
-    from ui.cockpit import Alarm
+    from alarm_generator import Alarm
 except ImportError:
-    # Fallback: cockpit.py がまだロードされていない場合
+    # Fallback: alarm_generator がまだロードされていない場合
     class Alarm:
         def __init__(self, device_id, message, severity, is_root_cause=False):
             self.device_id = device_id

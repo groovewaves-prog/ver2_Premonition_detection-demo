@@ -50,9 +50,9 @@ def main():
         with tab_tune:
             render_tuning_dashboard(active_site)
 
-        # ストリーム実行中: 自動リフレッシュ
+        # ストリーム実行中: 自動リフレッシュ（間隔を短縮して俊敏性向上）
         if stream_running and needs_refresh:
-            time.sleep(2)
+            time.sleep(1)
             st.rerun()
     else:
         tab1, tab2 = st.tabs(["📊 拠点状態ボード", "🚨 トリアージ"])
