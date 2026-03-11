@@ -23,7 +23,6 @@ from ui.stream.helpers import (
     save_simulator as _save_simulator,
     clear_simulator as _clear_simulator,
     svg_cached as _svg_cached,
-    SVG_CACHE_KEY as _SVG_CACHE_KEY,
 )
 from ui.stream.svg_charts import (
     render_metric_gauge_svg,
@@ -173,7 +172,7 @@ def render_stream_dashboard():
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
         relative_level = max(0, current_level - start_lvl + 1) if current_level >= start_lvl else 0
-        _tl_cache_key = f"{relative_level}|{int(progress)}"
+        _tl_cache_key = f"{relative_level}|{int(progress // 5 * 5)}"
         timeline_svg = _svg_cached("timeline", _tl_cache_key,
                                    render_timeline_svg, relative_level, progress, stages_info)
         st_html(timeline_svg, height=100)
@@ -185,7 +184,7 @@ def render_stream_dashboard():
 
         current_metric = events[-1].metric_value if events else seq.normal_value
         with col_gauge:
-            _gauge_cache_key = f"{round(current_metric, 1)}|{seq.normal_value}|{seq.failure_value}"
+            _gauge_cache_key = f"{round(current_metric)}|{seq.normal_value}|{seq.failure_value}"
             gauge_svg = _svg_cached("gauge", _gauge_cache_key,
                                     render_metric_gauge_svg,
                                     current_value=current_metric,
@@ -216,29 +215,24 @@ def render_stream_dashboard():
 
         # ── 3. 劣化曲線チャート（実時間軸） ──
         _chart_cache_key = f"{len(events)}|{current_level}|{start_lvl}|{seq.pattern}"
-        _chart_full_key = f"degradation:{_chart_cache_key}"
-        _chart_cache = st.session_state.get(_SVG_CACHE_KEY, {})
-        if _chart_full_key in _chart_cache:
-            chart_svg = _chart_cache[_chart_full_key]
-        else:
-            metric_history = sim.get_metric_history(events=events)
-            realtime_history, rt_x_start, rt_x_end = sim.get_realtime_metric_history(events=events)
-            _sim_start_dt = datetime.fromtimestamp(sim._start_time) if sim._start_time else datetime.now()
-            chart_svg = _svg_cached("degradation", _chart_cache_key,
-                render_degradation_chart_svg,
-                metric_history=metric_history,
-                normal_value=seq.normal_value,
-                failure_value=seq.failure_value,
-                metric_name=seq.metric_name,
-                metric_unit=seq.metric_unit,
-                total_duration=sim.total_duration_sec,
-                realtime_history=realtime_history,
-                realtime_x_start=rt_x_start,
-                realtime_x_end=rt_x_end,
-                scenario_key=seq.pattern,
-                start_level=start_lvl,
-                sim_start_dt=_sim_start_dt,
-            )
+        metric_history = sim.get_metric_history(events=events)
+        realtime_history, rt_x_start, rt_x_end = sim.get_realtime_metric_history(events=events)
+        _sim_start_dt = datetime.fromtimestamp(sim._start_time) if sim._start_time else datetime.now()
+        chart_svg = _svg_cached("degradation", _chart_cache_key,
+            render_degradation_chart_svg,
+            metric_history=metric_history,
+            normal_value=seq.normal_value,
+            failure_value=seq.failure_value,
+            metric_name=seq.metric_name,
+            metric_unit=seq.metric_unit,
+            total_duration=sim.total_duration_sec,
+            realtime_history=realtime_history,
+            realtime_x_start=rt_x_start,
+            realtime_x_end=rt_x_end,
+            scenario_key=seq.pattern,
+            start_level=start_lvl,
+            sim_start_dt=_sim_start_dt,
+        )
         # 横スクロール対応ラッパー
         import streamlit.components.v1 as _components
         _scroll_html = (
