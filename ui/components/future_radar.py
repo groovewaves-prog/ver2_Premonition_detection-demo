@@ -2,10 +2,7 @@
 import streamlit as st
 from typing import List
 from .helpers import st_html
-from .command_popup import (
-    render_triage_cards,
-    show_command_popup_if_pending,
-)
+from .command_popup import render_triage_cards
 from ui.service_tier import render_tier_gated, TIER_PHM
 
 
@@ -13,9 +10,6 @@ def render_future_radar(prediction_candidates: List[dict]):
     """予兆候補の表示エリア。prediction_candidatesが空なら何も表示しない。"""
     if not prediction_candidates:
         return
-
-    # ★ 拡張B: 保留中のトリアージコマンド実行結果ポップアップを表示
-    show_command_popup_if_pending()
 
     st.markdown("### 🔮 AIOps Future Radar")
     with render_tier_gated(TIER_PHM, "予兆検知 (Future Radar)"), st.container(border=True):
