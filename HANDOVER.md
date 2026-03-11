@@ -100,6 +100,21 @@
 - `ui/graph.py`: `levelSeparation` 120→160px、`nodeSpacing` 180→220px、`treeSpacing` 220→250px
 - コンテナ高さ 640→700px、iframe 650→720px
 
+### 8. トリアージ結果 → AI復旧計画への自動連携
+- **設計思想**: 初動トリアージ（Phase 1: showコマンドで状況把握）→ AI復旧計画（Phase 2: config変更で復旧）の2段階モデル
+- トリアージのコマンド実行結果を session_state に永続蓄積し、AI復旧計画生成時に自動注入
+- **command_popup.py**:
+  - `_store_triage_results()`: トリアージ実行結果をデバイスID別にsession_stateに蓄積
+  - `get_triage_results()`: 蓄積結果の取得API
+  - `format_triage_results_for_llm()`: LLMプロンプト用にフォーマット（出力10行制限でトークン肥大化防止）
+- **report_builders.py**:
+  - `build_prediction_report_scenario()` (Step②): トリアージ実行結果があればプロンプトに注入→実機出力を踏まえたOK/NG判定を生成
+  - `build_prevention_plan_scenario()` (Step③): トリアージ実行結果があればプロンプトに注入→実機状態に基づく具体的な予防措置コマンドを生成
+- **remediation.py**:
+  - 障害時復旧プラン生成でも `analysis_result` にトリアージ結果を連結→ `network_ops.py` の `generate_remediation_commands_streaming()` にコンテキスト伝達
+  - キャッシュキーにトリアージ結果を含めることで、トリアージ実行後は新しい復旧計画が生成される
+  - ステータス表示: 「✅ 初動トリアージの実行結果を検出しました。復旧計画に自動反映されます。」
+
 ## 未完了・保留タスク
 
 （現時点で未完了の将来拡張はありません）

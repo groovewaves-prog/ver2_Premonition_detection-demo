@@ -314,6 +314,9 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx: int):
                         simulate_command_execution(cmd, device_id)
                         for cmd in _cli_cmds
                     ]
+                    # ★ トリアージ結果を永続的に session_state に蓄積
+                    #   → AI復旧計画生成時にコンテキストとして参照される
+                    _store_triage_results(device_id, _title, _results)
                     render_command_result_popup(
                         f"🔧 {_title}: {device_id}",
                         _results,
@@ -341,3 +344,73 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx: int):
                 f'white-space:pre-wrap;line-height:1.6;">📋 手順:\n{_steps_numbered}</div>',
                 unsafe_allow_html=True,
             )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# トリアージ実行結果の永続ストア（AI復旧計画との自動連携用）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_TRIAGE_RESULTS_KEY = "_triage_exec_results"
+
+
+def _store_triage_results(device_id: str, action_title: str, results: list):
+    """トリアージコマンド実行結果を session_state に蓄積する。
+
+    device_id ごとにリストで保持し、同一デバイスの複数トリアージを蓄積可能。
+    AI復旧計画生成時に get_triage_results() で取得される。
+    """
+    if _TRIAGE_RESULTS_KEY not in st.session_state:
+        st.session_state[_TRIAGE_RESULTS_KEY] = {}
+    store = st.session_state[_TRIAGE_RESULTS_KEY]
+    if device_id not in store:
+        store[device_id] = []
+    store[device_id].append({
+        "title": action_title,
+        "results": results,
+        "timestamp": time.time(),
+    })
+
+
+def get_triage_results(device_id: str) -> list:
+    """指定デバイスのトリアージ実行結果を取得する。
+
+    Returns:
+        list of dict: 各要素は {"title": str, "results": [...], "timestamp": float}
+    """
+    store = st.session_state.get(_TRIAGE_RESULTS_KEY, {})
+    return store.get(device_id, [])
+
+
+def format_triage_results_for_llm(device_id: str) -> str:
+    """トリアージ実行結果をLLMプロンプト用テキストに整形する。
+
+    AI復旧計画（ステップ③）生成時にプロンプトへ注入するためのフォーマッタ。
+    結果が無い場合は空文字を返す。
+
+    Returns:
+        str: LLMプロンプトに埋め込むテキスト（空文字=結果なし）
+    """
+    entries = get_triage_results(device_id)
+    if not entries:
+        return ""
+
+    lines = []
+    for entry in entries:
+        title = entry.get("title", "")
+        lines.append(f"■ {title}")
+        for r in entry.get("results", []):
+            cmd = r.get("command", "")
+            status = r.get("status", "")
+            output = r.get("output", "")
+            # 出力は最大10行に制限（プロンプト肥大化防止）
+            output_lines = output.strip().split("\n")
+            if len(output_lines) > 10:
+                output_trimmed = "\n".join(output_lines[:10]) + "\n... (以下省略)"
+            else:
+                output_trimmed = output
+            status_mark = "✅" if status == "success" else "❌"
+            lines.append(f"  {status_mark} {cmd}")
+            lines.append(f"    {output_trimmed}")
+        lines.append("")
+
+    return "\n".join(lines)
