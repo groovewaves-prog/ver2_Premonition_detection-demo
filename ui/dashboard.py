@@ -19,7 +19,7 @@ class SiteStatus:
     warning_count: int
     affected_devices: List[str]
     is_maintenance: bool
-    mttr_estimate: str
+    affected_count: int          # 影響を受けるデバイスの実数
 
 
 def build_site_statuses() -> List[SiteStatus]:
@@ -35,8 +35,6 @@ def build_site_statuses() -> List[SiteStatus]:
         status = get_status_from_alarms(scenario, alarms)
         is_maint = st.session_state.maint_flags.get(site_id, False)
 
-        mttr = f"{30 + summary['total'] * 5}分" if status in ["停止", "要対応"] else "-"
-
         statuses.append(SiteStatus(
             site_id=site_id,
             display_name=get_display_name(site_id),
@@ -47,7 +45,7 @@ def build_site_statuses() -> List[SiteStatus]:
             warning_count=summary['warning'],
             affected_devices=summary['devices'],
             is_maintenance=is_maint,
-            mttr_estimate=mttr
+            affected_count=len(summary['devices']),
         ))
 
     priority = {"停止": 0, "要対応": 1, "注意": 2, "正常": 3}
@@ -75,36 +73,83 @@ def render_site_status_board():
             if i + j < len(statuses):
                 site = statuses[i + j]
                 with col.container(border=True):
-                    c1, c2 = st.columns([3, 1])
-                    c1.markdown(f"### {get_status_icon(site.status)} {site.display_name}")
-                    if c2.button("詳細", key=f"board_det_{site.site_id}", type="primary"):
-                        st.session_state.active_site = site.site_id
-                        # セッション状態をリセット
-                        st.session_state.live_result = None
-                        st.session_state.verification_result = None
-                        st.session_state.generated_report = None
-                        st.session_state.remediation_plan = None
-                        st.session_state.messages = []
-                        st.session_state.chat_session = None
-                        st.rerun()
+                    _render_site_card(site)
 
-                    if site.is_maintenance:
-                        st.caption("🛠️ メンテナンス中")
 
-                    scenario_display = site.scenario.split(". ", 1)[-1] if ". " in site.scenario else site.scenario
-                    st.caption(f"📋 {scenario_display}")
+def _render_site_card(site: SiteStatus):
+    """拠点カードをカスタムHTMLで描画"""
+    # 色テーマ
+    _STATUS_THEME = {
+        "停止":  {"bg": "#FDE8E8", "border": "#D32F2F", "icon": "🔴", "bar": "#D32F2F"},
+        "要対応": {"bg": "#FFF3E0", "border": "#FF9800", "icon": "🟠", "bar": "#FF9800"},
+        "注意":  {"bg": "#FFF8E1", "border": "#FFC107", "icon": "🟡", "bar": "#FFC107"},
+        "正常":  {"bg": "#E8F5E9", "border": "#4CAF50", "icon": "🟢", "bar": "#4CAF50"},
+    }
+    theme = _STATUS_THEME.get(site.status, _STATUS_THEME["正常"])
 
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("ステータス", site.status)
-                    m2.metric("アラーム", f"{site.alarm_count}件")
-                    m3.metric("MTTR", site.mttr_estimate)
+    # 深刻度スコア
+    severity = min(100, site.critical_count * 30 + site.warning_count * 10) if site.alarm_count > 0 else 0
 
-                    if site.alarm_count > 0:
-                        severity = min(100, site.critical_count * 30 + site.warning_count * 10)
-                        st.progress(severity / 100, text=f"深刻度: {severity}%")
+    # シナリオ表示
+    scenario_display = site.scenario.split(". ", 1)[-1] if ". " in site.scenario else site.scenario
 
-                    if site.affected_devices:
-                        st.caption(f"影響機器: {', '.join(site.affected_devices[:3])}")
+    # メンテナンスバッジ
+    maint_badge = '<span style="background:#E3F2FD;color:#1565C0;font-size:11px;padding:2px 6px;border-radius:3px;margin-left:8px;">🛠 メンテ中</span>' if site.is_maintenance else ""
+
+    # 影響機器テキスト
+    if site.affected_devices:
+        dev_text = ", ".join(site.affected_devices[:4])
+        if len(site.affected_devices) > 4:
+            dev_text += f" 他{len(site.affected_devices) - 4}台"
+    else:
+        dev_text = "-"
+
+    c1, c2 = st.columns([3, 1])
+    c1.markdown(f"### {theme['icon']} {site.display_name}{maint_badge}", unsafe_allow_html=True)
+    if c2.button("詳細", key=f"board_det_{site.site_id}", type="primary"):
+        st.session_state.active_site = site.site_id
+        st.session_state.live_result = None
+        st.session_state.verification_result = None
+        st.session_state.generated_report = None
+        st.session_state.remediation_plan = None
+        st.session_state.messages = []
+        st.session_state.chat_session = None
+        st.rerun()
+
+    st.caption(f"📋 {scenario_display}")
+
+    # KPI 3列: カスタムHTML
+    st.markdown(f"""<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0;">
+  <div style="background:{theme['bg']};border-radius:6px;padding:8px 10px;text-align:center;">
+    <div style="font-size:11px;color:#666;font-weight:600;">ステータス</div>
+    <div style="font-size:22px;font-weight:700;color:{theme['border']};">{site.status}</div>
+  </div>
+  <div style="background:#F5F5F5;border-radius:6px;padding:8px 10px;text-align:center;">
+    <div style="font-size:11px;color:#666;font-weight:600;">アラーム</div>
+    <div style="font-size:22px;font-weight:700;">{site.alarm_count}<span style="font-size:13px;color:#888;">件</span></div>
+  </div>
+  <div style="background:#F5F5F5;border-radius:6px;padding:8px 10px;text-align:center;">
+    <div style="font-size:11px;color:#666;font-weight:600;">影響台数</div>
+    <div style="font-size:22px;font-weight:700;">{site.affected_count}<span style="font-size:13px;color:#888;">台</span></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    # 深刻度バー
+    if site.alarm_count > 0:
+        bar_color = theme['bar']
+        st.markdown(f"""<div style="margin:4px 0 2px 0;">
+  <div style="font-size:11px;color:#666;font-weight:600;">深刻度: {severity}%</div>
+  <div style="background:#E0E0E0;border-radius:4px;height:8px;overflow:hidden;margin-top:2px;">
+    <div style="background:{bar_color};width:{severity}%;height:100%;border-radius:4px;transition:width 0.3s;"></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    # 影響機器
+    if site.affected_devices:
+        st.markdown(
+            f'<div style="font-size:12px;color:#888;margin-top:4px;">影響機器: {dev_text}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def render_triage_center():
@@ -162,9 +207,9 @@ def render_triage_center():
                 if site.warning_count > 0:
                     st.warning(f"🟡 {site.warning_count} WARNING")
 
-            # col[3]: MTTR（ラベル非表示）
+            # col[3]: 影響台数
             with cols[3]:
-                st.metric("MTTR", site.mttr_estimate, label_visibility="collapsed")
+                st.metric("影響台数", f"{site.affected_count}台")
 
             # col[4]: 詳細を確認ボタン
             with cols[4]:

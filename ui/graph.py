@@ -28,9 +28,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology)))
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
-        # キャッシュヒット: HTML描画のみ
+        # キャッシュヒット: HTML描画のみ（凡例はHTML内に含まれる）
         components.html(_cached["html"], height=720)
-        _render_legend(_cached["used_states"])
         return
 
     # --- アラーム情報をデバイスIDでマッピング ---
@@ -252,22 +251,38 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                                 })
                                 added_edges.add(edge_key2)
 
-    # --- vis.js HTML (凡例なし — マップ外に Streamlit で描画) ---
+    # --- vis.js HTML (凡例はキャンバス内にオーバーレイ表示) ---
     nodes_json = json.dumps(nodes, ensure_ascii=False)
     edges_json = json.dumps(edges, ensure_ascii=False)
+    legend_html = _build_legend_html(used_states)
 
     html = f"""
 <html><head>
 <script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
 <style>
   body {{ margin:0; padding:0; overflow:hidden; }}
-  #mynetwork {{ width:100%; height:700px; border:1px solid #e0e0e0; border-radius:4px; }}
+  #topo-wrap {{ position:relative; width:100%; height:700px; }}
+  #mynetwork {{ width:100%; height:100%; border:1px solid #e0e0e0; border-radius:4px; }}
+  #legend-bar {{
+    position:absolute; bottom:6px; left:6px; right:6px;
+    background:rgba(250,250,250,0.92); border:1px solid #e0e0e0;
+    border-radius:4px; padding:5px 12px;
+    font:12px/1.4 Arial,sans-serif; color:#444;
+    pointer-events:none; z-index:10;
+  }}
+  .lg-swatch {{
+    display:inline-block; width:12px; height:12px;
+    vertical-align:middle; margin-right:5px;
+  }}
+  .lg-item {{ margin-right:14px; white-space:nowrap; }}
 </style>
 </head>
 <body>
-<div id="mynetwork"></div>
+<div id="topo-wrap">
+  <div id="mynetwork"></div>
+  <div id="legend-bar">{legend_html}</div>
+</div>
 <script>
-// ★ 高速化: データを直接埋め込み（追加fetchなし）
 var nodes = new vis.DataSet({nodes_json});
 var edges = new vis.DataSet({edges_json});
 var data = {{ nodes: nodes, edges: edges }};
@@ -277,9 +292,9 @@ var options = {{
             enabled: true,
             direction: "UD",
             sortMethod: "directed",
-            levelSeparation: 160,
-            nodeSpacing: 220,
-            treeSpacing: 250,
+            levelSeparation: 140,
+            nodeSpacing: 130,
+            treeSpacing: 160,
             blockShifting: true,
             edgeMinimization: true,
             parentCentralization: true
@@ -309,11 +324,10 @@ network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation
     # ★ キャッシュに保存（次回rerunで再利用）
     st.session_state[_topo_cache_key] = {"sig": _cache_sig, "html": html, "used_states": used_states}
     components.html(html, height=720)
-    _render_legend(used_states)
 
 
-def _render_legend(used_states: set):
-    """凡例を Streamlit 側に描画（マップ外・被りなし）"""
+def _build_legend_html(used_states: set) -> str:
+    """凡例を vis.js キャンバス内オーバーレイ用 HTML として生成"""
     _LEGEND_ITEMS = [
         ("root_cause",  "#ffcdd2", "#8B3030", "border-radius:50%", "Root Cause (真因)"),
         ("warning",     "#fff9c4", "#A07820", "",                  "Warning (警告)"),
@@ -325,25 +339,18 @@ def _render_legend(used_states: set):
         ("normal",      "#e8f5e9", "#6B9E72", "",                  "Normal (正常)"),
     ]
 
-    legend_items_html = []
+    items = []
     for key, bg, border, extra_style, text in _LEGEND_ITEMS:
         if key in used_states:
             swatch = (
-                f'<span style="display:inline-block;width:13px;height:13px;'
-                f'background:{bg};border:2px solid {border};{extra_style};'
-                f'vertical-align:middle;margin-right:6px;"></span>'
+                f'<span class="lg-swatch" style="background:{bg};'
+                f'border:2px solid {border};{extra_style};"></span>'
             )
-            legend_items_html.append(f"{swatch} {text}")
+            items.append(f'<span class="lg-item">{swatch}{text}</span>')
 
-    if legend_items_html:
-        legend_row = "&nbsp;&nbsp;&nbsp;".join(legend_items_html)
-        st.markdown(
-            f'<div style="font-size:12px;font-family:Arial,sans-serif;'
-            f'padding:6px 12px;background:#fafafa;border:1px solid #e0e0e0;'
-            f'border-radius:4px;margin-top:-8px;">'
-            f'<b>Legend:</b>&nbsp;&nbsp;{legend_row}</div>',
-            unsafe_allow_html=True,
-        )
+    if not items:
+        return ""
+    return " ".join(items)
 
 
 # =====================================================
@@ -511,9 +518,9 @@ var options = {{
             enabled: true,
             direction: "UD",
             sortMethod: "directed",
-            levelSeparation: 90,
-            nodeSpacing: 180,
-            treeSpacing: 200,
+            levelSeparation: 85,
+            nodeSpacing: 120,
+            treeSpacing: 150,
             parentCentralization: true
         }}
     }},
