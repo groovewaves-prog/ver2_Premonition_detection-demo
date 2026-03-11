@@ -59,6 +59,8 @@ def render_sidebar():
                     if injected and selected != "正常稼働":
                         # 障害シナリオ選択時は予兆シミュレーションをクリア
                         st.session_state["injected_weak_signal"] = None
+                        # ★ 劣化進行度スライダーも0にリセット
+                        st.session_state["reset_pred_level"] = True
 
                         # ★ 関連するセッションステートキーも完全クリア
                         dt_prev_key = f"dt_prev_sim_device_{site_id}"

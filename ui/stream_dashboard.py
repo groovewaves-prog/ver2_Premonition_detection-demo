@@ -209,7 +209,7 @@ def render_stream_dashboard():
                 event_count=len(events),
                 pattern=seq.pattern,
             )
-            st_html(kpi_html, height=175)
+            st_html(kpi_html, height=200)
 
         st.markdown("---")
 
