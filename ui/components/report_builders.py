@@ -1,5 +1,6 @@
 # ui/components/report_builders.py — LLMプロンプト構築関数
 from .helpers import sanitize_prediction_context
+from .command_popup import format_triage_results_for_llm
 
 
 def build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
@@ -91,6 +92,18 @@ def build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
             initial_triage_summary,
         ])
 
+    # ★ トリアージ実行結果の自動連携: 実際にコマンド実行した結果があればプロンプトに含める
+    _triage_output = format_triage_results_for_llm(dev_id)
+    if _triage_output:
+        parts.extend([
+            "",
+            "【★★★ トリアージコマンドの実行結果（実機出力）★★★】",
+            "運用者が初動トリアージのコマンドを実行した結果です。",
+            "この実機出力を踏まえて、OK/NG判定と次のステップの診断手順を作成してください。",
+            "",
+            _triage_output,
+        ])
+
     parts.extend([
         "",
         "【作成すべき内容（ステップ②: 確認手順書）】",
@@ -172,6 +185,20 @@ def build_prevention_plan_scenario(cand: dict) -> str:
             "",
             f"【初動トリアージで実施済みの内容】",
             triage_summary,
+        ])
+
+    # ★ トリアージ実行結果の自動連携
+    _triage_output = format_triage_results_for_llm(dev_id)
+    if _triage_output:
+        parts.extend([
+            "",
+            "【★★★ トリアージコマンドの実行結果（実機出力）★★★】",
+            "運用者が初動トリアージのコマンドを実行した結果です。",
+            "この実機出力の内容を考慮して、具体的な予防措置コマンドを作成してください。",
+            "例: show interfaces で入力エラーが多い場合 → ケーブル交換手順を優先",
+            "例: show environment で温度異常がある場合 → 冷却系の対処を含める",
+            "",
+            _triage_output,
         ])
 
     parts.extend([

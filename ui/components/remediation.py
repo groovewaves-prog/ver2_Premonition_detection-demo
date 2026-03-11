@@ -14,6 +14,7 @@ from .report_builders import build_prevention_plan_scenario
 from .command_popup import (
     simulate_command_execution,
     show_command_popup_if_pending,
+    format_triage_results_for_llm,
 )
 
 try:
@@ -146,6 +147,11 @@ def _render_generate_fix_button(cand, topology, scenario, site_id, api_key, is_p
         fix_label    = "✨ 修復プランを作成 (Generate Fix)"
         report_prereq = "「📝 詳細レポートを作成 (Generate Report)」"
 
+    # ★ トリアージ結果連携のステータス表示
+    _has_triage = bool(format_triage_results_for_llm(cand.get("id", "")))
+    if _has_triage:
+        st.caption("✅ 初動トリアージの実行結果を検出しました。復旧計画に自動反映されます。")
+
     if st.button(fix_label):
         if st.session_state.generated_report is None:
             st.warning(f"先に{report_prereq}を実行してください。")
@@ -157,10 +163,24 @@ def _render_generate_fix_button(cand, topology, scenario, site_id, api_key, is_p
             if is_pred_rem:
                 rem_scenario = build_prevention_plan_scenario(cand)
 
+            # ★ トリアージ実行結果をAI復旧計画のコンテキストに自動連携
+            _base_report = st.session_state.generated_report or ""
+            _triage_ctx = format_triage_results_for_llm(cand.get("id", ""))
+            if _triage_ctx:
+                _analysis_with_triage = (
+                    f"{_base_report}\n\n"
+                    f"【初動トリアージのコマンド実行結果（実機出力）】\n"
+                    f"以下は運用者が初動トリアージで実行したコマンドの結果です。\n"
+                    f"この情報を踏まえて復旧手順を最適化してください。\n\n"
+                    f"{_triage_ctx}"
+                )
+            else:
+                _analysis_with_triage = _base_report
+
             cache_key_rem = "|".join([
                 "remediation", site_id, scenario,
                 str(cand.get("id")),
-                hash_text(st.session_state.generated_report or ""),
+                hash_text(_analysis_with_triage),
             ])
 
             if cache_key_rem in st.session_state.report_cache:
@@ -175,7 +195,7 @@ def _render_generate_fix_button(cand, topology, scenario, site_id, api_key, is_p
 
                     for chunk in generate_remediation_commands_streaming(
                         scenario=rem_scenario,
-                        analysis_result=st.session_state.generated_report or "",
+                        analysis_result=_analysis_with_triage,
                         target_node=t_node,
                         api_key=api_key,
                         max_retries=2,
