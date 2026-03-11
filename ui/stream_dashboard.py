@@ -933,6 +933,7 @@ def render_stream_dashboard():
                 display: grid;
                 grid-template-columns: repeat(3, 1fr);
                 gap: 8px;
+                padding: 4px 0;
               }}
               .kpi-card {{
                 border-radius: 8px;
@@ -942,21 +943,22 @@ def render_stream_dashboard():
                 display: flex;
                 flex-direction: column;
                 justify-content: center;
+                overflow: visible;
               }}
               .kpi-card.kpi-pulse {{
                 animation: kpiPulse 1.8s ease-in-out infinite;
               }}
               .kpi-label {{
-                font-size: 11px;
+                font-size: 12px;
                 font-weight: 600;
                 letter-spacing: 0.5px;
-                margin-bottom: 2px;
-                opacity: 0.8;
+                margin-bottom: 3px;
+                line-height: 1.3;
               }}
               .kpi-value {{
                 font-size: 20px;
                 font-weight: 700;
-                line-height: 1.2;
+                line-height: 1.3;
               }}
             </style>
             <div class="kpi-grid">
@@ -996,7 +998,7 @@ def render_stream_dashboard():
               </div>
             </div>
             """
-            _st_html(kpi_html, height=155)
+            _st_html(kpi_html, height=175)
 
         st.markdown("---")
 
