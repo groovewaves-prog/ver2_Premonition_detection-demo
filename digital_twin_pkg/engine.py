@@ -22,6 +22,7 @@ from .gnn_trainer import get_pretrained_model_path
 from .llm_client import InternalLLMClient, LLMScores  # Phase 6a/6b
 from .vector_store import VectorStore  # Phase 6c*
 from .trend import TrendAnalyzer, TrendResult  # Phase 1: トレンド検出
+from .granger import GrangerCausalityAnalyzer  # Phase 2: Granger因果
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -193,6 +194,13 @@ class DigitalTwinEngine:
 
         # ★ Phase 1: トレンド分析エンジン初期化
         self.trend_analyzer = TrendAnalyzer(self.storage)
+
+        # ★ Phase 2: Granger因果分析エンジン初期化
+        self.granger = GrangerCausalityAnalyzer(
+            storage=self.storage,
+            topology=self.topology,
+            children_map=self.children_map,
+        )
 
         # ★ BUG FIX: _ensure_model_loaded() を __init__ から除去
         #   SentenceTransformer('all-MiniLM-L6-v2') が未キャッシュ時にモデルDLを
@@ -1072,6 +1080,14 @@ class DigitalTwinEngine:
                         f"(slope={_trend_result.slope:+.4f}, R²={_trend_result.r_squared:.2f})"
                     )
 
+            # ★ Phase 2: Granger因果ブースト
+            _causality_boost = 0.0
+            if self.granger:
+                _causality_boost = self.granger.compute_causality_boost(dev_id, "outgoing")
+                if _causality_boost > 0:
+                    confidence = min(0.99, confidence + _causality_boost)
+                    logger.info(f"Granger causality boost for {dev_id}: +{_causality_boost:.3f}")
+
             # ★ ベイズ推論による信頼度の更新
             confidence, bayesian_debug = self.bayesian.calculate_posterior_confidence(
                 device_id=dev_id,
@@ -1182,6 +1198,13 @@ class DigitalTwinEngine:
                     "direction": _trend_result.trend_direction,
                     "summary": _trend_result.summary,
                 } if _trend_result.detected or _trend_result.data_points > 0 else None,
+                # Phase 2: Granger因果情報
+                "causality_boost": _causality_boost,
+                "causality_children": (
+                    [{'device': c, 'weight': round(w, 3)}
+                     for c, w in self.granger.get_causal_children(dev_id, 0.3)[:5]]
+                    if self.granger and _causality_boost > 0 else None
+                ),
                 # Phase 6a: LLM 生成情報
                 "llm_narrative": _llm_scores.narrative,
                 "llm_anomaly_type": _llm_result.anomaly_type_hint,

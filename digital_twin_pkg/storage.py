@@ -106,13 +106,41 @@ class StorageManager:
                 
                 self._conn.execute('''
                     CREATE TABLE IF NOT EXISTS rule_config (
-                        rule_pattern TEXT PRIMARY KEY, 
-                        paging_threshold REAL, 
-                        logging_threshold REAL, 
-                        rule_json TEXT, 
+                        rule_pattern TEXT PRIMARY KEY,
+                        paging_threshold REAL,
+                        logging_threshold REAL,
+                        rule_json TEXT,
                         updated_at REAL
                     )
                 ''')
+
+                # Phase 2: アラームイベント時系列 (Granger因果テスト用)
+                self._conn.execute('''
+                    CREATE TABLE IF NOT EXISTS alarm_events (
+                        device_id TEXT,
+                        timestamp REAL,
+                        severity_score REAL
+                    )
+                ''')
+                self._conn.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_alarm_events '
+                    'ON alarm_events (device_id, timestamp)'
+                )
+
+                # Phase 2: 因果関係レジャー
+                self._conn.execute('''
+                    CREATE TABLE IF NOT EXISTS causality_ledger (
+                        source_device TEXT,
+                        target_device TEXT,
+                        weight REAL,
+                        p_value REAL,
+                        lag_hours REAL,
+                        updated_at REAL,
+                        topology_consistent INTEGER DEFAULT 0,
+                        PRIMARY KEY (source_device, target_device)
+                    )
+                ''')
+
                 self._conn.commit()
         except Exception as e:
             logger.warning(f"SQLite init failed: {e}")
@@ -202,6 +230,81 @@ class StorageManager:
                 self._conn.execute('DELETE FROM metrics WHERE timestamp < ?', (cutoff,))
                 self._conn.commit()
         except Exception: pass
+
+    # --- Phase 2: Alarm Events DB ---
+    def db_insert_alarm_event(self, device_id, timestamp, severity_score):
+        if not self._conn: return
+        try:
+            with self._db_lock:
+                self._conn.execute(
+                    'INSERT INTO alarm_events VALUES (?, ?, ?)',
+                    (device_id, float(timestamp), float(severity_score))
+                )
+                self._conn.commit()
+        except Exception: pass
+
+    def db_fetch_alarm_events(self, device_id, min_ts):
+        if not self._conn: return []
+        try:
+            with self._db_lock:
+                cur = self._conn.cursor()
+                cur.execute(
+                    'SELECT timestamp, severity_score FROM alarm_events '
+                    'WHERE device_id=? AND timestamp >= ? ORDER BY timestamp ASC',
+                    (device_id, min_ts)
+                )
+                return cur.fetchall()
+        except Exception: return []
+
+    def db_cleanup_alarm_events(self, retention_sec):
+        if not self._conn: return
+        try:
+            cutoff = time.time() - retention_sec
+            with self._db_lock:
+                self._conn.execute('DELETE FROM alarm_events WHERE timestamp < ?', (cutoff,))
+                self._conn.commit()
+        except Exception: pass
+
+    # --- Phase 2: Causality Ledger DB ---
+    def db_insert_causality(self, source, target, weight, p_value, lag_hours, updated_at, topo_consistent):
+        if not self._conn: return
+        try:
+            with self._db_lock:
+                self._conn.execute(
+                    'INSERT OR REPLACE INTO causality_ledger VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    (source, target, float(weight), float(p_value),
+                     float(lag_hours), float(updated_at), int(topo_consistent))
+                )
+                self._conn.commit()
+        except Exception: pass
+
+    def db_fetch_causality(self, source=None, target=None, min_weight=0.0):
+        if not self._conn: return []
+        try:
+            with self._db_lock:
+                cur = self._conn.cursor()
+                if source and target:
+                    cur.execute(
+                        'SELECT * FROM causality_ledger WHERE source_device=? AND target_device=?',
+                        (source, target)
+                    )
+                elif source:
+                    cur.execute(
+                        'SELECT * FROM causality_ledger WHERE source_device=? AND weight >= ?',
+                        (source, min_weight)
+                    )
+                elif target:
+                    cur.execute(
+                        'SELECT * FROM causality_ledger WHERE target_device=? AND weight >= ?',
+                        (target, min_weight)
+                    )
+                else:
+                    cur.execute(
+                        'SELECT * FROM causality_ledger WHERE weight >= ?',
+                        (min_weight,)
+                    )
+                return cur.fetchall()
+        except Exception: return []
 
     def run_retention_cleanup(self):
         """全データストアに対して保持期間ベースのクリーンアップを実行する。
