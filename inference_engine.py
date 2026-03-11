@@ -192,6 +192,13 @@ try:
 except ImportError:
     GRANGER_AVAILABLE = False
 
+# --- Phase 4: GrayScope Metrics Causal Monitoring ---
+try:
+    from digital_twin_pkg.grayscope import GrayScopeMonitor
+    GRAYSCOPE_AVAILABLE = True
+except ImportError:
+    GRAYSCOPE_AVAILABLE = False
+
 # ==========================================================
 # AIOps health status
 # ==========================================================
@@ -262,6 +269,21 @@ class LogicalRCA:
                 )
             except Exception as e:
                 _logger.warning(f"Granger init failed: {e}")
+
+        # Phase 4: GrayScope型メトリクス因果監視
+        self.grayscope = None
+        if GRAYSCOPE_AVAILABLE and self.digital_twin is not None:
+            try:
+                self.grayscope = GrayScopeMonitor(
+                    storage=self.digital_twin.storage,
+                    topology=self.topology,
+                    children_map=self.children_map,
+                    trend_analyzer=getattr(self.digital_twin, 'trend_analyzer', None),
+                    granger_analyzer=self.granger or getattr(self.digital_twin, 'granger', None),
+                    gdn_predictor=getattr(self.digital_twin, 'gdn', None),
+                )
+            except Exception as e:
+                _logger.warning(f"GrayScope init failed: {e}")
 
     # ----------------------------
     # Topology helpers
@@ -427,6 +449,39 @@ class LogicalRCA:
                 alarm_severity_map[a.device_id] = a.severity
 
         silent_suspects = self._detect_silent_failures(msg_map)
+
+        # ★ Phase 4: GrayScope 確率的サイレント障害検出（ヒューリスティックを補完）
+        _grayscope_result = None
+        if self.grayscope is not None:
+            try:
+                _grayscope_result = self.grayscope.analyze(
+                    msg_map, set(msg_map.keys())
+                )
+                # GrayScope候補をsilent_suspectsにマージ
+                for gc in _grayscope_result.silent_candidates:
+                    if gc.score >= 0.3 and gc.device_id not in silent_suspects:
+                        silent_suspects[gc.device_id] = {
+                            "children": gc.affected_children,
+                            "evidence_count": len(gc.affected_children),
+                            "total_children": len(self.children_map.get(gc.device_id, [])),
+                            "ratio": gc.affected_ratio,
+                            "report": (
+                                f"[GrayScope Silent Failure]\n"
+                                f"- Suspected device: {gc.device_id}\n"
+                                f"- Score: {gc.score:.2f}\n"
+                                f"- Affected children: {len(gc.affected_children)}\n"
+                                f"- Evidence: {', '.join(gc.implicit_signals[:3])}\n"
+                            ),
+                            "grayscope_score": gc.score,
+                            "grayscope_evidence": gc.evidence,
+                            "grayscope_recommendation": gc.recommendation,
+                        }
+                _logger.info(
+                    f"GrayScope analysis: {_grayscope_result.summary}"
+                )
+            except Exception as e:
+                _logger.warning(f"GrayScope analysis skipped: {e}")
+
         for parent_id, info in silent_suspects.items():
             msg_map.setdefault(parent_id, []).append("Silent Failure Suspected")
 
@@ -444,10 +499,11 @@ class LogicalRCA:
             # 親がサイレント疑い
             if device_id in silent_suspects:
                 info = silent_suspects[device_id]
-                # サイレント疑いは根本原因候補 → 確信度に応じてステータス決定
-                _silent_prob = 0.8
+                # Phase 4: GrayScopeスコアがあればそれを使用、なければデフォルト0.8
+                _gs_score = info.get("grayscope_score")
+                _silent_prob = _gs_score if _gs_score is not None else 0.8
                 _silent_status = "RED" if _silent_prob >= 0.6 else "YELLOW"
-                results.append({
+                _result_entry = {
                     "id": device_id,
                     "label": " / ".join(messages),
                     "prob": _silent_prob,
@@ -456,8 +512,13 @@ class LogicalRCA:
                     "reason": f"Silent failure suspected.",
                     "status": _silent_status,
                     "is_prediction": False,
-                    "classification": "root_cause"
-                })
+                    "classification": "root_cause",
+                }
+                # Phase 4: GrayScope詳細情報を付加
+                if info.get("grayscope_evidence"):
+                    _result_entry["grayscope_evidence"] = info["grayscope_evidence"]
+                    _result_entry["grayscope_recommendation"] = info.get("grayscope_recommendation", "")
+                results.append(_result_entry)
                 continue
 
             # 通常分析
@@ -578,6 +639,29 @@ class LogicalRCA:
 
             except Exception as e:
                 print(f"[!] Digital Twin prediction error: {e}")
+
+        # ★ Phase 4: GrayScope メトリクス相関情報を結果に付加
+        if _grayscope_result is not None:
+            _gs_correlations = [
+                {
+                    "source": c.source_device,
+                    "target": c.target_device,
+                    "metric": c.source_metric,
+                    "correlation": c.correlation,
+                    "lag_bins": c.lag_bins,
+                }
+                for c in _grayscope_result.metric_correlations
+                if c.significant
+            ]
+            if _gs_correlations:
+                for r in results:
+                    dev = r.get("id", "")
+                    relevant = [
+                        c for c in _gs_correlations
+                        if c["source"] == dev or c["target"] == dev
+                    ]
+                    if relevant:
+                        r["grayscope_correlations"] = relevant[:3]
 
         # 優先順位ソート
         results.sort(key=lambda x: (

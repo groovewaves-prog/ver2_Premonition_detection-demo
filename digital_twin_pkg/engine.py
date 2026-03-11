@@ -24,6 +24,7 @@ from .vector_store import VectorStore  # Phase 6c*
 from .trend import TrendAnalyzer, TrendResult  # Phase 1: トレンド検出
 from .granger import GrangerCausalityAnalyzer  # Phase 2: Granger因果
 from .gdn import GDNPredictor, build_device_features  # Phase 3: GDN偏差検出
+from .grayscope import GrayScopeMonitor  # Phase 4: GrayScope型メトリクス因果監視
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -208,6 +209,16 @@ class DigitalTwinEngine:
             storage=self.storage,
             topology=self.topology,
             children_map=self.children_map,
+        )
+
+        # ★ Phase 4: GrayScope型メトリクス因果監視
+        self.grayscope = GrayScopeMonitor(
+            storage=self.storage,
+            topology=self.topology,
+            children_map=self.children_map,
+            trend_analyzer=self.trend_analyzer,
+            granger_analyzer=self.granger,
+            gdn_predictor=self.gdn,
         )
 
         # ★ BUG FIX: _ensure_model_loaded() を __init__ から除去
@@ -1167,6 +1178,29 @@ class DigitalTwinEngine:
             except Exception as e:
                 logger.debug(f"GDN scoring skipped for {dev_id}: {e}")
 
+            # ★ Phase 4: GrayScope サイレント障害候補スコア
+            _grayscope_info = None
+            try:
+                _gs_result = self.grayscope.analyze(msg_map, set(msg_map.keys()))
+                for gc in _gs_result.silent_candidates:
+                    if gc.device_id == dev_id and gc.score >= 0.3:
+                        _gs_boost = min(0.10, gc.score * 0.12)
+                        confidence = min(0.99, confidence + _gs_boost)
+                        _grayscope_info = {
+                            "score": gc.score,
+                            "affected_ratio": gc.affected_ratio,
+                            "evidence": gc.evidence,
+                            "recommendation": gc.recommendation,
+                            "implicit_signals": gc.implicit_signals[:3],
+                        }
+                        logger.info(
+                            f"GrayScope boost for {dev_id}: +{_gs_boost:.3f} "
+                            f"(score={gc.score:.3f})"
+                        )
+                        break
+            except Exception as e:
+                logger.debug(f"GrayScope scoring skipped for {dev_id}: {e}")
+
             threshold = MIN_PREDICTION_CONFIDENCE
             if primary_rule.paging_threshold is not None:
                 threshold = primary_rule.paging_threshold
@@ -1251,6 +1285,8 @@ class DigitalTwinEngine:
                     "top_deviations": _gdn_result.top_deviations[:3],
                     "summary": _gdn_result.summary,
                 } if _gdn_result and _gdn_result.baseline_valid else None,
+                # Phase 4: GrayScope サイレント障害分析
+                "grayscope_info": _grayscope_info,
                 # Phase 6a: LLM 生成情報
                 "llm_narrative": _llm_scores.narrative,
                 "llm_anomaly_type": _llm_result.anomaly_type_hint,
