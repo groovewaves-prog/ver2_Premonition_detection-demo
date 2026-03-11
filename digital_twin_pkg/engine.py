@@ -23,6 +23,7 @@ from .llm_client import InternalLLMClient, LLMScores  # Phase 6a/6b
 from .vector_store import VectorStore  # Phase 6c*
 from .trend import TrendAnalyzer, TrendResult  # Phase 1: トレンド検出
 from .granger import GrangerCausalityAnalyzer  # Phase 2: Granger因果
+from .gdn import GDNPredictor, build_device_features  # Phase 3: GDN偏差検出
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -197,6 +198,13 @@ class DigitalTwinEngine:
 
         # ★ Phase 2: Granger因果分析エンジン初期化
         self.granger = GrangerCausalityAnalyzer(
+            storage=self.storage,
+            topology=self.topology,
+            children_map=self.children_map,
+        )
+
+        # ★ Phase 3: GDN偏差検出エンジン初期化
+        self.gdn = GDNPredictor(
             storage=self.storage,
             topology=self.topology,
             children_map=self.children_map,
@@ -1129,6 +1137,36 @@ class DigitalTwinEngine:
                 except Exception as e:
                     logger.warning(f"GNN prediction failed: {e}")
 
+            # ★ Phase 3: GDN偏差検出
+            _gdn_result = None
+            try:
+                _alarm_emb = None
+                if self._model:
+                    try:
+                        _alarm_emb = self._model.encode(
+                            [primary_msg], convert_to_numpy=True
+                        )[0]
+                    except Exception:
+                        pass
+                _gdn_features, _gdn_names = build_device_features(
+                    device_id=dev_id,
+                    alarm_embedding=_alarm_emb,
+                    alarm_count=len(matched_signals),
+                    severity_score=confidence,
+                    trend_slope=_trend_result.slope if _trend_result else 0.0,
+                    causality_weight=_causality_boost,
+                )
+                _gdn_result = self.gdn.predict(dev_id, _gdn_features, _gdn_names)
+                if _gdn_result.confidence_boost > 0:
+                    confidence = min(0.99, confidence + _gdn_result.confidence_boost)
+                    logger.info(
+                        f"GDN deviation boost for {dev_id}: "
+                        f"+{_gdn_result.confidence_boost:.3f} "
+                        f"(score={_gdn_result.overall_score:.3f})"
+                    )
+            except Exception as e:
+                logger.debug(f"GDN scoring skipped for {dev_id}: {e}")
+
             threshold = MIN_PREDICTION_CONFIDENCE
             if primary_rule.paging_threshold is not None:
                 threshold = primary_rule.paging_threshold
@@ -1205,6 +1243,14 @@ class DigitalTwinEngine:
                      for c, w in self.granger.get_causal_children(dev_id, 0.3)[:5]]
                     if self.granger and _causality_boost > 0 else None
                 ),
+                # Phase 3: GDN偏差検出結果
+                "gdn_deviation": {
+                    "score": _gdn_result.overall_score,
+                    "anomaly": _gdn_result.anomaly_detected,
+                    "boost": _gdn_result.confidence_boost,
+                    "top_deviations": _gdn_result.top_deviations[:3],
+                    "summary": _gdn_result.summary,
+                } if _gdn_result and _gdn_result.baseline_valid else None,
                 # Phase 6a: LLM 生成情報
                 "llm_narrative": _llm_scores.narrative,
                 "llm_anomaly_type": _llm_result.anomaly_type_hint,
@@ -1549,6 +1595,19 @@ class DigitalTwinEngine:
             msg_n = (msg or "").strip()
         except Exception:
             msg_n = (msg or "").strip()
+
+        # ★ Phase 3: GDN ベースライン蓄積 (正常〜軽微レベルのデータ)
+        _level_int = max(1, min(5, int(degradation_level or 1)))
+        if _level_int <= 2 and self.gdn:
+            try:
+                _gdn_f, _gdn_n = build_device_features(
+                    device_id=device_id,
+                    alarm_count=1,
+                    severity_score=0.3 if _level_int == 1 else 0.5,
+                )
+                self.gdn.observe_normal(device_id, _gdn_f, _gdn_n)
+            except Exception:
+                pass
 
         if self._should_ignore(msg_n):
             return []
