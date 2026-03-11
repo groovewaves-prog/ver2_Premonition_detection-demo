@@ -34,11 +34,24 @@
 - `ui/graph.py`: vis.js コンテナ高さを600px→640px、iframe高さを680→650に調整
 - Legend の `margin-top` を4px→-8pxに変更し、マップ直下に密着配置
 
-### 4. 画面表示の高速化
+### 4. 画面表示の高速化（2段階）
+#### 第1段階（初回最適化）
 - アラームデバイスIDセットの事前計算（O(n*m) → O(n+m)）
 - GenAI モデルの session_state キャッシュ（毎回の再初期化を回避）
 - ストリーム自動リフレッシュ間隔を2s→1sに短縮
 - Remediation完了後のsleepを1.0s→0.5s、履歴クローズのsleepを0.8s→0.3sに短縮
+
+#### 第2段階（深層最適化）
+- **inference_engine.py**: `analyze()` 内にアラームハッシュベースのキャッシュ追加
+  - 同一アラームセットなら GrayScope 分析をスキップ（`_analyze_cache_grayscope`）
+  - 同一アラームセットなら Granger ペアワイズテストをスキップ（`_analyze_cache_granger_applied`）
+  - `sev_order` 辞書をループ外で1回だけ定義
+- **ui/cockpit.py**: `compute_topo_hash()` の結果を session_state にキャッシュ（毎描画の再計算回避）
+  - AI動的トリアージ生成結果を session_state にキャッシュ（同一デバイス+メッセージならLLM呼び出しスキップ）
+- **ui/graph.py**: vis.js バージョン固定（CDN再フェッチ抑制）、`network.fit()` のアニメーション無効化
+  - トポロジーグラフHTML全体をキャッシュ（アラーム/分析結果が同一なら再構築スキップ）
+- **ui/stream_dashboard.py**: 劣化曲線SVGキャッシュチェックを先行実行
+  - ヒット時は `get_metric_history()` / `get_realtime_metric_history()` 計算自体をスキップ
 
 ## 過去セッションの完了タスク（参考）
 - Phase 1: トレンド検出（メトリクス時系列分析）
