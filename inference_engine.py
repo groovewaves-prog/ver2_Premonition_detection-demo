@@ -185,6 +185,13 @@ try:
 except ImportError:
     DIGITAL_TWIN_AVAILABLE = False
 
+# --- Phase 2: Granger Causality ---
+try:
+    from digital_twin_pkg.granger import GrangerCausalityAnalyzer
+    GRANGER_AVAILABLE = True
+except ImportError:
+    GRANGER_AVAILABLE = False
+
 # ==========================================================
 # AIOps health status
 # ==========================================================
@@ -243,6 +250,18 @@ class LogicalRCA:
 
         # AI判定結果の永続ストア
         self._ai_severity_store = _AISeverityStore(data_dir=config_dir)
+
+        # Phase 2: Granger因果分析エンジン
+        self.granger = None
+        if GRANGER_AVAILABLE and self.digital_twin is not None:
+            try:
+                self.granger = GrangerCausalityAnalyzer(
+                    storage=self.digital_twin.storage,
+                    topology=self.topology,
+                    children_map=self.children_map,
+                )
+            except Exception as e:
+                _logger.warning(f"Granger init failed: {e}")
 
     # ----------------------------
     # Topology helpers
@@ -471,6 +490,62 @@ class LogicalRCA:
                 "is_prediction": False,
                 "classification": classification
             })
+
+        # ==========================================================
+        # ★ Phase 2: アラームイベント記録 + Granger因果分析
+        # ==========================================================
+        if self.granger is not None:
+            try:
+                _now = time.time()
+                _sev_scores = {'CRITICAL': 1.0, 'WARNING': 0.5, 'INFO': 0.2}
+                for a in alarms:
+                    self.granger.record_alarm_event(
+                        a.device_id, _now, _sev_scores.get(a.severity, 0.3)
+                    )
+
+                # 因果テスト: アラームがあるデバイス間でペアワイズテスト
+                _alarm_device_ids = list(msg_map.keys())
+                if len(_alarm_device_ids) >= 2:
+                    _causality_results = self.granger.run_pairwise_tests(
+                        _alarm_device_ids, topology_aware=True
+                    )
+
+                    # 因果関係に基づく分類の補正
+                    for r in results:
+                        dev_id = r.get('id', '')
+                        if r.get('classification') == 'symptom':
+                            # symptom のデバイスに因果的な parent があれば確信度を上げる
+                            causal_parents = self.granger.get_causal_parents(dev_id, min_weight=0.4)
+                            if causal_parents:
+                                _boost = self.granger.compute_causality_boost(dev_id, "incoming")
+                                r['prob'] = min(0.99, r.get('prob', 0) + _boost)
+                                r['causality_parents'] = [
+                                    {'device': p, 'weight': round(w, 3)}
+                                    for p, w in causal_parents[:3]
+                                ]
+
+                        elif r.get('classification') == 'root_cause':
+                            # root_cause に因果的な children があれば確信度を上げる
+                            causal_children = self.granger.get_causal_children(dev_id, min_weight=0.3)
+                            if causal_children:
+                                _boost = self.granger.compute_causality_boost(dev_id, "outgoing")
+                                r['prob'] = min(0.99, r.get('prob', 0) + _boost)
+                                r['causality_children'] = [
+                                    {'device': c, 'weight': round(w, 3)}
+                                    for c, w in causal_children[:5]
+                                ]
+
+                    # 因果グラフのサマリをログ出力
+                    _summary = self.granger.get_graph_summary()
+                    if _summary.get('significant_edges', 0) > 0:
+                        _logger.info(
+                            f"Granger causality: {_summary['significant_edges']} significant edges "
+                            f"({_summary['topology_consistent']} topology-consistent), "
+                            f"avg weight={_summary['avg_weight']:.3f}"
+                        )
+
+            except Exception as e:
+                _logger.warning(f"Granger analysis skipped: {e}")
 
         # ==========================================================
         # ★ 派生アラート自動生成: 真因デバイスの配下に symptom を付与

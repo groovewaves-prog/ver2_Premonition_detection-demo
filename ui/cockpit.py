@@ -1626,6 +1626,20 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
                 st.warning(f"📈 **劣化トレンド検出**: {' | '.join(_trend_parts)}")
 
+            # ★ Phase 2: Granger因果関係の表示
+            _causality_children = cand.get('causality_children')
+            _causality_parents = cand.get('causality_parents')
+            if _causality_children:
+                _causal_desc = ", ".join(
+                    f"{c['device']}({c['weight']:.0%})" for c in _causality_children[:3]
+                )
+                st.info(f"🔗 **因果的影響先**: {_causal_desc}")
+            if _causality_parents:
+                _causal_desc = ", ".join(
+                    f"{p['device']}({p['weight']:.0%})" for p in _causality_parents[:3]
+                )
+                st.info(f"🔗 **因果的影響元**: {_causal_desc}")
+
             if is_pred:
                 st.caption(
                     "📋 **ステップ②**: 初動トリアージの次に実施する詳細診断。"
