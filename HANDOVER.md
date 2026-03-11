@@ -37,7 +37,7 @@
 - 学術論文調査: 8分野の最新論文を収集
 - Phase 1-4 の実装ロードマップを提案
 
-### 5. Phase 2: Granger因果テスト（デバイス間時系列因果分析）
+### 6. Phase 2: Granger因果テスト（デバイス間時系列因果分析）
 - **新規モジュール**: `digital_twin_pkg/granger.py`
   - `GrangerCausalityAnalyzer`: F検定 + 因果グラフ管理
   - Granger因果F検定（純numpy実装、scipy不要）
@@ -53,7 +53,7 @@
 - **engine.py 統合**: predict() に因果ブースト（最大+10%）
 - **UI統合**: 因果関係バナー表示（影響元・影響先）
 
-### 6. Phase 3: GDN (Graph Deviation Network) — ベースライン偏差検出
+### 7. Phase 3: GDN (Graph Deviation Network) — ベースライン偏差検出
 - **新規モジュール**: `digital_twin_pkg/gdn.py`
   - `DeviceBaselineTracker`: Welford法オンライン統計蓄積 + SQLite永続化
   - `GraphDeviationScorer`: z-scoreベースの偏差検出 + 影響伝搬補正
@@ -64,11 +64,37 @@
   - per-device predict(): 正常レベルのデータをベースライン自動蓄積
 - **UI統合**: 偏差検出バナー（逸脱特徴のσ値表示）
 
-## 未完了・保留タスク
+### 8. Phase 4: GrayScope型メトリクス因果監視 — サイレント障害の確率的検出
+- **新規モジュール**: `digital_twin_pkg/grayscope.py`
+  - `MetricCrossCorrelator`: デバイス間メトリクス相互相関検出（ビン化時系列 + ラグ付き相関）
+  - `ImplicitFeedbackDetector`: Phase 1-3 全シグナル統合の暗黙的障害兆候検出
+  - `MultiHopPropagationTracer`: BFS + Granger因果重み付き多段ホップ伝搬追跡
+  - `SilentFailureScorer`: 5要素重み付きスコアリング
+    - 配下アラーム比率 30%
+    - Granger因果 20%
+    - 暗黙的フィードバック 20%
+    - メトリクストレンド 15%
+    - GDN偏差 15%
+  - `GrayScopeMonitor`: 統合インターフェース（analyze() で全分析を一括実行）
+- **inference_engine.py 統合**:
+  - GrayScopeMonitor を LogicalRCA.__init__ で初期化
+  - analyze() でサイレント障害検出を確率的スコアリングで補完
+  - GrayScope候補を silent_suspects にマージ（スコア0.3以上）
+  - メトリクス相関情報を結果に付加
+  - GrayScope詳細情報（evidence, recommendation）を結果に付加
+- **engine.py 統合**:
+  - GrayScopeMonitor を DigitalTwinEngine.__init__ で初期化
+  - predict() に GrayScope ブースト（最大+10%）
+  - grayscope_info を予測結果に付加
+- **UI 統合**:
+  - GrayScope サイレント障害分析バナー（🔍 スコア, 配下影響, 兆候）
+  - メトリクス相関バナー（📊 デバイス間相関係数）
+  - 推奨アクション表示
+  - inference_engine 経由のGrayScope evidence 表示
+- **テスト**: 10/10 パス（ImplicitFeedback, MultiHop, SilentFailureScorer, GrayScopeMonitor）
 
-### Phase 4 (長期): GrayScope型メトリクス因果監視
-- サイレント障害検出
-- メトリクス間の因果関係学習
+## 未完了・保留タスク
+- なし（Phase 1-4 全完了）
 
 ## 既知の問題・注意点
 - `site_scenarios` の防御的取得に `getattr()` を使用 — session_state が未初期化の場合の安全策
@@ -76,9 +102,12 @@
 - トレンド検出は最低3データポイントが必要 — 初回アラーム時は検出不可
 - Granger因果テストは最低 max_lag*3+5 ビン（デフォルト20ビン/10時間分）のデータが必要
 - GDN偏差検出は最低10サンプルでベースライン有効化 — 初期状態では未検出
+- GrayScope のメトリクス相互相関は最低5データポイント必要 — データ蓄積初期は未検出
+- Phase 4 の GrayScope analyze() はトポロジー全体を走査するため、大規模トポロジーではコスト注意
 
 ## 次セッションへの推奨アクション
-1. **Streamlit Cloud での動作確認**: 全 Phase の UI バナー表示を確認
-2. **Phase 4 着手**: GrayScope型メトリクス因果監視
-3. **統合テスト**: Phase 1-3 の連携動作を確認（トレンド→因果→偏差の連鎖ブースト）
-4. **メトリクス範囲の自動登録**: DegradationSequence の normal_value/failure_value を TrendAnalyzer に自動連携
+1. **Streamlit Cloud での動作確認**: 全 Phase の UI バナー表示を確認（Phase 1-4）
+2. **統合テスト**: Phase 1-4 の連携動作を確認（トレンド→因果→偏差→GrayScope の連鎖ブースト）
+3. **メトリクス範囲の自動登録**: DegradationSequence の normal_value/failure_value を TrendAnalyzer に自動連携
+4. **パフォーマンスチューニング**: GrayScope analyze() の大規模トポロジー対応（キャッシュ/バッチ処理）
+5. **E2E シナリオテスト**: サイレント障害シナリオでの GrayScope 検出精度検証

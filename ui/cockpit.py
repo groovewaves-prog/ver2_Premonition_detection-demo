@@ -1654,6 +1654,46 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     _gdn_text += f" | 信頼度+{_gdn_info['boost']:.1%}"
                 st.warning(f"🔬 **ベースライン偏差検出**: {_gdn_text}")
 
+            # ★ Phase 4: GrayScope サイレント障害分析の表示
+            _gs_info = cand.get('grayscope_info')
+            if _gs_info and _gs_info.get('score', 0) >= 0.3:
+                _gs_parts = [f"スコア: {_gs_info['score']:.0%}"]
+                if _gs_info.get('affected_ratio', 0) > 0:
+                    _gs_parts.append(f"配下影響: {_gs_info['affected_ratio']:.0%}")
+                _gs_signals = _gs_info.get('implicit_signals', [])
+                if _gs_signals:
+                    _gs_parts.append(f"兆候: {', '.join(_gs_signals[:2])}")
+                st.error(f"🔍 **GrayScope サイレント障害分析**: {' | '.join(_gs_parts)}")
+                if _gs_info.get('recommendation'):
+                    st.caption(f"💡 推奨: {_gs_info['recommendation']}")
+
+            # ★ Phase 4: GrayScope メトリクス相関の表示
+            _gs_corrs = cand.get('grayscope_correlations')
+            if _gs_corrs:
+                _corr_desc = ", ".join(
+                    f"{c['source']}↔{c['target']}({c['correlation']:+.2f})"
+                    for c in _gs_corrs[:3]
+                )
+                st.info(f"📊 **メトリクス相関**: {_corr_desc}")
+
+            # ★ Phase 4: GrayScope推奨（inference_engine経由）
+            _gs_evidence = cand.get('grayscope_evidence')
+            if _gs_evidence and not _gs_info:
+                _ev_parts = []
+                if _gs_evidence.get('child_alarm_ratio', 0) > 0:
+                    _ev_parts.append(f"配下アラーム: {_gs_evidence['child_alarm_ratio']:.0%}")
+                if _gs_evidence.get('granger_causality', 0) > 0:
+                    _ev_parts.append(f"因果: {_gs_evidence['granger_causality']:.2f}")
+                if _gs_evidence.get('trend_degradation', 0) > 0:
+                    _ev_parts.append(f"トレンド: {_gs_evidence['trend_degradation']:.2f}")
+                if _gs_evidence.get('gdn_deviation', 0) > 0:
+                    _ev_parts.append(f"GDN: {_gs_evidence['gdn_deviation']:.2f}")
+                if _ev_parts:
+                    st.error(f"🔍 **GrayScope サイレント障害検出**: {' | '.join(_ev_parts)}")
+                _gs_rec = cand.get('grayscope_recommendation', '')
+                if _gs_rec:
+                    st.caption(f"💡 推奨: {_gs_rec}")
+
             if is_pred:
                 st.caption(
                     "📋 **ステップ②**: 初動トリアージの次に実施する詳細診断。"
