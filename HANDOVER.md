@@ -53,24 +53,32 @@
 - **engine.py 統合**: predict() に因果ブースト（最大+10%）
 - **UI統合**: 因果関係バナー表示（影響元・影響先）
 
-## 未完了・保留タスク
+### 6. Phase 3: GDN (Graph Deviation Network) — ベースライン偏差検出
+- **新規モジュール**: `digital_twin_pkg/gdn.py`
+  - `DeviceBaselineTracker`: Welford法オンライン統計蓄積 + SQLite永続化
+  - `GraphDeviationScorer`: z-scoreベースの偏差検出 + 影響伝搬補正
+  - `build_device_features()`: マルチメトリクス特徴量ビルダー（16次元）
+  - `GDNPredictor`: GNNを補完する偏差ベース異常検知器
+- **engine.py 統合**:
+  - メインpredict(): GDN偏差→信頼度ブースト（最大+12%）
+  - per-device predict(): 正常レベルのデータをベースライン自動蓄積
+- **UI統合**: 偏差検出バナー（逸脱特徴のσ値表示）
 
-### Phase 3 (中期): GDN (Graph Deviation Network)
-- gnn_trainer.py の拡張（実データ対応）
-- 合成データのみの学習からの脱却
+## 未完了・保留タスク
 
 ### Phase 4 (長期): GrayScope型メトリクス因果監視
 - サイレント障害検出
 - メトリクス間の因果関係学習
 
 ## 既知の問題・注意点
-- `site_scenarios` の防御的取得に `getattr()` を使用（行580）— session_state が未初期化の場合の安全策
-- Streamlit Cloud デプロイ時は行番号がローカルとずれる可能性あり
+- `site_scenarios` の防御的取得に `getattr()` を使用 — session_state が未初期化の場合の安全策
 - PyTorch Geometric 未インストール環境では GNN 機能が無効化される（既存動作、変更なし）
-- トレンド検出は最低3データポイントが必要 — 初回アラーム時は検出不可（蓄積後に有効化）
+- トレンド検出は最低3データポイントが必要 — 初回アラーム時は検出不可
+- Granger因果テストは最低 max_lag*3+5 ビン（デフォルト20ビン/10時間分）のデータが必要
+- GDN偏差検出は最低10サンプルでベースライン有効化 — 初期状態では未検出
 
 ## 次セッションへの推奨アクション
-1. **Streamlit Cloud での動作確認**: トレンド検出バナーの表示、ノードマップの視認性を確認
-2. **Phase 2 着手**: Granger因果テストの実装（inference_engine.py）
-3. **トレンドデータの可視化**: 劣化曲線チャートにトレンド回帰線をオーバーレイ表示
+1. **Streamlit Cloud での動作確認**: 全 Phase の UI バナー表示を確認
+2. **Phase 4 着手**: GrayScope型メトリクス因果監視
+3. **統合テスト**: Phase 1-3 の連携動作を確認（トレンド→因果→偏差の連鎖ブースト）
 4. **メトリクス範囲の自動登録**: DegradationSequence の normal_value/failure_value を TrendAnalyzer に自動連携
