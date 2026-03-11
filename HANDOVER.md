@@ -37,11 +37,23 @@
 - 学術論文調査: 8分野の最新論文を収集
 - Phase 1-4 の実装ロードマップを提案
 
-## 未完了・保留タスク
+### 5. Phase 2: Granger因果テスト（デバイス間時系列因果分析）
+- **新規モジュール**: `digital_twin_pkg/granger.py`
+  - `GrangerCausalityAnalyzer`: F検定 + 因果グラフ管理
+  - Granger因果F検定（純numpy実装、scipy不要）
+  - F分布生存関数の近似（Paulson's approximation）
+  - アラームイベントの等間隔ビン化時系列変換
+  - 因果グラフ（EWMA平滑化で逐次更新）
+  - トポロジー整合性チェック
+- **ストレージ拡張**: `alarm_events` + `causality_ledger` テーブル追加
+- **inference_engine.py 統合**: analyze() にGranger因果分析パイプライン
+  - アラーム到着時にイベント記録
+  - ペアワイズ因果テスト（トポロジー隣接ペアのみ、O(E)）
+  - root_cause/symptom の確信度を因果的裏付けでブースト
+- **engine.py 統合**: predict() に因果ブースト（最大+10%）
+- **UI統合**: 因果関係バナー表示（影響元・影響先）
 
-### Phase 2 (中期): Granger因果テスト
-- inference_engine.py のRCA強化
-- アラーム間の時間的因果関係を統計的に推定
+## 未完了・保留タスク
 
 ### Phase 3 (中期): GDN (Graph Deviation Network)
 - gnn_trainer.py の拡張（実データ対応）
