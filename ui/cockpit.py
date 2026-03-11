@@ -511,89 +511,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         }]
 
     # =====================================================
-    # 障害時トリアージ生成: root_cause デバイスにも推奨アクションを付与
+    # 障害時トリアージ: cockpit では生成せず、root_cause_table で
+    # 選択された候補のみオンデマンド生成する（高速化）
     # =====================================================
-    if api_key and GENAI_AVAILABLE and scenario != "正常稼働":
-        _genai_model_for_triage = None
-        if api_key:
-            _genai_triage_key = f"_genai_model_{api_key[:8]}"
-            _genai_model_for_triage = st.session_state.get(_genai_triage_key)
-
-        if _genai_model_for_triage:
-            for cand in root_cause_candidates:
-                if cand.get('is_prediction'):
-                    continue  # 予兆は既にトリアージ生成済み
-                if cand.get('recommended_actions'):
-                    continue  # 既にトリアージあり
-                _dev_id = cand.get('id', '')
-                if _dev_id == 'SYSTEM':
-                    continue
-
-                _triage_cache_key = f"_triage_incident_{_dev_id}_{hash(cand.get('label', '')[:200])}"
-                _cached_triage = st.session_state.get(_triage_cache_key)
-                if _cached_triage is not None:
-                    cand['recommended_actions'] = _cached_triage
-                    continue
-
-                try:
-                    ci = build_ci_context_for_chat(topology, _dev_id)
-                    vendor = ci.get("vendor", "Unknown")
-                    os_type = ci.get("os", "Unknown")
-                    model_name = ci.get("model", "Unknown")
-                    _alarm_text = cand.get('label', '')
-
-                    import json as _json
-                    import re as _re
-
-                    _prompt = f"""
-                    あなたは熟練のネットワークAIOpsエンジニアです。
-                    現在、以下の【対象機器】で障害アラームが発報されました。
-                    運用者が【最初の5分以内】にCLIで実行すべき「初動トリアージ」コマンドを、重要度順に【最大3つまで】JSON形式で出力してください。
-
-                    【★ 初動トリアージの定義（厳守）】
-                    ・目的: 「現状の把握」のみ。状態確認（show系）コマンドだけを提示する
-                    ・禁止: config系コマンド（設定変更・復旧措置）は絶対に含めない
-                    ・禁止: 詳細な診断手順や判定基準の解説は不要（それは別レポートの役割）
-                    ・各コマンドは「何を確認するか」を1行で添え、効果は「この値が分かる」程度に留める
-
-                    【対象機器の情報】
-                    ・ホスト名: {_dev_id}
-                    ・メーカー: {vendor}
-                    ・OS: {os_type}
-                    ・機種名: {model_name}
-
-                    【⚠️ 厳守事項：プラットフォームの限定】
-                    ・対象は上記の「ネットワーク専用機器」です。汎用Linuxサーバではありません。
-                    ・必ず {vendor} ({os_type}) の正規コマンド（例: {vendor}がCiscoなら 'show ~', Juniperなら 'show ~' や 'request ~'）を使用してください。
-                    ・Linux用のコマンド（top, ps, grep, kill, systemctl等）は【絶対に含めないでください】。
-                    ・監視ツール（Zabbix等）は導入済みのため、「監視設定の強化」等の提案は不要です。
-
-                    【発報アラーム】
-                    {_alarm_text[:1000]}
-
-                    【出力JSONフォーマット】
-                    必ず以下のキー構造のJSON配列（リスト）のみを出力してください。
-                    [
-                      {{
-                        "title": "確認項目のタイトル（例: メモリ使用状況の確認）",
-                        "effect": "このコマンドで分かること（1行）",
-                        "priority": "high",
-                        "rationale": "なぜ最初にこれを確認すべきか（1行）",
-                        "steps": "show系コマンドのみ (改行は \\n を使用)"
-                      }}
-                    ]
-                    """
-
-                    _response = _genai_model_for_triage.generate_content(_prompt)
-                    _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
-
-                    if _match:
-                        _dynamic_actions = _json.loads(_match.group(0))
-                        if isinstance(_dynamic_actions, list) and len(_dynamic_actions) > 0:
-                            cand['recommended_actions'] = _dynamic_actions[:3]
-                            st.session_state[_triage_cache_key] = _dynamic_actions[:3]
-                except Exception as e:
-                    logger.warning(f"Incident triage generation failed for {_dev_id}: {e}")
 
     # =====================================================
     # UI描画（コンポーネントに委譲）
@@ -612,6 +532,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # 3. 根本原因候補テーブル
     selected_incident_candidate, target_device_id = render_root_cause_table(
         root_cause_candidates, symptom_devices, unrelated_devices, alarms,
+        topology=topology,
     )
 
     # 4. 2カラムレイアウト

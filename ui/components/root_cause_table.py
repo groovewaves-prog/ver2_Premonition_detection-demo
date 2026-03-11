@@ -1,11 +1,14 @@
 # ui/components/root_cause_table.py — 根本原因候補テーブル + 派生/ノイズ一覧
 import streamlit as st
 import pandas as pd
+import logging
 from typing import List, Tuple, Optional
 from .command_popup import (
     render_triage_cards,
     show_command_popup_if_pending,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def render_root_cause_table(
@@ -13,6 +16,7 @@ def render_root_cause_table(
     symptom_devices: List[dict],
     unrelated_devices: List[dict],
     alarms: list,
+    topology: dict = None,
 ) -> Tuple[Optional[dict], Optional[str]]:
     """
     根本原因候補テーブルを描画し、選択されたインシデント候補とデバイスIDを返す。
@@ -109,17 +113,26 @@ def render_root_cause_table(
         selected_incident_candidate = root_cause_candidates[0]
         target_device_id = root_cause_candidates[0]['id']
 
-    # ★ 障害時初動トリアージ: 選択された root_cause 候補のトリアージを表示
+    # ★ 障害時初動トリアージ: 選択された root_cause 候補のみオンデマンド生成+表示
     show_command_popup_if_pending()
     if selected_incident_candidate:
-        _rc_actions = selected_incident_candidate.get('recommended_actions', [])
         _is_pred = selected_incident_candidate.get('is_prediction', False)
-        if _rc_actions and not _is_pred:
-            _rc_dev = selected_incident_candidate.get('id', '')
-            with st.expander(f"🛠 初動トリアージ: {_rc_dev}", expanded=True):
-                st.caption("🕐 最初の5分: 状況把握のためのshowコマンドです。"
-                           "ボタン押下で対象機器にコマンドを実行し、結果をポップアップ表示します。")
-                render_triage_cards(_rc_actions, _rc_dev, card_idx=100)
+        _rc_dev = selected_incident_candidate.get('id', '')
+
+        if not _is_pred and _rc_dev != 'SYSTEM':
+            _rc_actions = selected_incident_candidate.get('recommended_actions', [])
+
+            # トリアージ未生成の場合、この候補だけオンデマンド生成
+            if not _rc_actions:
+                _rc_actions = _generate_incident_triage_lazy(selected_incident_candidate, topology or {})
+                if _rc_actions:
+                    selected_incident_candidate['recommended_actions'] = _rc_actions
+
+            if _rc_actions:
+                with st.expander(f"🛠 初動トリアージ: {_rc_dev}", expanded=True):
+                    st.caption("🕐 最初の5分: 状況把握のためのshowコマンドです。"
+                               "ボタン押下で対象機器にコマンドを実行し、結果をポップアップ表示します。")
+                    render_triage_cards(_rc_actions, _rc_dev, card_idx=100)
 
     # 派生アラート（Symptom）一覧
     if symptom_devices:
@@ -146,3 +159,93 @@ def render_root_cause_table(
             st.dataframe(ur_df, use_container_width=True, hide_index=True)
 
     return selected_incident_candidate, target_device_id
+
+
+def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
+    """選択された障害候補に対してのみ、オンデマンドでトリアージを生成する。
+
+    cockpit.py での全候補一括生成を廃止し、表示時に1件だけ生成することで
+    シナリオ切替直後の描画を高速化する。
+    結果は session_state にキャッシュされ、次回以降は即座に返却される。
+    """
+    _dev_id = cand.get('id', '')
+    _label = cand.get('label', '')
+    _triage_cache_key = f"_triage_incident_{_dev_id}_{hash(_label[:200])}"
+
+    # キャッシュヒット
+    _cached = st.session_state.get(_triage_cache_key)
+    if _cached is not None:
+        return _cached
+
+    # API キー & モデルの取得
+    api_key = st.session_state.get("api_key")
+    if not api_key:
+        return []
+
+    _genai_key = f"_genai_model_{api_key[:8]}"
+    _genai_model = st.session_state.get(_genai_key)
+    if not _genai_model:
+        return []
+
+    from .helpers import build_ci_context_for_chat
+
+    ci = build_ci_context_for_chat(topology, _dev_id)
+    vendor = ci.get("vendor", "Unknown")
+    os_type = ci.get("os", "Unknown")
+    model_name = ci.get("model", "Unknown")
+
+    import json as _json
+    import re as _re
+
+    _prompt = f"""あなたは熟練のネットワークAIOpsエンジニアです。
+現在、以下の【対象機器】で障害アラームが発報されました。
+運用者が【最初の5分以内】にCLIで実行すべき「初動トリアージ」コマンドを、重要度順に【最大3つまで】JSON形式で出力してください。
+
+【★ 初動トリアージの定義（厳守）】
+・目的: 「現状の把握」のみ。状態確認（show系）コマンドだけを提示する
+・禁止: config系コマンド（設定変更・復旧措置）は絶対に含めない
+・禁止: 詳細な診断手順や判定基準の解説は不要（それは別レポートの役割）
+・各コマンドは「何を確認するか」を1行で添え、効果は「この値が分かる」程度に留める
+
+【対象機器の情報】
+・ホスト名: {_dev_id}
+・メーカー: {vendor}
+・OS: {os_type}
+・機種名: {model_name}
+
+【⚠️ 厳守事項：プラットフォームの限定】
+・対象は上記の「ネットワーク専用機器」です。汎用Linuxサーバではありません。
+・必ず {vendor} ({os_type}) の正規コマンド（例: {vendor}がCiscoなら 'show ~', Juniperなら 'show ~' や 'request ~'）を使用してください。
+・Linux用のコマンド（top, ps, grep, kill, systemctl等）は【絶対に含めないでください】。
+・監視ツール（Zabbix等）は導入済みのため、「監視設定の強化」等の提案は不要です。
+
+【発報アラーム】
+{_label[:1000]}
+
+【出力JSONフォーマット】
+必ず以下のキー構造のJSON配列（リスト）のみを出力してください。
+[
+  {{
+    "title": "確認項目のタイトル（例: メモリ使用状況の確認）",
+    "effect": "このコマンドで分かること（1行）",
+    "priority": "high",
+    "rationale": "なぜ最初にこれを確認すべきか（1行）",
+    "steps": "show系コマンドのみ (改行は \\n を使用)"
+  }}
+]
+"""
+    try:
+        with st.spinner(f"🔄 {_dev_id} の初動トリアージを生成中..."):
+            _response = _genai_model.generate_content(_prompt)
+            _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
+
+            if _match:
+                _dynamic_actions = _json.loads(_match.group(0))
+                if isinstance(_dynamic_actions, list) and len(_dynamic_actions) > 0:
+                    _result = _dynamic_actions[:3]
+                    st.session_state[_triage_cache_key] = _result
+                    return _result
+    except Exception as e:
+        logger.warning(f"Incident triage lazy generation failed for {_dev_id}: {e}")
+
+    return []
