@@ -8,7 +8,7 @@ from registry import list_sites, get_display_name, load_topology, get_paths
 from utils.const import SCENARIO_MAP
 from utils.llm_helper import get_rate_limiter, GENAI_AVAILABLE
 from ui.stream_dashboard import render_stream_controls, _get_simulator, inject_stream_alarms_to_session
-from ui.service_tier import tier_has_access, TIER_PHM
+from ui.service_tier import tier_has_access, get_service_tier, TIER_BASIC, TIER_PHM, TIER_FULL
 from ui.shared_sim_config import (
     render_shared_config,
     scenario_key_to_display,
@@ -105,6 +105,30 @@ def render_sidebar():
                     key=f"maint_{site_id}"
                 )
                 st.session_state.maint_flags[site_id] = is_maint
+
+        st.divider()
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # ★ サービスティア切替（デモ用）
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        _tier_options = {
+            TIER_BASIC: "Basic — トポロジー + アラート分析",
+            TIER_PHM:   "PHM — + 予兆検知 / RUL予測",
+            TIER_FULL:  "Full — 全機能",
+        }
+        _current_tier = get_service_tier()
+        with st.expander("🔑 サービスティア", expanded=False):
+            _selected_tier = st.selectbox(
+                "SERVICE_TIER",
+                options=list(_tier_options.keys()),
+                format_func=lambda t: _tier_options[t],
+                index=list(_tier_options.keys()).index(_current_tier),
+                key="_service_tier_select",
+                label_visibility="collapsed",
+            )
+            if _selected_tier != _current_tier:
+                st.session_state["service_tier"] = _selected_tier
+                st.rerun()
 
         st.divider()
 

@@ -39,6 +39,7 @@ from ui.components.topology_panel import render_topology_panel
 from ui.components.analyst_report import render_analyst_report
 from ui.components.remediation import render_remediation
 from ui.components.chat_panel import render_chat_panel
+from ui.components.command_popup import show_command_popup_if_pending
 
 
 # =====================================================
@@ -518,6 +519,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # =====================================================
     # UI描画（コンポーネントに委譲）
     # =====================================================
+
+    # 0. コマンド実行結果ポップアップ（@st.dialog の重複登録を防ぐため1箇所で呼ぶ）
+    show_command_popup_if_pending()
 
     # 1. KPIバナー
     prediction_count, noise_reduction = render_kpi_banner(

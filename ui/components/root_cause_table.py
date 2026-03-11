@@ -3,10 +3,7 @@ import streamlit as st
 import pandas as pd
 import logging
 from typing import List, Tuple, Optional
-from .command_popup import (
-    render_triage_cards,
-    show_command_popup_if_pending,
-)
+from .command_popup import render_triage_cards
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +111,6 @@ def render_root_cause_table(
         target_device_id = root_cause_candidates[0]['id']
 
     # ★ 障害時初動トリアージ: 選択された root_cause 候補のみオンデマンド生成+表示
-    show_command_popup_if_pending()
     if selected_incident_candidate:
         _is_pred = selected_incident_candidate.get('is_prediction', False)
         _rc_dev = selected_incident_candidate.get('id', '')

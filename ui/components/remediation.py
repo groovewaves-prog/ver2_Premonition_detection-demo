@@ -13,7 +13,6 @@ from .helpers import st_html, hash_text
 from .report_builders import build_prevention_plan_scenario
 from .command_popup import (
     simulate_command_execution,
-    show_command_popup_if_pending,
     format_triage_results_for_llm,
 )
 
@@ -35,9 +34,6 @@ def render_remediation(
     dt_engine,
 ):
     """Remediation & Chat セクション（Execute/Cancel含む）を描画"""
-    # ★ 拡張A/C: 保留中のコマンド実行結果ポップアップを表示
-    show_command_popup_if_pending()
-
     st.markdown("---")
     st.subheader("🤖 Remediation & Chat")
 
