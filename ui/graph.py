@@ -292,9 +292,9 @@ var options = {{
             enabled: true,
             direction: "UD",
             sortMethod: "directed",
-            levelSeparation: 140,
-            nodeSpacing: 130,
-            treeSpacing: 160,
+            levelSeparation: 130,
+            nodeSpacing: 180,
+            treeSpacing: 180,
             blockShifting: true,
             edgeMinimization: true,
             parentCentralization: true
@@ -388,6 +388,19 @@ def render_impact_graph(
     """
     if not downstream_impacts:
         st.caption("影響範囲なし（配下デバイスなし）")
+        return
+
+    # ★ 高速化: 影響伝搬グラフ HTML キャッシュ
+    _impact_cache_key = "_impact_graph_cache"
+    _impact_sig = hash((
+        root_device_id,
+        tuple(sorted(downstream_impacts)),
+        tuple(sorted((r.get("id", ""), r.get("classification", "")) for r in (analysis_results or []))),
+    ))
+    _impact_cached = st.session_state.get(_impact_cache_key)
+    if _impact_cached and _impact_cached.get("sig") == _impact_sig:
+        components.html(_impact_cached["html"], height=370)
+        st.markdown(_impact_cached["summary"], unsafe_allow_html=True)
         return
 
     # --- 状態マップ構築 ---
@@ -538,8 +551,6 @@ var network = new vis.Network(document.getElementById('impact-net'), data, optio
 network.fit({{ padding: 30 }});
 </script></body></html>
 """
-    components.html(html, height=370)
-
     # ホップ距離内訳バー
     hop_labels = []
     sym_col = _IMPACT_STATE_COLORS["symptom"]
@@ -550,10 +561,14 @@ network.fit({{ padding: 30 }});
             f'vertical-align:middle;margin-right:4px;border-radius:2px;"></span>'
             f'{h}hop: {hop_counts[h]}台'
         )
-    summary = f"影響範囲: 計 {total}台&nbsp;&nbsp;|&nbsp;&nbsp;" + "&nbsp;&nbsp;&nbsp;".join(hop_labels)
-    st.markdown(
+    summary_text = f"影響範囲: 計 {total}台&nbsp;&nbsp;|&nbsp;&nbsp;" + "&nbsp;&nbsp;&nbsp;".join(hop_labels)
+    summary_html = (
         f'<div style="font-size:12px;font-family:Arial,sans-serif;'
         f'padding:5px 12px;background:#fff3e0;border:1px solid #ffe0b2;'
-        f'border-radius:4px;margin-top:4px;">{summary}</div>',
-        unsafe_allow_html=True,
+        f'border-radius:4px;margin-top:4px;">{summary_text}</div>'
     )
+
+    # ★ キャッシュに保存
+    st.session_state[_impact_cache_key] = {"sig": _impact_sig, "html": html, "summary": summary_html}
+    components.html(html, height=370)
+    st.markdown(summary_html, unsafe_allow_html=True)
