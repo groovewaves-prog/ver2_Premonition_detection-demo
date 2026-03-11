@@ -2,6 +2,10 @@
 import streamlit as st
 import pandas as pd
 from typing import List, Tuple, Optional
+from .command_popup import (
+    render_triage_cards,
+    show_command_popup_if_pending,
+)
 
 
 def render_root_cause_table(
@@ -104,6 +108,18 @@ def render_root_cause_table(
     elif root_cause_candidates:
         selected_incident_candidate = root_cause_candidates[0]
         target_device_id = root_cause_candidates[0]['id']
+
+    # ★ 障害時初動トリアージ: 選択された root_cause 候補のトリアージを表示
+    show_command_popup_if_pending()
+    if selected_incident_candidate:
+        _rc_actions = selected_incident_candidate.get('recommended_actions', [])
+        _is_pred = selected_incident_candidate.get('is_prediction', False)
+        if _rc_actions and not _is_pred:
+            _rc_dev = selected_incident_candidate.get('id', '')
+            with st.expander(f"🛠 初動トリアージ: {_rc_dev}", expanded=True):
+                st.caption("🕐 最初の5分: 状況把握のためのshowコマンドです。"
+                           "ボタン押下で対象機器にコマンドを実行し、結果をポップアップ表示します。")
+                render_triage_cards(_rc_actions, _rc_dev, card_idx=100)
 
     # 派生アラート（Symptom）一覧
     if symptom_devices:
