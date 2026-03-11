@@ -21,6 +21,7 @@ from .gnn import create_gnn_engine, GNNPredictionEngine
 from .gnn_trainer import get_pretrained_model_path
 from .llm_client import InternalLLMClient, LLMScores  # Phase 6a/6b
 from .vector_store import VectorStore  # Phase 6c*
+from .trend import TrendAnalyzer, TrendResult  # Phase 1: トレンド検出
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -69,6 +70,7 @@ class PredictResult:
     early_warning_hours:  int  = 24
     time_to_failure_hours: int = 336  # ★ RUL: 今から完全故障まで（時間）
     predicted_failure_datetime: str = ""  # ★ 故障発生予測日時（ISO形式）
+    trend_info: dict = _field(default_factory=dict)  # ★ Phase 1: トレンド検出結果
 
     def to_dict(
         self,
@@ -118,6 +120,9 @@ class PredictResult:
             "vendor_context": vendor_context,
             "llm_narrative": llm_narrative,
             "explanation":   _expl,
+            # Phase 1: トレンド検出
+            "trend_detected": bool(self.trend_info.get("detected", False)),
+            "trend_info":    self.trend_info or None,
         }
 
 
@@ -185,6 +190,10 @@ class DigitalTwinEngine:
         self._auto_tuning_last_ts = 0.0
         self._rules_sot = (os.environ.get(ENV_RULES_SOT, "json") or "json").strip().lower()
         self.reload_all()
+
+        # ★ Phase 1: トレンド分析エンジン初期化
+        self.trend_analyzer = TrendAnalyzer(self.storage)
+
         # ★ BUG FIX: _ensure_model_loaded() を __init__ から除去
         #   SentenceTransformer('all-MiniLM-L6-v2') が未キャッシュ時にモデルDLを
         #   試み、ネットワーク制限下で無期限ハング → Streamlit 白い画面の原因。
@@ -1036,7 +1045,33 @@ class DigitalTwinEngine:
             if extra_signals > 0:
                 boost = min(extra_signals * multi_signal_boost, 0.20)
                 confidence = min(0.99, confidence + boost)
-            
+
+            # ★ Phase 1: メトリクス蓄積 + トレンド検出
+            _trend_result = TrendResult()  # デフォルト (未検出)
+            if primary_rule.requires_trend and primary_rule._metric_regex:
+                all_msgs = [s[2] for s in matched_signals]
+                self.trend_analyzer.ingest(
+                    device_id=dev_id,
+                    rule_pattern=primary_rule.pattern,
+                    metric_name=primary_rule.metric_name,
+                    metric_regex=primary_rule._metric_regex,
+                    messages=all_msgs,
+                )
+                _trend_result = self.trend_analyzer.analyze(
+                    device_id=dev_id,
+                    rule_pattern=primary_rule.pattern,
+                    metric_name=primary_rule.metric_name,
+                    min_slope=primary_rule.trend_min_slope,
+                    window_hours=primary_rule.trend_window_hours,
+                )
+                if _trend_result.confidence_boost > 0:
+                    confidence = min(0.99, confidence + _trend_result.confidence_boost)
+                    logger.info(
+                        f"Trend boost for {dev_id}/{primary_rule.pattern}: "
+                        f"+{_trend_result.confidence_boost:.3f} "
+                        f"(slope={_trend_result.slope:+.4f}, R²={_trend_result.r_squared:.2f})"
+                    )
+
             # ★ ベイズ推論による信頼度の更新
             confidence, bayesian_debug = self.bayesian.calculate_posterior_confidence(
                 device_id=dev_id,
@@ -1133,6 +1168,20 @@ class DigitalTwinEngine:
                 "recommended_actions": smart_actions,
                 "base_recommended_actions": primary_rule.recommended_actions,
                 "runbook_url": primary_rule.runbook_url,
+                # Phase 1: トレンド検出結果
+                "trend_detected": _trend_result.detected,
+                "trend_info": {
+                    "detected": _trend_result.detected,
+                    "slope": _trend_result.slope,
+                    "slope_normalized": _trend_result.slope_normalized,
+                    "r_squared": _trend_result.r_squared,
+                    "data_points": _trend_result.data_points,
+                    "latest_value": _trend_result.latest_value,
+                    "estimated_ttf_hours": _trend_result.estimated_ttf_hours,
+                    "confidence_boost": _trend_result.confidence_boost,
+                    "direction": _trend_result.trend_direction,
+                    "summary": _trend_result.summary,
+                } if _trend_result.detected or _trend_result.data_points > 0 else None,
                 # Phase 6a: LLM 生成情報
                 "llm_narrative": _llm_scores.narrative,
                 "llm_anomaly_type": _llm_result.anomaly_type_hint,
@@ -1524,6 +1573,28 @@ class DigitalTwinEngine:
                 if conf < _min_conf:
                     continue
 
+                # ★ Phase 1: メトリクス蓄積 + トレンドブースト
+                _rule_trend = TrendResult()
+                if rule.requires_trend and rule._metric_regex:
+                    self.trend_analyzer.ingest(
+                        device_id=device_id,
+                        rule_pattern=rule.pattern,
+                        metric_name=rule.metric_name,
+                        metric_regex=rule._metric_regex,
+                        messages=[msg_n],
+                        timestamp=timestamp,
+                    )
+                    if source == "real":
+                        _rule_trend = self.trend_analyzer.analyze(
+                            device_id=device_id,
+                            rule_pattern=rule.pattern,
+                            metric_name=rule.metric_name,
+                            min_slope=rule.trend_min_slope,
+                            window_hours=rule.trend_window_hours,
+                        )
+                        if _rule_trend.confidence_boost > 0:
+                            conf = min(0.99, conf + _rule_trend.confidence_boost)
+
                 _base_ttc   = int(getattr(rule, "time_to_critical_min", 60) or 60)
                 _base_early = int(getattr(rule, "early_warning_hours", 24) or 24)
                 _ttc   = max(5,  int(_base_ttc   * _ttc_factor))
@@ -1542,6 +1613,22 @@ class DigitalTwinEngine:
                 _failure_dt = datetime.now() + timedelta(hours=_ttf_hours)
                 _failure_dt_str = _failure_dt.strftime("%Y-%m-%d %H:%M")
                 
+                # Phase 1: trend_info を PredictResult に渡す
+                _trend_dict = {}
+                if _rule_trend.detected or _rule_trend.data_points > 0:
+                    _trend_dict = {
+                        "detected": _rule_trend.detected,
+                        "slope": _rule_trend.slope,
+                        "slope_normalized": _rule_trend.slope_normalized,
+                        "r_squared": _rule_trend.r_squared,
+                        "data_points": _rule_trend.data_points,
+                        "latest_value": _rule_trend.latest_value,
+                        "estimated_ttf_hours": _rule_trend.estimated_ttf_hours,
+                        "confidence_boost": _rule_trend.confidence_boost,
+                        "direction": _rule_trend.trend_direction,
+                        "summary": _rule_trend.summary,
+                    }
+
                 pr = PredictResult(
                     predicted_state      = str(getattr(rule, "escalated_state", "unknown")),
                     confidence           = conf,
@@ -1555,6 +1642,7 @@ class DigitalTwinEngine:
                     early_warning_hours  = _early,
                     time_to_failure_hours = _ttf_hours,
                     predicted_failure_datetime = _failure_dt_str,
+                    trend_info           = _trend_dict,
                 )
                 # ★ シミュレーション時: リッチな検知シグナル詳細を生成
                 if source == "simulation" and pr.reasons:

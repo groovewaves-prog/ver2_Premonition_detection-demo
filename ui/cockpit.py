@@ -1363,7 +1363,11 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
             # ★ 旧app.pyと同じ判定ロジック（severity基準）
             if cand.get('is_prediction'):
-                status_text = "🔮 予兆検知"
+                _cand_trend = cand.get('trend_info')
+                if _cand_trend and _cand_trend.get('detected'):
+                    status_text = "📈 予兆+トレンド"
+                else:
+                    status_text = "🔮 予兆検知"
                 timeline = cand.get('prediction_timeline', '')
                 affected = cand.get('prediction_affected_count', 0)
                 early_hours = cand.get('prediction_early_warning_hours', 0)
@@ -1598,6 +1602,30 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             # ★ インシデント情報とステップ②キャプションは常に表示（レポート生成前後共通）
             is_pred = cand.get('is_prediction')
             st.info(f"インシデント選択中: **{cand['id']}** ({cand.get('label', '')})")
+
+            # ★ Phase 1: トレンド検出情報の表示
+            _trend_info = cand.get('trend_info')
+            if is_pred and _trend_info and _trend_info.get('detected'):
+                _t_slope = _trend_info.get('slope', 0)
+                _t_r2 = _trend_info.get('r_squared', 0)
+                _t_pts = _trend_info.get('data_points', 0)
+                _t_latest = _trend_info.get('latest_value')
+                _t_ttf = _trend_info.get('estimated_ttf_hours')
+                _t_boost = _trend_info.get('confidence_boost', 0)
+
+                _trend_parts = [f"傾き: {_t_slope:+.4f}/h", f"R\u00b2: {_t_r2:.2f}", f"データ: {_t_pts}点"]
+                if _t_latest is not None:
+                    _trend_parts.append(f"最新値: {_t_latest:.1f}")
+                if _t_ttf is not None:
+                    if _t_ttf < 1:
+                        _trend_parts.append(f"閾値到達: {_t_ttf * 60:.0f}分後")
+                    else:
+                        _trend_parts.append(f"閾値到達: {_t_ttf:.1f}時間後")
+                if _t_boost > 0:
+                    _trend_parts.append(f"信頼度ブースト: +{_t_boost:.1%}")
+
+                st.warning(f"📈 **劣化トレンド検出**: {' | '.join(_trend_parts)}")
+
             if is_pred:
                 st.caption(
                     "📋 **ステップ②**: 初動トリアージの次に実施する詳細診断。"
