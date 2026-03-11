@@ -3,9 +3,7 @@ import streamlit as st
 from typing import List
 from .helpers import st_html
 from .command_popup import (
-    extract_cli_commands,
-    simulate_command_execution,
-    render_command_result_popup,
+    render_triage_cards,
     show_command_popup_if_pending,
 )
 
@@ -99,106 +97,10 @@ def render_future_radar(prediction_candidates: List[dict]):
             """
             st_html(card_html)
 
-            # ★ 拡張B: 初動トリアージ（旧カードスタイル + バッジボタン化）
+            # ★ 拡張B: 初動トリアージ（共通コンポーネント使用）
             rec_actions = pc.get('recommended_actions', [])
             if rec_actions:
-                _render_triage_cards(rec_actions, _pred_device, pc_idx)
-
-
-def _render_triage_cards(rec_actions: list, device_id: str, card_idx: int):
-    """★ 拡張B: 初動トリアージを旧スタイルのカード表示で描画。
-
-    各カードの「最優先」「推奨」「補助」バッジをボタンにし、
-    押下時にカード内の手順からCLIコマンドのみを抽出して実行、
-    結果をポップアップで表示する。
-    """
-    # プライオリティ別ソート
-    _priority_order = {"最優先": 0, "high": 0, "推奨": 1, "medium": 1, "補助": 2, "low": 2}
-    sorted_actions = sorted(
-        rec_actions,
-        key=lambda x: _priority_order.get(str(x.get("priority", "")).lower(), 3),
-    )
-
-    with st.expander("🛠 初動トリアージ（推奨アクション）", expanded=True):
-        st.caption("🕐 最初の5分: 状況把握のためのshowコマンドです。"
-                   "詳細診断 → 「確認手順を生成」 / 予防措置 → 「予防措置プランを生成」")
-
-        for act_idx, ra in enumerate(sorted_actions):
-            _title     = ra.get("title", "")
-            _effect    = ra.get("effect", "")
-            _rationale = ra.get("rationale", "")
-            _priority  = ra.get("priority", "")
-            _steps     = ra.get("steps", ra.get("command", ra.get("action", "")))
-
-            # プライオリティ判定
-            _pri_lower = str(_priority).lower()
-            if _pri_lower in ("最優先", "high"):
-                _pri_label = "最優先"
-                _pri_bg = "#D32F2F"
-            elif _pri_lower in ("推奨", "medium"):
-                _pri_label = "推奨"
-                _pri_bg = "#FF9800"
-            else:
-                _pri_label = "補助"
-                _pri_bg = "#558B2F"
-
-            # 手順テキストをフォーマット
-            _steps_display = _steps.replace("\\n", "\n")
-            _steps_lines = [line.strip() for line in _steps_display.split("\n") if line.strip()]
-            _steps_numbered = "\n".join(
-                f"{i+1}. {line}" if not line[0].isdigit() else line
-                for i, line in enumerate(_steps_lines)
-            )
-
-            # CLIコマンド抽出（ボタン押下時に実行する対象）
-            _cli_cmds = extract_cli_commands(_steps)
-
-            # カード描画: 旧スタイルのレイアウト
-            # ヘッダ行（番号 + タイトル + ボタン）
-            _col_info, _col_btn = st.columns([4, 1])
-            with _col_info:
-                st.markdown(
-                    f"**🔴 {act_idx + 1}. ⚠ {_title}**" if _pri_label == "最優先"
-                    else f"**🟠 {act_idx + 1}. ⚠ {_title}**" if _pri_label == "推奨"
-                    else f"**🟢 {act_idx + 1}. {_title}**"
-                )
-            with _col_btn:
-                _btn_key = f"triage_{card_idx}_{act_idx}_{device_id}"
-                if _cli_cmds:
-                    if st.button(
-                        _pri_label,
-                        key=_btn_key,
-                        type="primary" if _pri_label == "最優先" else "secondary",
-                        use_container_width=True,
-                    ):
-                        _results = [
-                            simulate_command_execution(cmd, device_id)
-                            for cmd in _cli_cmds
-                        ]
-                        render_command_result_popup(
-                            f"🔧 {_title}: {device_id}",
-                            _results,
-                        )
-                        st.rerun()
-                else:
-                    # CLIコマンドがない場合はバッジのみ表示（ボタンにしない）
-                    st.markdown(
-                        f'<span style="background:{_pri_bg};color:#fff;padding:4px 12px;'
-                        f'border-radius:4px;font-size:13px;font-weight:700;">{_pri_label}</span>',
-                        unsafe_allow_html=True,
-                    )
-
-            # 効果・根拠
-            if _effect:
-                st.caption(f"💡 効果: {_effect}")
-            if _rationale:
-                st.caption(f"⭐ 根拠: {_rationale}")
-
-            # 手順（コードブロック風）
-            if _steps_lines:
-                st.markdown(
-                    f'<div style="background:#f8f8f8;border:1px solid #e8e8e8;border-radius:4px;'
-                    f'padding:8px 12px;font-size:13px;font-family:monospace;margin:4px 0 12px 0;'
-                    f'white-space:pre-wrap;line-height:1.6;">📋 手順:\n{_steps_numbered}</div>',
-                    unsafe_allow_html=True,
-                )
+                with st.expander("🛠 初動トリアージ（推奨アクション）", expanded=True):
+                    st.caption("🕐 最初の5分: 状況把握のためのshowコマンドです。"
+                               "詳細診断 → 「確認手順を生成」 / 予防措置 → 「予防措置プランを生成」")
+                    render_triage_cards(rec_actions, _pred_device, pc_idx)

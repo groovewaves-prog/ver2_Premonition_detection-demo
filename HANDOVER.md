@@ -85,6 +85,20 @@
   - request, ping コマンドにも対応
 - `render_command_result_popup()`: ポップアップデータをsession_stateに保存
 - `show_command_popup_if_pending()`: `@st.dialog` でポップアップを描画（成功/エラーの色分け、展開UI）
+- `render_triage_cards()`: 初動トリアージカード表示（予兆・障害共通コンポーネント）
+- `extract_cli_commands()`: 手順テキストからCLIコマンドのみ自動抽出（人手作業はフィルタ）
+
+### 6. 障害発生時の初動トリアージ対応
+- **cockpit.py**: 障害シナリオ時（scenario != "正常稼働"）、root_cause デバイスにも LLM でトリアージ自動生成
+  - 結果は `recommended_actions` として分析結果に付与、session_state キャッシュで再生成回避
+- **root_cause_table.py**: 選択された root_cause 候補にトリアージがあれば、根本原因テーブル直下に expander で表示
+  - 予兆候補は Future Radar 側で表示するため重複回避
+- **トリアージカード共有化**: `render_triage_cards()` を `command_popup.py` に集約
+  - `future_radar.py` / `root_cause_table.py` 両方から同一コンポーネントを使用
+
+### 7. ノードマップの間隔調整
+- `ui/graph.py`: `levelSeparation` 120→160px、`nodeSpacing` 180→220px、`treeSpacing` 220→250px
+- コンテナ高さ 640→700px、iframe 650→720px
 
 ## 未完了・保留タスク
 
