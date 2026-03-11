@@ -2,12 +2,20 @@
 import streamlit as st
 from typing import List
 from .helpers import st_html
+from .command_popup import (
+    simulate_command_execution,
+    render_command_result_popup,
+    show_command_popup_if_pending,
+)
 
 
 def render_future_radar(prediction_candidates: List[dict]):
     """予兆候補の表示エリア。prediction_candidatesが空なら何も表示しない。"""
     if not prediction_candidates:
         return
+
+    # ★ 拡張B: 保留中のトリアージコマンド実行結果ポップアップを表示
+    show_command_popup_if_pending()
 
     st.markdown("### 🔮 AIOps Future Radar")
     with st.container(border=True):
@@ -23,7 +31,7 @@ def render_future_radar(prediction_candidates: List[dict]):
                 f'(劣化レベル: {level}/5)</div>'
             )
 
-        for pc in prediction_candidates:
+        for pc_idx, pc in enumerate(prediction_candidates):
             _pred_device = pc.get('id', '')
             _pred_prob   = pc.get('prob', 0)
             _pred_label  = pc.get('label', '')
@@ -53,34 +61,6 @@ def render_future_radar(prediction_candidates: List[dict]):
             else:
                 _early_str = ""
 
-            # 推奨アクション
-            rec_actions = pc.get('recommended_actions', [])
-            _triage_html = ""
-            if rec_actions:
-                _triage_items = []
-                for ra in rec_actions:
-                    cmd  = ra.get('command', ra.get('action', ''))
-                    eff  = ra.get('effect', '')
-                    pri  = ra.get('priority', '')
-                    if pri == '最優先':
-                        badge = '<span style="background:#D32F2F;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;">最優先</span>'
-                    elif pri == '推奨':
-                        badge = '<span style="background:#FF9800;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;">推奨</span>'
-                    else:
-                        badge = f'<span style="background:#9E9E9E;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;">{pri}</span>'
-                    _triage_items.append(
-                        f'<div style="padding:4px 0;border-bottom:1px solid #f0f0f0;">'
-                        f'{badge} <code style="font-size:12px;">{cmd}</code>'
-                        f'<span style="color:#666;font-size:11px;margin-left:8px;">{eff}</span>'
-                        f'</div>'
-                    )
-                _triage_html = (
-                    f'<div style="margin-top:8px;">'
-                    f'<div style="font-size:12px;font-weight:600;color:#333;margin-bottom:4px;">🔧 初動トリアージ:</div>'
-                    f'{"".join(_triage_items)}'
-                    f'</div>'
-                )
-
             # Signal details
             _signal_html = ""
             _signal_details = pc.get('prediction_signal_details', [])
@@ -97,9 +77,19 @@ def render_future_radar(prediction_candidates: List[dict]):
                     f'</div>'
                 )
 
+            # ★ 拡張B: 推奨アクションはHTMLカード内に概要のみ表示（ボタンは下に配置）
+            rec_actions = pc.get('recommended_actions', [])
+            _triage_summary_html = ""
+            if rec_actions:
+                _triage_summary_html = (
+                    f'<div style="margin-top:8px;font-size:12px;font-weight:600;color:#333;">'
+                    f'🔧 初動トリアージ: {len(rec_actions)}件の確認コマンド'
+                    f'</div>'
+                )
+
             card_html = f"""
             <div style="background:#fff;border:1px solid #FFE0B2;border-left:4px solid #FF9800;
-                        border-radius:6px;padding:12px 16px;margin-bottom:8px;">
+                        border-radius:6px;padding:12px 16px;margin-bottom:4px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <div>
                         <span style="font-size:15px;font-weight:700;color:#E65100;">🔮 {_pred_device}</span>
@@ -112,8 +102,111 @@ def render_future_radar(prediction_candidates: List[dict]):
                     <span>⚡ 急性期: <b>{_pred_timeline}</b> {_early_str}</span>
                     <span>🌐 影響: <b>{_pred_aff}台</b></span>
                 </div>
-                {_triage_html}
+                {_triage_summary_html}
                 {_signal_html}
             </div>
             """
             st_html(card_html)
+
+            # ★ 拡張B: トリアージコマンドをボタン化（HTMLカード外にStreamlitボタンで配置）
+            if rec_actions:
+                _render_triage_buttons(rec_actions, _pred_device, pc_idx)
+
+
+def _render_triage_buttons(rec_actions: list, device_id: str, card_idx: int):
+    """★ 拡張B: 初動トリアージコマンドをボタンとして描画。
+
+    各コマンドに対して実行ボタンを表示し、押下でコマンドを実行して結果をポップアップ表示する。
+    「一括実行」ボタンで全コマンドをまとめて実行することも可能。
+    """
+    # プライオリティ別ソート
+    _priority_order = {"最優先": 0, "high": 0, "推奨": 1, "medium": 1, "low": 2}
+    sorted_actions = sorted(
+        rec_actions,
+        key=lambda x: _priority_order.get(str(x.get("priority", "")).lower(), 3),
+    )
+
+    # 一括実行ボタン + 個別ボタンのレイアウト
+    with st.container():
+        # 一括実行ボタン
+        _bulk_key = f"triage_bulk_{card_idx}_{device_id}"
+        if st.button(
+            f"▶ 全 {len(sorted_actions)} コマンドを一括実行",
+            key=_bulk_key,
+            type="secondary",
+            use_container_width=True,
+        ):
+            _results = []
+            for ra in sorted_actions:
+                _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
+                # steps に改行区切りで複数コマンドが含まれる場合、各行を実行
+                _cmds = [
+                    line.strip()
+                    for line in _steps.replace("\\n", "\n").split("\n")
+                    if line.strip()
+                ]
+                for _cmd in _cmds:
+                    _results.append(simulate_command_execution(_cmd, device_id))
+            render_command_result_popup(
+                f"🔧 初動トリアージ結果: {device_id}",
+                _results,
+            )
+            st.rerun()
+
+        # 個別コマンドボタン
+        for act_idx, ra in enumerate(sorted_actions):
+            _title = ra.get("title", "")
+            _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
+            _effect = ra.get("effect", "")
+            _priority = ra.get("priority", "")
+            _rationale = ra.get("rationale", "")
+
+            # プライオリティバッジ
+            _pri_lower = str(_priority).lower()
+            if _pri_lower in ("最優先", "high"):
+                _badge = "🔴"
+                _btn_type = "primary"
+            elif _pri_lower in ("推奨", "medium"):
+                _badge = "🟠"
+                _btn_type = "secondary"
+            else:
+                _badge = "🔵"
+                _btn_type = "secondary"
+
+            # コマンド行を抽出
+            _cmds = [
+                line.strip()
+                for line in _steps.replace("\\n", "\n").split("\n")
+                if line.strip()
+            ]
+            _cmd_display = _cmds[0] if _cmds else _steps
+            if len(_cmds) > 1:
+                _cmd_display += f" (+{len(_cmds)-1})"
+
+            _btn_key = f"triage_{card_idx}_{act_idx}_{device_id}"
+            _col_btn, _col_info = st.columns([1, 2])
+            with _col_btn:
+                if st.button(
+                    f"{_badge} {_cmd_display}",
+                    key=_btn_key,
+                    type=_btn_type,
+                    use_container_width=True,
+                ):
+                    _results = [
+                        simulate_command_execution(_cmd, device_id)
+                        for _cmd in _cmds
+                    ]
+                    render_command_result_popup(
+                        f"🔧 {_title or _cmd_display}",
+                        _results,
+                    )
+                    st.rerun()
+            with _col_info:
+                _info_parts = []
+                if _title:
+                    _info_parts.append(f"**{_title}**")
+                if _effect:
+                    _info_parts.append(_effect)
+                if _rationale:
+                    _info_parts.append(f"_({_rationale})_")
+                st.caption(" — ".join(_info_parts) if _info_parts else _steps)

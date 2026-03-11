@@ -60,34 +60,44 @@
 - Phase 4: GrayScope型メトリクス因果監視
 - バグ修正、ノードマップ視認性改善、KPIカード文字欠け修正
 
+### 5. 将来拡張 A/B/C の実装（コマンド実行ポップアップ + トリアージボタン化）
+
+#### A. Execute結果のポップアップ（`ui/components/remediation.py`）
+- `_execute_remediation()` の実行結果を `st.dialog` ポップアップで表示
+- 修復3ステップ（Backup/Apply/Verify）+ 検証コマンド（show interfaces, show logging, ping）の結果を一覧表示
+- 各コマンドの実行時間・出力を個別展開可能
+
+#### B. 初動トリアージのボタン化（`ui/components/future_radar.py`）
+- 従来のHTML静的表示 → Streamlitボタンに変換
+- プライオリティ別アイコン: 🔴最優先(primary) / 🟠推奨(secondary) / 🔵その他
+- 個別実行ボタン: 各トリアージコマンドを個別に実行 → 結果ポップアップ
+- 一括実行ボタン: 全コマンドをまとめて実行 → 結果一覧ポップアップ
+- `steps` フィールドの改行区切り複数コマンドにも対応
+
+#### C. 予兆シミュレーションでのExecute対応（`ui/components/remediation.py`）
+- 予兆（is_prediction=True）時の予防措置Executeも同じポップアップ機構を使用
+- ポップアップタイトルを「🔮 予防措置 実行結果」に自動切替
+- エラー時もポップアップで詳細表示
+
+#### 共通基盤: `ui/components/command_popup.py`（新規）
+- `simulate_command_execution()`: デモ環境用コマンド実行シミュレーション
+  - show系コマンド（interfaces, processes cpu, memory, logging, environment, version, ip route, bgp summary）のリアルな出力テンプレート
+  - request, ping コマンドにも対応
+- `render_command_result_popup()`: ポップアップデータをsession_stateに保存
+- `show_command_popup_if_pending()`: `@st.dialog` でポップアップを描画（成功/エラーの色分け、展開UI）
+
 ## 未完了・保留タスク
 
-### 将来拡張（ユーザー要望）
-
-#### A. 修復実行(Execute)ボタンのコマンド実行結果ポップアップ
-- 障害シナリオ発動時: Executeボタン押下後のコマンド実行結果をポップアップ画面で表示
-- ボタンを押す場合の前提条件チェックも加味
-- **該当コンポーネント**: `ui/components/remediation.py` の `_execute_remediation()`
-
-#### B. 初動トリアージコマンドのボタン化
-- 予兆シミュレーション / 連続劣化ストリームにおいて:
-  - 「最優先」「推奨」表示部分をボタン化
-  - ボタン押下でコマンド実行 → 結果をポップアップ表示
-- **該当コンポーネント**: `ui/components/future_radar.py` の推奨アクション表示部分
-
-#### C. 予兆シミュレーション / 連続劣化ストリームでのExecuteボタン対応
-- 修復実行(Execute)ボタンの結果をポップアップ画面で表示
-- ボタンを押す場合の条件も加味
-- **該当コンポーネント**: `ui/components/remediation.py`
+（現時点で未完了の将来拡張はありません）
 
 ## 既知の問題・注意点
 - cockpit.py のDT予兆パイプライン（predict_api呼び出しループ）は引き続きオーケストレータ内に残存。将来的にはこれも別モジュールに切り出すことを推奨
 - stream_dashboard.py (45KB) も肥大化傾向あり。次のリファクタリング候補
 - `google.generativeai` のインストール環境依存（cffi_backendエラー）があるため、CI環境での動作確認を推奨
 - PyTorch Geometric 未インストール環境では GNN 機能が無効化される（既存動作、変更なし）
+- `command_popup.py` のコマンド出力はデモ用テンプレート。本番環境では実機接続（Netmiko/NAPALM等）への差し替えが必要
 
 ## 次セッションへの推奨アクション
-1. **Streamlit 実行テスト**: `streamlit run app.py` で全画面遷移を確認（リファクタリング後の動作検証）
-2. **将来拡張A/B/Cの実装**: ポップアップ表示は `st.dialog` (Streamlit 1.33+) の活用を推奨
-3. **stream_dashboard.py のリファクタリング検討**: cockpit.py と同様の分割アプローチ
+1. **Streamlit 実行テスト**: `streamlit run app.py` で全画面遷移を確認（拡張A/B/C含む動作検証）
+2. **stream_dashboard.py のリファクタリング検討**: cockpit.py と同様の分割アプローチ
 4. **サービスティアの実運用組み込み**: `render_tier_gated()` を各コンポーネントの適切な箇所に適用
