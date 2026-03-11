@@ -23,7 +23,15 @@ class SiteStatus:
 
 
 def build_site_statuses() -> List[SiteStatus]:
-    """全拠点の状態を構築"""
+    """全拠点の状態を構築（シナリオ/メンテ変更時のみ再計算）"""
+    # ★ 高速化: シナリオ・メンテフラグが変わらなければキャッシュを返す
+    _scenarios_sig = hash(tuple(sorted(st.session_state.site_scenarios.items())))
+    _maint_sig = hash(tuple(sorted(st.session_state.maint_flags.items())))
+    _cache_key = "_site_statuses_cache"
+    _cached = st.session_state.get(_cache_key)
+    if _cached and _cached.get("sig") == (_scenarios_sig, _maint_sig):
+        return _cached["data"]
+
     sites = list_sites()
     statuses = []
     for site_id in sites:
@@ -50,6 +58,7 @@ def build_site_statuses() -> List[SiteStatus]:
 
     priority = {"停止": 0, "要対応": 1, "注意": 2, "正常": 3}
     statuses.sort(key=lambda s: (priority.get(s.status, 4), -s.alarm_count))
+    st.session_state[_cache_key] = {"sig": (_scenarios_sig, _maint_sig), "data": statuses}
     return statuses
 
 
