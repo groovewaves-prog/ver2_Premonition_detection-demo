@@ -86,9 +86,9 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 
         # デフォルト（正常）— ミュートトーン
         bg_color = NodeColor.NORMAL
-        border_color = "#94B898"
-        border_width = 2
-        font_color = "#444"
+        border_color = "#6B9E72"
+        border_width = 3
+        font_color = "#333"
         shape = "box"
         font_bg = None
         label_parts = [node_id, f"({node_type})"]
@@ -111,38 +111,38 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             if info['is_root_cause']:
                 if info['is_silent_suspect']:
                     bg_color = NodeColor.SILENT_FAILURE
-                    border_color = "#8B6896"
-                    border_width = 3
+                    border_color = "#6B4878"
+                    border_width = 4
                     shape = "ellipse"
                     status_tag = "SILENT SUSPECT"
                     state_key = "silent"
                 elif info['max_severity'] == 'CRITICAL':
                     bg_color = NodeColor.ROOT_CAUSE_CRITICAL
-                    border_color = "#A05050"
-                    border_width = 3
+                    border_color = "#8B3030"
+                    border_width = 4
                     shape = "ellipse"
                     font_color = "#8B4444"
                     status_tag = "ROOT CAUSE"
                     state_key = "root_cause"
                 else:
                     bg_color = NodeColor.ROOT_CAUSE_WARNING
-                    border_color = "#C49840"
-                    border_width = 3
+                    border_color = "#A07820"
+                    border_width = 4
                     status_tag = "WARNING"
                     state_key = "warning"
             else:
                 # 非root_cause のアラーム
                 if node_id in predicted_ids_real:
                     bg_color = "#FFB300"
-                    border_color = "#B08050"
+                    border_color = "#8C6030"
                     border_width = 4
                     font_color = "#8C6030"
                     status_tag = "PREDICTION"
                     state_key = "prediction"
                 elif node_id in predicted_ids_sim:
                     bg_color = "#FFE082"
-                    border_color = "#A07048"
-                    border_width = 3
+                    border_color = "#806030"
+                    border_width = 4
                     font_color = "#8C6030"
                     status_tag = "SIM-PRED"
                     state_key = "prediction"
@@ -151,13 +151,15 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                     cls = classification_map.get(node_id, "")
                     if cls == "symptom":
                         bg_color = "#FFE0B2"
-                        border_color = "#B07858"
+                        border_color = "#906040"
+                        border_width = 3
                         font_color = "#8C5C3C"
                         status_tag = "Symptom"
                         state_key = "symptom"
                     elif cls == "unrelated":
                         bg_color = "#E1BEE7"
-                        border_color = "#806094"
+                        border_color = "#604878"
+                        border_width = 3
                         shape = "diamond"
                         font_color = "#5C4070"
                         font_bg = "rgba(255,255,255,0.9)"
@@ -165,7 +167,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                         state_key = "unrelated"
                     else:
                         bg_color = NodeColor.UNREACHABLE
-                        border_color = "#8A9AA4"
+                        border_color = "#6A7A84"
+                        border_width = 3
                         font_color = "#607078"
                         status_tag = "Unreachable"
                         state_key = "unreachable"
@@ -173,15 +176,15 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         # 2. 予兆ハイライト（アラームなし）
         elif node_id in predicted_ids_real:
             bg_color = "#FFB300"
-            border_color = "#B08050"
+            border_color = "#8C6030"
             border_width = 4
             font_color = "#8C6030"
             status_tag = "PREDICTION"
             state_key = "prediction"
         elif node_id in predicted_ids_sim:
             bg_color = "#FFE082"
-            border_color = "#A07048"
-            border_width = 3
+            border_color = "#806030"
+            border_width = 4
             font_color = "#8C6030"
             status_tag = "SIM-PRED"
             state_key = "prediction"
@@ -229,7 +232,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         if parent_id:
             edge_key = (parent_id, node_id)
             if edge_key not in added_edges:
-                edges.append({"from": parent_id, "to": node_id, "arrows": "to", "color": "#999"})
+                edges.append({"from": parent_id, "to": node_id, "arrows": "to", "color": "#777"})
                 added_edges.add(edge_key)
 
             # 冗長ペア（O(1)ルックアップ）
@@ -273,9 +276,9 @@ var options = {{
             enabled: true,
             direction: "UD",
             sortMethod: "directed",
-            levelSeparation: 140,
-            nodeSpacing: 240,
-            treeSpacing: 280,
+            levelSeparation: 120,
+            nodeSpacing: 180,
+            treeSpacing: 220,
             blockShifting: true,
             edgeMinimization: true,
             parentCentralization: true
@@ -311,14 +314,14 @@ network.fit({{ padding: 50 }});
 def _render_legend(used_states: set):
     """凡例を Streamlit 側に描画（マップ外・被りなし）"""
     _LEGEND_ITEMS = [
-        ("root_cause",  "#ffcdd2", "#A05050", "border-radius:50%", "Root Cause (真因)"),
-        ("warning",     "#fff9c4", "#C49840", "",                  "Warning (警告)"),
-        ("silent",      "#e1bee7", "#8B6896", "border-radius:50%", "Silent Suspect"),
-        ("prediction",  "#FFB300", "#B08050", "",                  "Prediction (予兆)"),
-        ("symptom",     "#FFE0B2", "#B07858", "",                  "Symptom (派生)"),
-        ("unrelated",   "#E1BEE7", "#806094", "transform:rotate(45deg)", "Unrelated (ノイズ)"),
-        ("unreachable", "#cfd8dc", "#8A9AA4", "",                  "Unreachable"),
-        ("normal",      "#e8f5e9", "#94B898", "",                  "Normal (正常)"),
+        ("root_cause",  "#ffcdd2", "#8B3030", "border-radius:50%", "Root Cause (真因)"),
+        ("warning",     "#fff9c4", "#A07820", "",                  "Warning (警告)"),
+        ("silent",      "#e1bee7", "#6B4878", "border-radius:50%", "Silent Suspect"),
+        ("prediction",  "#FFB300", "#8C6030", "",                  "Prediction (予兆)"),
+        ("symptom",     "#FFE0B2", "#906040", "",                  "Symptom (派生)"),
+        ("unrelated",   "#E1BEE7", "#604878", "transform:rotate(45deg)", "Unrelated (ノイズ)"),
+        ("unreachable", "#cfd8dc", "#6A7A84", "",                  "Unreachable"),
+        ("normal",      "#e8f5e9", "#6B9E72", "",                  "Normal (正常)"),
     ]
 
     legend_items_html = []
