@@ -148,7 +148,12 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
     if not st.session_state.get(dt_err_key):
         try:
-            current_topo_hash = _compute_topo_hash(topology)
+            # ★ 高速化: topo_hash を session_state にキャッシュ（毎回の再計算を回避）
+            _topo_hash_key = f"_topo_hash_{site_id}"
+            current_topo_hash = st.session_state.get(_topo_hash_key)
+            if not current_topo_hash:
+                current_topo_hash = _compute_topo_hash(topology)
+                st.session_state[_topo_hash_key] = current_topo_hash
             dt_engine = _get_cached_dt_engine(site_id, current_topo_hash, topology)
         except Exception as _dte_err:
             import traceback as _tb
@@ -315,17 +320,23 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                         "recommended_actions": []
                     }]
 
-                # AI動的トリアージ生成
+                # ★ 高速化: AI動的トリアージ生成をキャッシュ化
+                # 同一デバイス+メッセージの組み合わせならLLM呼び出しをスキップ
                 if _src == "simulation" and _injected:
                     ci = build_ci_context_for_chat(topology, _dev_id)
                     vendor = ci.get("vendor", "Unknown")
                     os_type = ci.get("os", "Unknown")
-                    model = ci.get("model", "Unknown")
+                    model_name = ci.get("model", "Unknown")
 
                     for _p in _preds_returned:
                         _actions = _p.get("recommended_actions", [])
                         if not _actions or len(_actions) <= 1:
-                            if _genai_model is not None:
+                            # ★ 高速化: トリアージ結果をsession_stateにキャッシュ
+                            _triage_cache_key = f"_triage_{_dev_id}_{hash(_combined_msg[:200])}"
+                            _cached_triage = st.session_state.get(_triage_cache_key)
+                            if _cached_triage is not None:
+                                _p["recommended_actions"] = _cached_triage
+                            elif _genai_model is not None:
                                 try:
                                     import json as _json
                                     import re as _re
@@ -345,7 +356,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                     ・ホスト名: {_dev_id}
                                     ・メーカー: {vendor}
                                     ・OS: {os_type}
-                                    ・機種名: {model}
+                                    ・機種名: {model_name}
 
                                     【⚠️ 厳守事項：プラットフォームの限定】
                                     ・対象は上記の「ネットワーク専用機器」です。汎用Linuxサーバではありません。
@@ -378,6 +389,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                                         _dynamic_actions = _json.loads(_json_str)
                                         if isinstance(_dynamic_actions, list) and len(_dynamic_actions) > 0:
                                             _p["recommended_actions"] = _dynamic_actions[:3]
+                                            # ★ キャッシュに保存
+                                            st.session_state[_triage_cache_key] = _dynamic_actions[:3]
                                     else:
                                         raise ValueError("AIの回答からJSONが見つかりませんでした。")
 

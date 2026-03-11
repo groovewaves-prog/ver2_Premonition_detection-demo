@@ -419,6 +419,11 @@ class LogicalRCA:
     # ==========================================================
     # Public API
     # ==========================================================
+    # ★ 高速化: analyze() 内部キャッシュ（同一アラームセットなら GrayScope/Granger をスキップ）
+    _analyze_cache_hash: Optional[int] = None
+    _analyze_cache_grayscope = None
+    _analyze_cache_granger_applied: bool = False
+
     def analyze(self, alarms: List) -> List[Dict[str, Any]]:
         if not alarms:
             return [{
@@ -432,6 +437,10 @@ class LogicalRCA:
                 "classification": "unrelated"
             }]
 
+        # ★ 高速化: アラームセットのハッシュを計算（GrayScope/Granger キャッシュ判定用）
+        _alarm_hash = hash(tuple(sorted((a.device_id, a.message, a.severity) for a in alarms)))
+        _use_cached_analysis = (_alarm_hash == self._analyze_cache_hash)
+
         msg_map: Dict[str, List[str]] = {}
         for a in alarms:
             msg_map.setdefault(a.device_id, []).append(a.message)
@@ -439,23 +448,27 @@ class LogicalRCA:
         # アラームの is_root_cause フラグをデバイス単位で集約
         root_cause_device_ids: set = set()
         alarm_severity_map: Dict[str, str] = {}
+        _sev_order = {'CRITICAL': 3, 'WARNING': 2, 'INFO': 1}
         for a in alarms:
             if getattr(a, 'is_root_cause', False):
                 root_cause_device_ids.add(a.device_id)
             # 最大 severity を保持
-            sev_order = {'CRITICAL': 3, 'WARNING': 2, 'INFO': 1}
             cur = alarm_severity_map.get(a.device_id, 'INFO')
-            if sev_order.get(a.severity, 0) > sev_order.get(cur, 0):
+            if _sev_order.get(a.severity, 0) > _sev_order.get(cur, 0):
                 alarm_severity_map[a.device_id] = a.severity
 
         silent_suspects = self._detect_silent_failures(msg_map)
 
         # ★ Phase 4: GrayScope 確率的サイレント障害検出（ヒューリスティックを補完）
+        # ★ 高速化: 同一アラームセットならキャッシュ済み結果を再利用
         _grayscope_result = None
-        if self.grayscope is not None:
+        if _use_cached_analysis and self._analyze_cache_grayscope is not None:
+            _grayscope_result = self._analyze_cache_grayscope
+            _logger.debug("GrayScope cache hit — skipping reanalysis")
+        elif self.grayscope is not None:
             try:
                 _grayscope_result = self.grayscope.analyze(
-                    msg_map, set(msg_map.keys())
+                    msg_map, set(msg_map.keys()),
                 )
                 # GrayScope候補をsilent_suspectsにマージ
                 for gc in _grayscope_result.silent_candidates:
@@ -481,6 +494,10 @@ class LogicalRCA:
                 )
             except Exception as e:
                 _logger.warning(f"GrayScope analysis skipped: {e}")
+
+        # ★ 高速化: GrayScope結果をキャッシュに保存
+        if _grayscope_result is not None:
+            self._analyze_cache_grayscope = _grayscope_result
 
         for parent_id, info in silent_suspects.items():
             msg_map.setdefault(parent_id, []).append("Silent Failure Suspected")
@@ -554,8 +571,9 @@ class LogicalRCA:
 
         # ==========================================================
         # ★ Phase 2: アラームイベント記録 + Granger因果分析
+        # ★ 高速化: 同一アラームセットならペアワイズテスト + 補正をスキップ
         # ==========================================================
-        if self.granger is not None:
+        if self.granger is not None and not (_use_cached_analysis and self._analyze_cache_granger_applied):
             try:
                 _now = time.time()
                 _sev_scores = {'CRITICAL': 1.0, 'WARNING': 0.5, 'INFO': 0.2}
@@ -575,7 +593,6 @@ class LogicalRCA:
                     for r in results:
                         dev_id = r.get('id', '')
                         if r.get('classification') == 'symptom':
-                            # symptom のデバイスに因果的な parent があれば確信度を上げる
                             causal_parents = self.granger.get_causal_parents(dev_id, min_weight=0.4)
                             if causal_parents:
                                 _boost = self.granger.compute_causality_boost(dev_id, "incoming")
@@ -586,7 +603,6 @@ class LogicalRCA:
                                 ]
 
                         elif r.get('classification') == 'root_cause':
-                            # root_cause に因果的な children があれば確信度を上げる
                             causal_children = self.granger.get_causal_children(dev_id, min_weight=0.3)
                             if causal_children:
                                 _boost = self.granger.compute_causality_boost(dev_id, "outgoing")
@@ -604,6 +620,8 @@ class LogicalRCA:
                             f"({_summary['topology_consistent']} topology-consistent), "
                             f"avg weight={_summary['avg_weight']:.3f}"
                         )
+
+                self._analyze_cache_granger_applied = True
 
             except Exception as e:
                 _logger.warning(f"Granger analysis skipped: {e}")
@@ -670,6 +688,9 @@ class LogicalRCA:
             2,                                                                 # Others
             -x.get("prob", 0)                                                  # Prob Descending
         ))
+
+        # ★ 高速化: キャッシュハッシュを更新（次回同一アラームセットで再利用）
+        self._analyze_cache_hash = _alarm_hash
 
         return results
 

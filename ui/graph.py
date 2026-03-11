@@ -258,7 +258,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 
     html = f"""
 <html><head>
-<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
 <style>
   body {{ margin:0; padding:0; overflow:hidden; }}
   #mynetwork {{ width:100%; height:640px; border:1px solid #e0e0e0; border-radius:4px; }}
@@ -267,6 +267,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 <body>
 <div id="mynetwork"></div>
 <script>
+// ★ 高速化: データを直接埋め込み（追加fetchなし）
 var nodes = new vis.DataSet({nodes_json});
 var edges = new vis.DataSet({edges_json});
 var data = {{ nodes: nodes, edges: edges }};
@@ -302,7 +303,7 @@ var options = {{
     }}
 }};
 var network = new vis.Network(document.getElementById('mynetwork'), data, options);
-network.fit({{ padding: 50 }});
+network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation: false }}); }});
 </script></body></html>
 """
     # ★ キャッシュに保存（次回rerunで再利用）
