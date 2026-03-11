@@ -8,6 +8,7 @@ from registry import list_sites, get_display_name, load_topology, get_paths
 from utils.const import SCENARIO_MAP
 from utils.llm_helper import get_rate_limiter, GENAI_AVAILABLE
 from ui.stream_dashboard import render_stream_controls, _get_simulator, inject_stream_alarms_to_session
+from ui.service_tier import tier_has_access, TIER_PHM
 from ui.shared_sim_config import (
     render_shared_config,
     scenario_key_to_display,
@@ -108,20 +109,25 @@ def render_sidebar():
         st.divider()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # ★ 共通シミュレーション設定（デバイス・シナリオ一元管理）
+        # ★ 共通シミュレーション設定（デバイス・シナリオ一元管理）[PHM tier]
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        with st.expander("🎯 シミュレーション対象設定", expanded=True):
-            target_device, scenario_key = render_shared_config()
+        if tier_has_access(TIER_PHM):
+            with st.expander("🎯 シミュレーション対象設定", expanded=True):
+                target_device, scenario_key = render_shared_config()
 
-        st.divider()
+            st.divider()
 
-        # --- 予兆シミュレーション (共通設定を参照) ---
-        _render_weak_signal_injection(target_device, scenario_key)
+            # --- 予兆シミュレーション (共通設定を参照) ---
+            _render_weak_signal_injection(target_device, scenario_key)
 
-        st.divider()
+            st.divider()
 
-        # --- 連続劣化ストリーム (共通設定を参照) ---
-        _render_stream_section(target_device, scenario_key)
+            # --- 連続劣化ストリーム (共通設定を参照) ---
+            _render_stream_section(target_device, scenario_key)
+        else:
+            # PHM未満: デフォルト値を設定（バックエンド側の動作に影響しない）
+            target_device = "不明"
+            scenario_key = "optical"
 
         return _render_api_key_input()
 

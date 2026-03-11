@@ -1,708 +1,39 @@
-# ui/stream_dashboard.py
-# アラームストリーム・リアルタイムダッシュボード
+# ui/stream_dashboard.py — 連続劣化ストリームダッシュボード（オーケストレータ）
 #
-# 視覚的に劣化進行を表示:
-#   - タイムライン: ステージ遷移の横方向プログレスバー
-#   - メトリクスゲージ: 現在値・閾値・危険域の視覚的表示
-#   - 劣化曲線チャート: SVGによる時系列グラフ
-#   - イベントログ: 色分けされたアラーム履歴
+# コンポーネント:
+#   ui/stream/helpers.py        — 共通ヘルパー（HTML描画, SVGキャッシュ, セッションステート）
+#   ui/stream/svg_charts.py     — SVGチャート生成（ゲージ, タイムライン, 劣化曲線）
+#   ui/stream/kpi_panel.py      — KPIパネル（6カード）
+#   ui/stream/event_timeline.py — イベントカード型タイムライン
 
 import streamlit as st
-import time
-import math
-import hashlib
 import logging
-from datetime import datetime, timedelta
-from typing import Optional, List, Tuple
+from datetime import datetime
+from typing import Optional
 from digital_twin_pkg.alarm_stream import (
     AlarmStreamSimulator,
     DEGRADATION_SEQUENCES,
-    SCENARIO_BASE_TTF_HOURS,
-    _DETERMINISTIC_DECAY,
     get_available_scenarios,
     get_default_interfaces,
-    StreamEvent,
 )
 
+from ui.stream.helpers import (
+    st_html,
+    get_simulator as _get_simulator,
+    save_simulator as _save_simulator,
+    clear_simulator as _clear_simulator,
+    svg_cached as _svg_cached,
+    SVG_CACHE_KEY as _SVG_CACHE_KEY,
+)
+from ui.stream.svg_charts import (
+    render_metric_gauge_svg,
+    render_timeline_svg,
+    render_degradation_chart_svg,
+)
+from ui.stream.kpi_panel import render_kpi_html
+from ui.stream.event_timeline import render_event_timeline
+
 logger = logging.getLogger(__name__)
-
-
-def _st_html(html: str, height: int = 0) -> None:
-    """SVG/HTMLをStreamlitで描画する。
-
-    height > 0 の場合: st.components.v1.html() で明示的高さを指定（SVG用）。
-    height == 0 の場合: st.markdown(unsafe_allow_html=True) を使用（通常HTML用）。
-
-    st.html() は iframe でSVG高さが自動計算されないため使用しない。
-    """
-    if height > 0:
-        import streamlit.components.v1 as components
-        components.html(html, height=height, scrolling=False)
-    else:
-        st.markdown(html, unsafe_allow_html=True)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# vis-timeline イベントタイムライン
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-_SEVERITY_COLORS = {
-    "CRITICAL": "#D32F2F",
-    "WARNING":  "#FF9800",
-    "NORMAL":   "#4CAF50",
-    "INFO":     "#2196F3",
-}
-
-_LEVEL_COLORS = {
-    1: "#43A047",
-    2: "#FDD835",
-    3: "#FF9800",
-    4: "#E53935",
-    5: "#B71C1C",
-}
-
-
-def _render_event_timeline(events: List, sim) -> None:
-    """
-    アラームイベントをカード型タイムラインで描画する。
-
-    設計方針:
-      - 左に劣化レベル（L1-L5）の色付きインジケーター
-      - 右にアラートの要約（何が・どこで・どの程度）
-      - レベル遷移を明示的な区切り線で表示
-      - 最新のイベントが上
-    """
-    import streamlit.components.v1 as _components
-
-    sim_start_ts = getattr(sim, '_start_time', None) or time.time()
-
-    display_events = list(reversed(events[-15:]))
-
-    cards_html = ""
-    prev_level = None
-    for ev in display_events:
-        elapsed = ev.elapsed_sec
-        mins = int(elapsed // 60)
-        secs = int(elapsed % 60)
-        time_str = f"{mins}:{secs:02d}" if mins > 0 else f"{secs}s"
-
-        level = ev.level
-        lv_color = _LEVEL_COLORS.get(level, "#999")
-        sev = ev.severity
-        sev_color = _SEVERITY_COLORS.get(sev, "#999")
-
-        msg_raw = ev.messages[0] if ev.messages else ""
-        msg_short = msg_raw
-        if "%" in msg_short:
-            msg_short = msg_short.split("%", 1)[-1]
-        if len(msg_short) > 65:
-            msg_short = msg_short[:62] + "..."
-
-        extra_count = len(ev.messages) - 1 if len(ev.messages) > 1 else 0
-        extra_html = f'<span class="extra">+{extra_count}</span>' if extra_count > 0 else ""
-
-        level_divider = ""
-        if prev_level is not None and level != prev_level:
-            direction = "ESCALATED" if level > prev_level else "De-escalated"
-            dir_color = "#D32F2F" if level > prev_level else "#43A047"
-            level_divider = (
-                f'<div class="level-change">'
-                f'<span style="color:{dir_color}">&#9654; {direction}: L{prev_level} &rarr; L{level}</span>'
-                f'</div>'
-            )
-        prev_level = level
-
-        sev_badge = ""
-        if sev == "CRITICAL":
-            sev_badge = '<span class="sev-badge crit">CRITICAL</span>'
-        elif sev == "WARNING":
-            sev_badge = '<span class="sev-badge warn">WARNING</span>'
-
-        cards_html += f"""{level_divider}
-<div class="ev-card">
-  <div class="ev-indicator" style="background:{lv_color};">
-    <div class="ev-level">L{level}</div>
-  </div>
-  <div class="ev-body">
-    <div class="ev-header">
-      <span class="ev-time">{time_str}</span>
-      {sev_badge}
-      {extra_html}
-    </div>
-    <div class="ev-msg">{msg_short}</div>
-  </div>
-</div>"""
-
-    total_events = len(events)
-    hidden = max(0, total_events - 15)
-    footer = f'<div class="ev-footer">{total_events} events &mdash; showing latest 15</div>' if hidden > 0 else ""
-
-    html = f"""
-<html><head><style>
-  * {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-         background: transparent; padding: 0 2px; }}
-
-  .ev-card {{
-    display: flex; align-items: stretch;
-    margin: 4px 0; border-radius: 6px;
-    background: #fff; border: 1px solid #e8e8e8;
-    overflow: hidden; transition: box-shadow 0.15s;
-  }}
-  .ev-card:hover {{ box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-
-  .ev-indicator {{
-    width: 44px; min-height: 48px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-  }}
-  .ev-level {{
-    color: #fff; font-weight: 700; font-size: 13px;
-    text-shadow: 0 1px 2px rgba(0,0,0,0.3);
-  }}
-
-  .ev-body {{
-    flex: 1; padding: 8px 12px; min-width: 0;
-  }}
-  .ev-header {{
-    display: flex; align-items: center; gap: 8px;
-    margin-bottom: 3px;
-  }}
-  .ev-time {{
-    font-size: 12px; color: #888; font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }}
-  .sev-badge {{
-    font-size: 10px; font-weight: 700; padding: 1px 6px;
-    border-radius: 3px; letter-spacing: 0.5px;
-  }}
-  .sev-badge.crit {{ background: #D32F2F; color: #fff; }}
-  .sev-badge.warn {{ background: #FF9800; color: #fff; }}
-  .extra {{
-    font-size: 10px; color: #999; background: #f0f0f0;
-    padding: 1px 5px; border-radius: 8px;
-  }}
-
-  .ev-msg {{
-    font-size: 13px; color: #333; line-height: 1.4;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }}
-
-  .level-change {{
-    text-align: center; font-size: 11px; font-weight: 600;
-    padding: 4px 0; margin: 2px 0;
-    border-top: 1px dashed #ddd;
-  }}
-
-  .ev-footer {{
-    text-align: center; font-size: 11px; color: #aaa;
-    padding: 6px 0; border-top: 1px solid #eee; margin-top: 4px;
-  }}
-</style></head>
-<body>
-{cards_html}
-{footer}
-</body></html>
-"""
-    height = min(52 * len(display_events) + 40, 520)
-    _components.html(html, height=height, scrolling=True)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# セッションステート管理
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-_STREAM_STATE_KEY = "alarm_stream_sim"
-_STREAM_EVENTS_KEY = "alarm_stream_events"
-
-
-def _get_simulator() -> Optional[AlarmStreamSimulator]:
-    state = st.session_state.get(_STREAM_STATE_KEY)
-    if state is None:
-        return None
-    return AlarmStreamSimulator.from_state_dict(state)
-
-
-def _save_simulator(sim: AlarmStreamSimulator):
-    st.session_state[_STREAM_STATE_KEY] = sim.to_state_dict()
-
-
-def _clear_simulator():
-    st.session_state.pop(_STREAM_STATE_KEY, None)
-    st.session_state.pop(_STREAM_EVENTS_KEY, None)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# SVG キャッシュ（同一パラメータなら再生成をスキップ）
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-_SVG_CACHE_KEY = "_stream_svg_cache"
-
-
-def _svg_cached(cache_name: str, cache_key: str, generator, *args, **kwargs) -> str:
-    """SVG生成結果をsession_stateにキャッシュ。cache_keyが変わった時だけ再生成。"""
-    if _SVG_CACHE_KEY not in st.session_state:
-        st.session_state[_SVG_CACHE_KEY] = {}
-    cache = st.session_state[_SVG_CACHE_KEY]
-    full_key = f"{cache_name}:{cache_key}"
-    if full_key in cache:
-        return cache[full_key]
-    svg = generator(*args, **kwargs)
-    cache[full_key] = svg
-    return svg
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# SVG チャート生成
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-def _render_metric_gauge_svg(
-    current_value: float,
-    normal_value: float,
-    failure_value: float,
-    unit: str,
-    label: str,
-    width: int = 300,
-    height: int = 180,
-) -> str:
-    """SVGでメトリクスゲージを描画（三角ポインタ方式）"""
-    # 値の正規化 (0=正常, 1=障害)
-    val_range = abs(failure_value - normal_value)
-    if val_range < 0.001:
-        val_range = 1.0
-    if failure_value > normal_value:
-        normalized = (current_value - normal_value) / val_range
-    else:
-        normalized = (normal_value - current_value) / val_range
-    normalized = max(0.0, min(1.0, normalized))
-
-    # 色の決定
-    if normalized < 0.3:
-        color = "#4CAF50"  # 緑
-        status = "正常"
-    elif normalized < 0.6:
-        color = "#FF9800"  # オレンジ
-        status = "注意"
-    elif normalized < 0.85:
-        color = "#FF5722"  # 赤オレンジ
-        status = "警戒"
-    else:
-        color = "#D32F2F"  # 赤
-        status = "危険"
-
-    # アーク角度計算 (半円: 左端=π=正常, 右端=0=障害)
-    rad = math.pi * (1.0 - normalized)
-    cx, cy = width / 2, height - 30
-    radius = min(width, height) * 0.45
-    needle_len = radius * 0.82
-    needle_tip_x = cx + needle_len * math.cos(rad)
-    needle_tip_y = cy - needle_len * math.sin(rad)
-
-    # 針の根元（三角形の底辺2点）
-    perp_rad = rad + math.pi / 2
-    base_half = 4
-    base_x1 = cx + base_half * math.cos(perp_rad)
-    base_y1 = cy - base_half * math.sin(perp_rad)
-    base_x2 = cx - base_half * math.cos(perp_rad)
-    base_y2 = cy + base_half * math.sin(perp_rad)
-
-    # アーク描画パラメータ
-    arc_r = radius * 0.85
-
-    svg = f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg"
-         viewBox="0 0 {width} {height}">
-  <!-- 背景アーク (灰色) -->
-  <path d="M {cx - arc_r} {cy} A {arc_r} {arc_r} 0 0 1 {cx + arc_r} {cy}"
-        fill="none" stroke="#E0E0E0" stroke-width="18" stroke-linecap="round"/>
-  <!-- 正常域 (緑) -->
-  <path d="M {cx - arc_r} {cy} A {arc_r} {arc_r} 0 0 1 {cx - arc_r * 0.5} {cy - arc_r * 0.866}"
-        fill="none" stroke="#C8E6C9" stroke-width="18" stroke-linecap="round"/>
-  <!-- 注意域 (黄) -->
-  <path d="M {cx - arc_r * 0.5} {cy - arc_r * 0.866} A {arc_r} {arc_r} 0 0 1 {cx + arc_r * 0.5} {cy - arc_r * 0.866}"
-        fill="none" stroke="#FFF9C4" stroke-width="18" stroke-linecap="round"/>
-  <!-- 危険域 (赤) -->
-  <path d="M {cx + arc_r * 0.5} {cy - arc_r * 0.866} A {arc_r} {arc_r} 0 0 1 {cx + arc_r} {cy}"
-        fill="none" stroke="#FFCDD2" stroke-width="18" stroke-linecap="round"/>
-  <!-- 針（三角ポインタ） -->
-  <polygon points="{needle_tip_x},{needle_tip_y} {base_x1},{base_y1} {base_x2},{base_y2}"
-           fill="{color}" stroke="{color}" stroke-width="1"/>
-  <!-- 中心円 -->
-  <circle cx="{cx}" cy="{cy}" r="7" fill="{color}"/>
-  <circle cx="{cx}" cy="{cy}" r="3" fill="white"/>
-  <!-- 値表示 -->
-  <text x="{cx}" y="{cy - 15}" text-anchor="middle"
-        font-size="28" font-weight="bold" fill="{color}">{current_value:.1f}</text>
-  <text x="{cx}" y="{cy + 2}" text-anchor="middle"
-        font-size="12" fill="#666">{unit}</text>
-  <!-- ラベル -->
-  <text x="{cx}" y="{height - 5}" text-anchor="middle"
-        font-size="11" fill="#999">{label}</text>
-  <!-- ステータス -->
-  <rect x="{cx - 25}" y="{cy - radius * 0.5 - 8}" width="50" height="18" rx="9"
-        fill="{color}" opacity="0.15"/>
-  <text x="{cx}" y="{cy - radius * 0.5 + 5}" text-anchor="middle"
-        font-size="11" font-weight="bold" fill="{color}">{status}</text>
-  <!-- 範囲ラベル -->
-  <text x="{cx - arc_r - 5}" y="{cy + 15}" text-anchor="end"
-        font-size="10" fill="#999">{normal_value:.1f}</text>
-  <text x="{cx + arc_r + 5}" y="{cy + 15}" text-anchor="start"
-        font-size="10" fill="#999">{failure_value:.1f}</text>
-</svg>"""
-    return svg
-
-
-def _render_timeline_svg(
-    current_level: int,
-    progress_pct: float,
-    stages_info: list,
-    width: int = 700,
-    height: int = 90,
-) -> str:
-    """ステージ遷移タイムラインをSVGで描画"""
-    margin = 40
-    bar_width = width - margin * 2
-    bar_y = 35
-    bar_height = 12
-
-    svg_parts = [
-        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
-        f'<rect x="{margin}" y="{bar_y}" width="{bar_width}" height="{bar_height}" '
-        f'rx="6" fill="#E0E0E0"/>',
-    ]
-
-    # プログレスバー
-    fill_width = bar_width * (progress_pct / 100.0)
-    if current_level <= 2:
-        bar_color = "#FFC107"
-    elif current_level <= 3:
-        bar_color = "#FF9800"
-    elif current_level <= 4:
-        bar_color = "#FF5722"
-    else:
-        bar_color = "#D32F2F"
-
-    svg_parts.append(
-        f'<rect x="{margin}" y="{bar_y}" width="{fill_width}" height="{bar_height}" '
-        f'rx="6" fill="{bar_color}"/>'
-    )
-
-    # ステージマーカー
-    num_stages = len(stages_info)
-    for i, stage in enumerate(stages_info):
-        x = margin + (bar_width / num_stages) * (i + 0.5)
-        is_active = (i + 1) == current_level
-        is_past = (i + 1) < current_level
-
-        if is_active:
-            circle_fill = bar_color
-            circle_r = 10
-            stroke = f'stroke="{bar_color}" stroke-width="3"'
-            text_weight = "bold"
-            text_color = bar_color
-        elif is_past:
-            circle_fill = "#4CAF50"
-            circle_r = 8
-            stroke = 'stroke="none"'
-            text_weight = "normal"
-            text_color = "#4CAF50"
-        else:
-            circle_fill = "#BDBDBD"
-            circle_r = 7
-            stroke = 'stroke="none"'
-            text_weight = "normal"
-            text_color = "#999"
-
-        svg_parts.append(
-            f'<circle cx="{x}" cy="{bar_y + bar_height / 2}" r="{circle_r}" '
-            f'fill="{"white" if is_active else circle_fill}" {stroke}/>'
-        )
-        if is_active:
-            svg_parts.append(
-                f'<circle cx="{x}" cy="{bar_y + bar_height / 2}" r="5" fill="{bar_color}"/>'
-            )
-
-        # ステージ番号
-        svg_parts.append(
-            f'<text x="{x}" y="{bar_y - 8}" text-anchor="middle" '
-            f'font-size="11" font-weight="{text_weight}" fill="{text_color}">L{i + 1}</text>'
-        )
-        # ステージラベル
-        svg_parts.append(
-            f'<text x="{x}" y="{bar_y + bar_height + 18}" text-anchor="middle" '
-            f'font-size="10" fill="{text_color}">{stage["label"]}</text>'
-        )
-
-    # 進行率テキスト
-    svg_parts.append(
-        f'<text x="{width - 10}" y="{bar_y + bar_height + 18}" text-anchor="end" '
-        f'font-size="11" font-weight="bold" fill="{bar_color}">{progress_pct:.0f}%</text>'
-    )
-
-    svg_parts.append('</svg>')
-    return '\n'.join(svg_parts)
-
-
-def _render_degradation_chart_svg(
-    metric_history: list,
-    normal_value: float,
-    failure_value: float,
-    metric_name: str,
-    metric_unit: str,
-    total_duration: float,
-    width: int = 900,
-    height: int = 320,
-    *,
-    realtime_history: Optional[List[Tuple[float, float]]] = None,
-    realtime_x_start: float = 0.0,
-    realtime_x_end: float = 0.0,
-    scenario_key: str = "",
-    start_level: int = 1,
-    sim_start_dt: Optional[datetime] = None,
-) -> str:
-    """劣化曲線チャートをSVGで描画。
-
-    realtime_history が指定された場合、X軸を実時間（日時）で描画する。
-    X軸の範囲は realtime_x_start ～ realtime_x_end (時間) に限定される。
-    """
-    # 実時間モードかどうか
-    x_range_hours = realtime_x_end - realtime_x_start
-    use_realtime = realtime_history is not None and x_range_hours > 0
-    history = realtime_history if use_realtime else metric_history
-
-    # 対数スケールでは幅の拡張は不要（長い期間も圧縮される）
-
-    margin_left = 60
-    margin_right = 80 if use_realtime else 30
-    margin_top = 25
-    margin_bottom = 50 if use_realtime else 35
-    chart_w = width - margin_left - margin_right
-    chart_h = height - margin_top - margin_bottom
-
-    # Y軸レンジ: normal_value ～ failure_value を基準に 8% パディング
-    base_min = min(normal_value, failure_value)
-    base_max = max(normal_value, failure_value)
-    base_range = base_max - base_min if abs(base_max - base_min) > 0.001 else 1.0
-    padding = base_range * 0.08
-    y_min = base_min - padding
-    y_max = base_max + padding
-    y_range = y_max - y_min
-
-    if use_realtime:
-        # ── 対数スケール: RUL (残り時間) の log で初期を圧縮、後半を拡大 ──
-        # position = 1 - log(RUL + 1) / log(max_RUL + 1)
-        # → 左端: t=x_start (RUL=max) → pos=0
-        # → 右端: t=x_end   (RUL=0)   → pos=1
-        max_rul = x_range_hours
-        log_denom = math.log(max_rul + 1)
-        # チャート描画域の95%をデータ用、残り5%を障害ラベル余白に
-        data_chart_w = chart_w * 0.95
-
-        def to_svg_x(t):
-            rul = max(realtime_x_end - t, 0)
-            pos = 1.0 - math.log(rul + 1) / log_denom
-            return margin_left + pos * data_chart_w
-    else:
-        def to_svg_x(t):
-            return margin_left + (t / max(total_duration, 0.1)) * chart_w
-
-    def to_svg_y(v):
-        return margin_top + chart_h - ((v - y_min) / y_range) * chart_h
-
-    svg_parts = [
-        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
-        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#FAFAFA" rx="4"/>',
-    ]
-
-    # グリッド (Y軸)
-    for i in range(5):
-        gy = margin_top + (chart_h / 4) * i
-        gv = y_max - (y_range / 4) * i
-        svg_parts.append(
-            f'<line x1="{margin_left}" y1="{gy}" x2="{width - margin_right}" y2="{gy}" '
-            f'stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,4"/>'
-        )
-        svg_parts.append(
-            f'<text x="{margin_left - 5}" y="{gy + 4}" text-anchor="end" '
-            f'font-size="11" fill="#999">{gv:.1f}</text>'
-        )
-
-    # --- X軸: 実時間モードではレベル到達位置 + 残り日数を表示 ---
-    if use_realtime and sim_start_dt:
-        base_ttf = SCENARIO_BASE_TTF_HOURS.get(scenario_key, 336)
-        tick_levels = list(range(start_level, 6))
-        # ティック位置を事前計算し、重なりを防止
-        tick_items = []
-        for lvl in tick_levels:
-            decay = _DETERMINISTIC_DECAY.get(lvl, 0.50)
-            real_h = base_ttf * (1.0 - decay)
-            if real_h < realtime_x_start - 0.01:
-                continue
-            sx = to_svg_x(real_h)
-            rul_h = max(0, int(base_ttf * decay))
-            if rul_h >= 24:
-                rul_str = f"{rul_h // 24}日後"
-            else:
-                rul_str = f"{rul_h}h後"
-            tick_items.append((lvl, sx, rul_str))
-
-        # 隣接ティック間が min_gap px 未満の場合、RULラベルを省略
-        min_gap = 40
-        for idx, (lvl, sx, rul_str) in enumerate(tick_items):
-            label = f"L{lvl}"
-            # グリッド線は常に描画
-            svg_parts.append(
-                f'<line x1="{sx}" y1="{margin_top}" x2="{sx}" y2="{margin_top + chart_h}" '
-                f'stroke="#E0E0E0" stroke-width="1" stroke-dasharray="3,3"/>'
-            )
-            anchor = "start" if abs(sx - margin_left) < 20 else "middle"
-            # レベルラベルは常に表示
-            svg_parts.append(
-                f'<text x="{sx}" y="{margin_top + chart_h + 14}" text-anchor="{anchor}" '
-                f'font-size="10" font-weight="bold" fill="#666">{label}</text>'
-            )
-            # 隣接ティックとの間隔が狭い場合は RUL サブラベルを省略
-            show_rul = True
-            if idx > 0:
-                prev_sx = tick_items[idx - 1][1]
-                if abs(sx - prev_sx) < min_gap:
-                    show_rul = False
-            if idx < len(tick_items) - 1:
-                next_sx = tick_items[idx + 1][1]
-                if abs(next_sx - sx) < min_gap:
-                    show_rul = False
-            if show_rul:
-                svg_parts.append(
-                    f'<text x="{sx}" y="{margin_top + chart_h + 27}" text-anchor="{anchor}" '
-                    f'font-size="9" fill="#999">({rul_str})</text>'
-                )
-
-        # 障害発生線
-        fx = to_svg_x(base_ttf)
-        fail_dt = sim_start_dt + timedelta(hours=base_ttf)
-        fail_dt_str = fail_dt.strftime("%-m/%-d %H:%M")
-        svg_parts.append(
-            f'<line x1="{fx}" y1="{margin_top}" x2="{fx}" y2="{margin_top + chart_h}" '
-            f'stroke="#D32F2F" stroke-width="2" stroke-dasharray="5,3"/>'
-        )
-        svg_parts.append(
-            f'<text x="{fx + 4}" y="{margin_top + chart_h + 14}" text-anchor="start" '
-            f'font-size="10" font-weight="bold" fill="#D32F2F">障害</text>'
-        )
-        svg_parts.append(
-            f'<text x="{fx + 4}" y="{margin_top + chart_h + 27}" text-anchor="start" '
-            f'font-size="9" fill="#D32F2F">{fail_dt_str}</text>'
-        )
-        # 現在時刻マーカー
-        if history:
-            now_h = history[-1][0]
-            now_sx = to_svg_x(now_h)
-            svg_parts.append(
-                f'<line x1="{now_sx}" y1="{margin_top}" x2="{now_sx}" y2="{margin_top + chart_h}" '
-                f'stroke="#1565C0" stroke-width="1" stroke-dasharray="2,2"/>'
-            )
-
-    # 正常ライン
-    ny = to_svg_y(normal_value)
-    svg_parts.append(
-        f'<line x1="{margin_left}" y1="{ny}" x2="{width - margin_right}" y2="{ny}" '
-        f'stroke="#4CAF50" stroke-width="1.5" stroke-dasharray="6,3"/>'
-    )
-    svg_parts.append(
-        f'<text x="{margin_left + 3}" y="{ny - 4}" text-anchor="start" '
-        f'font-size="10" fill="#4CAF50">正常 ({normal_value:.1f})</text>'
-    )
-
-    # 障害ライン (Y)
-    fy = to_svg_y(failure_value)
-    svg_parts.append(
-        f'<line x1="{margin_left}" y1="{fy}" x2="{width - margin_right}" y2="{fy}" '
-        f'stroke="#D32F2F" stroke-width="1.5" stroke-dasharray="6,3"/>'
-    )
-    svg_parts.append(
-        f'<text x="{margin_left + 3}" y="{fy - 4}" text-anchor="start" '
-        f'font-size="10" fill="#D32F2F">障害 ({failure_value:.1f})</text>'
-    )
-
-    # 危険域の塗りつぶし（障害値付近の15%帯）
-    danger_band = abs(failure_value - normal_value) * 0.15
-    if failure_value > normal_value:
-        danger_y1 = to_svg_y(failure_value)
-        danger_y2 = to_svg_y(failure_value - danger_band)
-    else:
-        danger_y1 = to_svg_y(failure_value + danger_band)
-        danger_y2 = to_svg_y(failure_value)
-    svg_parts.append(
-        f'<rect x="{margin_left}" y="{min(danger_y1, danger_y2)}" '
-        f'width="{chart_w}" height="{abs(danger_y2 - danger_y1)}" '
-        f'fill="#FFCDD2" opacity="0.3"/>'
-    )
-
-    # データポイント + ライン
-    if len(history) > 1:
-        points_line = []
-        for t, v in history:
-            sx = to_svg_x(t)
-            sy = to_svg_y(v)
-            points_line.append(f"{sx},{sy}")
-
-        svg_parts.append(
-            f'<polyline points="{" ".join(points_line)}" '
-            f'fill="none" stroke="#1565C0" stroke-width="2.5" stroke-linejoin="round"/>'
-        )
-
-        for i, (t, v) in enumerate(history):
-            sx = to_svg_x(t)
-            sy = to_svg_y(v)
-            r = 5 if i == len(history) - 1 else 3
-            color = "#D32F2F" if i == len(history) - 1 else "#1565C0"
-            svg_parts.append(
-                f'<circle cx="{sx}" cy="{sy}" r="{r}" fill="{color}" '
-                f'stroke="white" stroke-width="1.5"/>'
-            )
-
-        # 最新値のラベル
-        if history:
-            last_t, last_v = history[-1]
-            lx = to_svg_x(last_t)
-            ly = to_svg_y(last_v)
-            # 障害線との距離を考慮してラベル位置を決定
-            # use_realtime 時は障害線位置と比較
-            near_failure_line = False
-            if use_realtime:
-                _fail_x = to_svg_x(realtime_x_end)
-                near_failure_line = abs(lx - _fail_x) < 100
-            near_right_edge = lx > width - margin_right - 80
-            if near_failure_line or near_right_edge:
-                # 障害線/右端に近い → 左上にオフセットして表示
-                svg_parts.append(
-                    f'<text x="{lx - 10}" y="{ly - 16}" text-anchor="end" font-size="13" '
-                    f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
-                )
-            else:
-                svg_parts.append(
-                    f'<text x="{lx + 8}" y="{ly - 8}" font-size="13" '
-                    f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
-                )
-
-    # X軸ラベル
-    if use_realtime:
-        svg_parts.append(
-            f'<text x="{width / 2}" y="{height - 3}" text-anchor="middle" '
-            f'font-size="11" fill="#999">予測タイムライン（対数スケール）</text>'
-        )
-    else:
-        svg_parts.append(
-            f'<text x="{width / 2}" y="{height - 5}" text-anchor="middle" '
-            f'font-size="11" fill="#999">経過時間 (秒)</text>'
-        )
-    # Y軸ラベル
-    svg_parts.append(
-        f'<text x="12" y="{height / 2}" text-anchor="middle" '
-        f'font-size="11" fill="#999" transform="rotate(-90, 12, {height / 2})">'
-        f'{metric_name} ({metric_unit})</text>'
-    )
-
-    svg_parts.append('</svg>')
-    return '\n'.join(svg_parts)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -747,7 +78,7 @@ def render_stream_controls(target_device: str, scenario_key: str, site_id: str):
         scenario_display = scenario_key_to_display(scenario_key)
         st.info(f"🎯 **{target_device}** | {scenario_display}")
 
-        # --- 開始レベルスライダー（連続劣化ストリーム固有） ---
+        # --- 開始レベルスライダー ---
         _LEVEL_OPTIONS = [1, 2, 3, 4, 5]
         _LEVEL_LABELS = {
             1: "L1: 初期劣化",
@@ -805,9 +136,9 @@ def render_stream_dashboard():
     """
     メインエリアに連続劣化ダッシュボードを描画。
 
-    誰でも状況を判断できる視覚的UIを提供:
+    4つのビジュアルコンポーネント:
       1. ステージタイムライン（横方向プログレス）
-      2. メトリクスゲージ（半円ゲージ）
+      2. メトリクスゲージ（半円ゲージ）+ KPIパネル
       3. 劣化曲線チャート（時系列SVG）
       4. イベントログ（色分けされた履歴）
     """
@@ -828,7 +159,7 @@ def render_stream_dashboard():
     status_icon = "✅" if is_complete else "🔴" if current_level >= 4 else "🟠" if current_level >= 2 else "🟢"
     start_info = f" (開始L{start_lvl})" if start_lvl > 1 else ""
 
-    _st_html(
+    st_html(
         f"<h3 style='margin:0 0 8px 0;'>📡 連続劣化モニタリング</h3>"
         f"<span style='background:{status_color};color:white;padding:2px 10px;"
         f"border-radius:10px;font-size:13px;'>"
@@ -838,15 +169,14 @@ def render_stream_dashboard():
     )
 
     with st.container(border=True):
-        # ── 1. ステージタイムライン（アクティブステージのみ表示）──
+        # ── 1. ステージタイムライン ──
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
-        # current_level を active_stages 内での相対位置に変換
         relative_level = max(0, current_level - start_lvl + 1) if current_level >= start_lvl else 0
         _tl_cache_key = f"{relative_level}|{int(progress)}"
         timeline_svg = _svg_cached("timeline", _tl_cache_key,
-                                   _render_timeline_svg, relative_level, progress, stages_info)
-        _st_html(timeline_svg, height=100)
+                                   render_timeline_svg, relative_level, progress, stages_info)
+        st_html(timeline_svg, height=100)
 
         st.markdown("---")
 
@@ -855,155 +185,36 @@ def render_stream_dashboard():
 
         current_metric = events[-1].metric_value if events else seq.normal_value
         with col_gauge:
-            # メトリクス値を小数1桁で丸めてキャッシュキーに使用（微小変動でSVG再生成を防止）
             _gauge_cache_key = f"{round(current_metric, 1)}|{seq.normal_value}|{seq.failure_value}"
             gauge_svg = _svg_cached("gauge", _gauge_cache_key,
-                                    _render_metric_gauge_svg,
+                                    render_metric_gauge_svg,
                                     current_value=current_metric,
                                     normal_value=seq.normal_value,
                                     failure_value=seq.failure_value,
                                     unit=seq.metric_unit,
                                     label=seq.metric_name)
-            _st_html(gauge_svg, height=190)
+            st_html(gauge_svg, height=190)
 
         with col_kpi1:
-            # ── KPI データ準備 ──
-            _base_ttf = SCENARIO_BASE_TTF_HOURS.get(seq.pattern, 336)
-            _decay = _DETERMINISTIC_DECAY.get(current_level, 1.0)
-            _rul_hours = max(1, int(_base_ttf * _decay))
-            ttf_display = f"{_rul_hours // 24}日後" if _rul_hours >= 24 else f"{_rul_hours}時間後"
-
             severity = events[-1].severity if events else "NORMAL"
             elapsed = sim.current_elapsed_sec
             remaining = max(0, sim.total_duration_sec - elapsed)
             latest_stage = events[-1].stage_label if events else "-"
 
-            # ── カード色ロジック ──
-            # レベル色
-            if current_level >= 4:
-                lvl_bg, lvl_border, lvl_text = "#FDE8E8", "#D32F2F", "#B71C1C"
-            elif current_level >= 2:
-                lvl_bg, lvl_border, lvl_text = "#FFF3E0", "#FF9800", "#E65100"
-            else:
-                lvl_bg, lvl_border, lvl_text = "#E8F5E9", "#4CAF50", "#1B5E20"
-
-            # 障害予測色
-            if _rul_hours <= 6:
-                ttf_bg, ttf_border, ttf_text = "#FDE8E8", "#D32F2F", "#B71C1C"
-            elif _rul_hours <= 24:
-                ttf_bg, ttf_border, ttf_text = "#FFF3E0", "#FF9800", "#E65100"
-            else:
-                ttf_bg, ttf_border, ttf_text = "#E3F2FD", "#1976D2", "#0D47A1"
-
-            # 重要度色
-            if severity == "CRITICAL":
-                sev_bg, sev_border, sev_text = "#FDE8E8", "#D32F2F", "#B71C1C"
-                sev_icon, sev_label = "●", "CRITICAL"
-            elif severity == "WARNING":
-                sev_bg, sev_border, sev_text = "#FFF3E0", "#FF9800", "#E65100"
-                sev_icon, sev_label = "●", "WARNING"
-            else:
-                sev_bg, sev_border, sev_text = "#E8F5E9", "#4CAF50", "#1B5E20"
-                sev_icon, sev_label = "●", "NORMAL"
-
-            # ステージ色
-            _stage_critical = any(k in latest_stage for k in ["障害直前", "障害", "Critical", "Failure"])
-            if _stage_critical:
-                stg_bg, stg_border, stg_text = "#FDE8E8", "#D32F2F", "#B71C1C"
-            else:
-                stg_bg, stg_border, stg_text = "#F3E5F5", "#7B1FA2", "#4A148C"
-
-            # パルスアニメーション判定
-            _pulse_level = current_level >= 4
-            _pulse_ttf = _rul_hours <= 6
-            _pulse_severity = severity == "CRITICAL"
-            _pulse_stage = _stage_critical
-
-            def _pulse_cls(flag: bool) -> str:
-                return " kpi-pulse" if flag else ""
-
-            kpi_html = f"""
-            <style>
-              @keyframes kpiPulse {{
-                0%   {{ box-shadow: 0 0 0 0 rgba(211,47,47,0.4); }}
-                70%  {{ box-shadow: 0 0 0 8px rgba(211,47,47,0); }}
-                100% {{ box-shadow: 0 0 0 0 rgba(211,47,47,0); }}
-              }}
-              .kpi-grid {{
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: 8px;
-                padding: 4px 0;
-              }}
-              .kpi-card {{
-                border-radius: 8px;
-                padding: 10px 14px;
-                border-left: 4px solid;
-                min-height: 62px;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                overflow: visible;
-              }}
-              .kpi-card.kpi-pulse {{
-                animation: kpiPulse 1.8s ease-in-out infinite;
-              }}
-              .kpi-label {{
-                font-size: 12px;
-                font-weight: 600;
-                letter-spacing: 0.5px;
-                margin-bottom: 3px;
-                line-height: 1.3;
-              }}
-              .kpi-value {{
-                font-size: 20px;
-                font-weight: 700;
-                line-height: 1.3;
-              }}
-            </style>
-            <div class="kpi-grid">
-              <!-- Row 1 -->
-              <div class="kpi-card{_pulse_cls(_pulse_level)}"
-                   style="background:{lvl_bg};border-color:{lvl_border};">
-                <div class="kpi-label" style="color:{lvl_text};">現在レベル</div>
-                <div class="kpi-value" style="color:{lvl_text};">{current_level}/5</div>
-              </div>
-              <div class="kpi-card{_pulse_cls(_pulse_ttf)}"
-                   style="background:{ttf_bg};border-color:{ttf_border};">
-                <div class="kpi-label" style="color:{ttf_text};">障害予測</div>
-                <div class="kpi-value" style="color:{ttf_text};">{ttf_display}</div>
-              </div>
-              <div class="kpi-card{_pulse_cls(_pulse_severity)}"
-                   style="background:{sev_bg};border-color:{sev_border};">
-                <div class="kpi-label" style="color:{sev_text};">重要度</div>
-                <div class="kpi-value" style="color:{sev_text};">
-                  <span style="color:{sev_border};font-size:14px;">&#11044;</span> {sev_label}
-                </div>
-              </div>
-              <!-- Row 2 -->
-              <div class="kpi-card"
-                   style="background:#F5F5F5;border-color:#9E9E9E;">
-                <div class="kpi-label" style="color:#616161;">イベント数</div>
-                <div class="kpi-value" style="color:#424242;">{len(events)}</div>
-              </div>
-              <div class="kpi-card"
-                   style="background:#F5F5F5;border-color:#9E9E9E;">
-                <div class="kpi-label" style="color:#616161;">シミュ残</div>
-                <div class="kpi-value" style="color:#424242;">{remaining:.0f}s</div>
-              </div>
-              <div class="kpi-card{_pulse_cls(_pulse_stage)}"
-                   style="background:{stg_bg};border-color:{stg_border};">
-                <div class="kpi-label" style="color:{stg_text};">ステージ</div>
-                <div class="kpi-value" style="color:{stg_text};">{latest_stage}</div>
-              </div>
-            </div>
-            """
-            _st_html(kpi_html, height=175)
+            kpi_html = render_kpi_html(
+                current_level=current_level,
+                severity=severity,
+                elapsed=elapsed,
+                remaining=remaining,
+                latest_stage=latest_stage,
+                event_count=len(events),
+                pattern=seq.pattern,
+            )
+            st_html(kpi_html, height=175)
 
         st.markdown("---")
 
         # ── 3. 劣化曲線チャート（実時間軸） ──
-        # ★ 高速化: キャッシュチェックを先に行い、ヒット時はmetric_history計算をスキップ
         _chart_cache_key = f"{len(events)}|{current_level}|{start_lvl}|{seq.pattern}"
         _chart_full_key = f"degradation:{_chart_cache_key}"
         _chart_cache = st.session_state.get(_SVG_CACHE_KEY, {})
@@ -1014,7 +225,7 @@ def render_stream_dashboard():
             realtime_history, rt_x_start, rt_x_end = sim.get_realtime_metric_history(events=events)
             _sim_start_dt = datetime.fromtimestamp(sim._start_time) if sim._start_time else datetime.now()
             chart_svg = _svg_cached("degradation", _chart_cache_key,
-                _render_degradation_chart_svg,
+                render_degradation_chart_svg,
                 metric_history=metric_history,
                 normal_value=seq.normal_value,
                 failure_value=seq.failure_value,
@@ -1039,10 +250,10 @@ def render_stream_dashboard():
 
         st.markdown("---")
 
-        # ── 4. イベントログ（vis-timeline） ──
+        # ── 4. イベントログ ──
         st.markdown("**📋 アラームイベントログ**")
         if events:
-            _render_event_timeline(events, sim)
+            render_event_timeline(events, sim)
             if len(events) > 30:
                 st.caption(f"直近30件を表示中（全{len(events)}件）")
         else:
@@ -1050,9 +261,6 @@ def render_stream_dashboard():
 
     # ── 自動リフレッシュ ──
     if not is_complete:
-        # ストリーム実行中は2秒ごとに更新
-        # Streamlitの自動リフレッシュ (st.rerun) のため、
-        # 呼び出し元で time.sleep + st.rerun を実行
         return True  # "需要リフレッシュ"
 
     # 完了時: DB同期（ChromaDB + GNN学習データエクスポート）
@@ -1095,7 +303,6 @@ def _run_completion_sync(sim: AlarmStreamSimulator) -> dict:
         from digital_twin_pkg.stream_completion_handler import handle_stream_completion
         from registry import load_topology
 
-        # cockpit.py の @st.cache_resource と同じエンジンを再利用
         engine = _get_shared_dt_engine()
         topology = None
         active_site = st.session_state.get("active_site")
@@ -1149,5 +356,5 @@ def inject_stream_alarms_to_session(sim: AlarmStreamSimulator):
         "message": latest_msgs[0],
         "level": current_level,
         "scenario": scenario_display,
-        "source": "stream",  # ストリーム由来であることを示す
+        "source": "stream",
     }
