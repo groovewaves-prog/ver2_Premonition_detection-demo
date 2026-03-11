@@ -7,6 +7,7 @@ from utils.helpers import load_config_by_id
 from network_ops import generate_analyst_report_streaming
 from .helpers import st_html, hash_text
 from .report_builders import build_prediction_report_scenario
+from ui.service_tier import render_tier_gated, tier_has_access, TIER_PHM, TIER_FULL
 
 
 def render_analyst_report(
@@ -26,9 +27,9 @@ def render_analyst_report(
     is_pred = cand.get('is_prediction')
     st.info(f"インシデント選択中: **{cand['id']}** ({cand.get('label', '')})")
 
-    # ★ Phase 1: トレンド検出情報の表示
+    # ★ Phase 1: トレンド検出情報の表示 [PHM tier]
     _trend_info = cand.get('trend_info')
-    if is_pred and _trend_info and _trend_info.get('detected'):
+    if is_pred and _trend_info and _trend_info.get('detected') and tier_has_access(TIER_PHM):
         _t_slope = _trend_info.get('slope', 0)
         _t_r2 = _trend_info.get('r_squared', 0)
         _t_pts = _trend_info.get('data_points', 0)
@@ -49,73 +50,75 @@ def render_analyst_report(
 
         st.warning(f"📈 **劣化トレンド検出**: {' | '.join(_trend_parts)}")
 
-    # ★ Phase 2: Granger因果関係の表示
-    _causality_children = cand.get('causality_children')
-    _causality_parents = cand.get('causality_parents')
-    if _causality_children:
-        _causal_desc = ", ".join(
-            f"{c['device']}({c['weight']:.0%})" for c in _causality_children[:3]
-        )
-        st.info(f"🔗 **因果的影響先**: {_causal_desc}")
-    if _causality_parents:
-        _causal_desc = ", ".join(
-            f"{p['device']}({p['weight']:.0%})" for p in _causality_parents[:3]
-        )
-        st.info(f"🔗 **因果的影響元**: {_causal_desc}")
+    # ★ Phase 2-4: 高度分析（Granger因果 / GDN偏差 / GrayScope）[FULL tier]
+    if tier_has_access(TIER_FULL):
+        # Phase 2: Granger因果関係の表示
+        _causality_children = cand.get('causality_children')
+        _causality_parents = cand.get('causality_parents')
+        if _causality_children:
+            _causal_desc = ", ".join(
+                f"{c['device']}({c['weight']:.0%})" for c in _causality_children[:3]
+            )
+            st.info(f"🔗 **因果的影響先**: {_causal_desc}")
+        if _causality_parents:
+            _causal_desc = ", ".join(
+                f"{p['device']}({p['weight']:.0%})" for p in _causality_parents[:3]
+            )
+            st.info(f"🔗 **因果的影響元**: {_causal_desc}")
 
-    # ★ Phase 3: GDN偏差検出の表示
-    _gdn_info = cand.get('gdn_deviation')
-    if _gdn_info and _gdn_info.get('anomaly'):
-        _gdn_devs = _gdn_info.get('top_deviations', [])
-        _gdn_desc = ", ".join(
-            f"{name}({val:.1f}σ)" for name, val in _gdn_devs[:3]
-        ) if _gdn_devs else ""
-        _gdn_text = f"スコア: {_gdn_info['score']:.2f}"
-        if _gdn_desc:
-            _gdn_text += f" | 逸脱: {_gdn_desc}"
-        if _gdn_info.get('boost', 0) > 0:
-            _gdn_text += f" | 信頼度+{_gdn_info['boost']:.1%}"
-        st.warning(f"🔬 **ベースライン偏差検出**: {_gdn_text}")
+        # Phase 3: GDN偏差検出の表示
+        _gdn_info = cand.get('gdn_deviation')
+        if _gdn_info and _gdn_info.get('anomaly'):
+            _gdn_devs = _gdn_info.get('top_deviations', [])
+            _gdn_desc = ", ".join(
+                f"{name}({val:.1f}σ)" for name, val in _gdn_devs[:3]
+            ) if _gdn_devs else ""
+            _gdn_text = f"スコア: {_gdn_info['score']:.2f}"
+            if _gdn_desc:
+                _gdn_text += f" | 逸脱: {_gdn_desc}"
+            if _gdn_info.get('boost', 0) > 0:
+                _gdn_text += f" | 信頼度+{_gdn_info['boost']:.1%}"
+            st.warning(f"🔬 **ベースライン偏差検出**: {_gdn_text}")
 
-    # ★ Phase 4: GrayScope サイレント障害分析の表示
-    _gs_info = cand.get('grayscope_info')
-    if _gs_info and _gs_info.get('score', 0) >= 0.3:
-        _gs_parts = [f"スコア: {_gs_info['score']:.0%}"]
-        if _gs_info.get('affected_ratio', 0) > 0:
-            _gs_parts.append(f"配下影響: {_gs_info['affected_ratio']:.0%}")
-        _gs_signals = _gs_info.get('implicit_signals', [])
-        if _gs_signals:
-            _gs_parts.append(f"兆候: {', '.join(_gs_signals[:2])}")
-        st.error(f"🔍 **GrayScope サイレント障害分析**: {' | '.join(_gs_parts)}")
-        if _gs_info.get('recommendation'):
-            st.caption(f"💡 推奨: {_gs_info['recommendation']}")
+        # Phase 4: GrayScope サイレント障害分析の表示
+        _gs_info = cand.get('grayscope_info')
+        if _gs_info and _gs_info.get('score', 0) >= 0.3:
+            _gs_parts = [f"スコア: {_gs_info['score']:.0%}"]
+            if _gs_info.get('affected_ratio', 0) > 0:
+                _gs_parts.append(f"配下影響: {_gs_info['affected_ratio']:.0%}")
+            _gs_signals = _gs_info.get('implicit_signals', [])
+            if _gs_signals:
+                _gs_parts.append(f"兆候: {', '.join(_gs_signals[:2])}")
+            st.error(f"🔍 **GrayScope サイレント障害分析**: {' | '.join(_gs_parts)}")
+            if _gs_info.get('recommendation'):
+                st.caption(f"💡 推奨: {_gs_info['recommendation']}")
 
-    # ★ Phase 4: GrayScope メトリクス相関の表示
-    _gs_corrs = cand.get('grayscope_correlations')
-    if _gs_corrs:
-        _corr_desc = ", ".join(
-            f"{c['source']}↔{c['target']}({c['correlation']:+.2f})"
-            for c in _gs_corrs[:3]
-        )
-        st.info(f"📊 **メトリクス相関**: {_corr_desc}")
+        # Phase 4: GrayScope メトリクス相関の表示
+        _gs_corrs = cand.get('grayscope_correlations')
+        if _gs_corrs:
+            _corr_desc = ", ".join(
+                f"{c['source']}↔{c['target']}({c['correlation']:+.2f})"
+                for c in _gs_corrs[:3]
+            )
+            st.info(f"📊 **メトリクス相関**: {_corr_desc}")
 
-    # ★ Phase 4: GrayScope推奨（inference_engine経由）
-    _gs_evidence = cand.get('grayscope_evidence')
-    if _gs_evidence and not _gs_info:
-        _ev_parts = []
-        if _gs_evidence.get('child_alarm_ratio', 0) > 0:
-            _ev_parts.append(f"配下アラーム: {_gs_evidence['child_alarm_ratio']:.0%}")
-        if _gs_evidence.get('granger_causality', 0) > 0:
-            _ev_parts.append(f"因果: {_gs_evidence['granger_causality']:.2f}")
-        if _gs_evidence.get('trend_degradation', 0) > 0:
-            _ev_parts.append(f"トレンド: {_gs_evidence['trend_degradation']:.2f}")
-        if _gs_evidence.get('gdn_deviation', 0) > 0:
-            _ev_parts.append(f"GDN: {_gs_evidence['gdn_deviation']:.2f}")
-        if _ev_parts:
-            st.error(f"🔍 **GrayScope サイレント障害検出**: {' | '.join(_ev_parts)}")
-        _gs_rec = cand.get('grayscope_recommendation', '')
-        if _gs_rec:
-            st.caption(f"💡 推奨: {_gs_rec}")
+        # Phase 4: GrayScope推奨（inference_engine経由）
+        _gs_evidence = cand.get('grayscope_evidence')
+        if _gs_evidence and not _gs_info:
+            _ev_parts = []
+            if _gs_evidence.get('child_alarm_ratio', 0) > 0:
+                _ev_parts.append(f"配下アラーム: {_gs_evidence['child_alarm_ratio']:.0%}")
+            if _gs_evidence.get('granger_causality', 0) > 0:
+                _ev_parts.append(f"因果: {_gs_evidence['granger_causality']:.2f}")
+            if _gs_evidence.get('trend_degradation', 0) > 0:
+                _ev_parts.append(f"トレンド: {_gs_evidence['trend_degradation']:.2f}")
+            if _gs_evidence.get('gdn_deviation', 0) > 0:
+                _ev_parts.append(f"GDN: {_gs_evidence['gdn_deviation']:.2f}")
+            if _ev_parts:
+                st.error(f"🔍 **GrayScope サイレント障害検出**: {' | '.join(_ev_parts)}")
+            _gs_rec = cand.get('grayscope_recommendation', '')
+            if _gs_rec:
+                st.caption(f"💡 推奨: {_gs_rec}")
 
     if is_pred:
         st.caption(

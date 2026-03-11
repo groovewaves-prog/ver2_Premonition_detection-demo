@@ -6,6 +6,7 @@ from .command_popup import (
     render_triage_cards,
     show_command_popup_if_pending,
 )
+from ui.service_tier import render_tier_gated, TIER_PHM
 
 
 def render_future_radar(prediction_candidates: List[dict]):
@@ -17,7 +18,7 @@ def render_future_radar(prediction_candidates: List[dict]):
     show_command_popup_if_pending()
 
     st.markdown("### 🔮 AIOps Future Radar")
-    with st.container(border=True):
+    with render_tier_gated(TIER_PHM, "予兆検知 (Future Radar)"), st.container(border=True):
         injected_info = st.session_state.get("injected_weak_signal")
         if injected_info:
             level = injected_info.get("level", 0)

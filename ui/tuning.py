@@ -126,7 +126,9 @@ def render_tuning_dashboard(site_id: str):
         display_name = site_id
     st.caption(f"対象拠点: **{display_name}** | テナントID: `{site_id}`")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["⚡ Auto-Tuning", "📜 Audit Log", "📊 Engine Status", "🧠 GNN Training"])
+    from ui.service_tier import tier_has_access, TIER_FULL
+    _gnn_label = "🧠 GNN Training" if tier_has_access(TIER_FULL) else "🔒 GNN Training (Full)"
+    tab1, tab2, tab3, tab4 = st.tabs(["⚡ Auto-Tuning", "📜 Audit Log", "📊 Engine Status", _gnn_label])
 
     # ── Tab1: Auto-Tuning ──────────────────────────────────
     with tab1:
@@ -295,6 +297,10 @@ def render_tuning_dashboard(site_id: str):
 
 def _render_gnn_training_tab(site_id: str, dt_engine):
     """GNN事前学習UIタブ"""
+    from ui.service_tier import tier_has_access, TIER_FULL
+    if not tier_has_access(TIER_FULL):
+        st.info("🔒 GNN Training は **Full プラン** で利用可能です。")
+        return
     st.caption(
         "ChiGADウェーブレットGNNの事前学習を実行します。"
         "EscalationRuleから合成データを生成し、モデルを学習させます。"
