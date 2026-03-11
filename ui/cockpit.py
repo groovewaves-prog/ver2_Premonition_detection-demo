@@ -1640,6 +1640,20 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 )
                 st.info(f"🔗 **因果的影響元**: {_causal_desc}")
 
+            # ★ Phase 3: GDN偏差検出の表示
+            _gdn_info = cand.get('gdn_deviation')
+            if _gdn_info and _gdn_info.get('anomaly'):
+                _gdn_devs = _gdn_info.get('top_deviations', [])
+                _gdn_desc = ", ".join(
+                    f"{name}({val:.1f}σ)" for name, val in _gdn_devs[:3]
+                ) if _gdn_devs else ""
+                _gdn_text = f"スコア: {_gdn_info['score']:.2f}"
+                if _gdn_desc:
+                    _gdn_text += f" | 逸脱: {_gdn_desc}"
+                if _gdn_info.get('boost', 0) > 0:
+                    _gdn_text += f" | 信頼度+{_gdn_info['boost']:.1%}"
+                st.warning(f"🔬 **ベースライン偏差検出**: {_gdn_text}")
+
             if is_pred:
                 st.caption(
                     "📋 **ステップ②**: 初動トリアージの次に実施する詳細診断。"
