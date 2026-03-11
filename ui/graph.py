@@ -29,7 +29,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
         # キャッシュヒット: HTML描画のみ
-        components.html(_cached["html"], height=650)
+        components.html(_cached["html"], height=720)
         _render_legend(_cached["used_states"])
         return
 
@@ -261,7 +261,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 <script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
 <style>
   body {{ margin:0; padding:0; overflow:hidden; }}
-  #mynetwork {{ width:100%; height:640px; border:1px solid #e0e0e0; border-radius:4px; }}
+  #mynetwork {{ width:100%; height:700px; border:1px solid #e0e0e0; border-radius:4px; }}
 </style>
 </head>
 <body>
@@ -277,9 +277,9 @@ var options = {{
             enabled: true,
             direction: "UD",
             sortMethod: "directed",
-            levelSeparation: 120,
-            nodeSpacing: 180,
-            treeSpacing: 220,
+            levelSeparation: 160,
+            nodeSpacing: 220,
+            treeSpacing: 250,
             blockShifting: true,
             edgeMinimization: true,
             parentCentralization: true
@@ -308,7 +308,7 @@ network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation
 """
     # ★ キャッシュに保存（次回rerunで再利用）
     st.session_state[_topo_cache_key] = {"sig": _cache_sig, "html": html, "used_states": used_states}
-    components.html(html, height=650)
+    components.html(html, height=720)
     _render_legend(used_states)
 
 

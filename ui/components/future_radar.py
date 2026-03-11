@@ -3,6 +3,7 @@ import streamlit as st
 from typing import List
 from .helpers import st_html
 from .command_popup import (
+    extract_cli_commands,
     simulate_command_execution,
     render_command_result_popup,
     show_command_popup_if_pending,
@@ -77,16 +78,7 @@ def render_future_radar(prediction_candidates: List[dict]):
                     f'</div>'
                 )
 
-            # ★ 拡張B: 推奨アクションはHTMLカード内に概要のみ表示（ボタンは下に配置）
-            rec_actions = pc.get('recommended_actions', [])
-            _triage_summary_html = ""
-            if rec_actions:
-                _triage_summary_html = (
-                    f'<div style="margin-top:8px;font-size:12px;font-weight:600;color:#333;">'
-                    f'🔧 初動トリアージ: {len(rec_actions)}件の確認コマンド'
-                    f'</div>'
-                )
-
+            # ヘッダーカード（RUL・影響台数等）
             card_html = f"""
             <div style="background:#fff;border:1px solid #FFE0B2;border-left:4px solid #FF9800;
                         border-radius:6px;padding:12px 16px;margin-bottom:4px;">
@@ -102,111 +94,111 @@ def render_future_radar(prediction_candidates: List[dict]):
                     <span>⚡ 急性期: <b>{_pred_timeline}</b> {_early_str}</span>
                     <span>🌐 影響: <b>{_pred_aff}台</b></span>
                 </div>
-                {_triage_summary_html}
                 {_signal_html}
             </div>
             """
             st_html(card_html)
 
-            # ★ 拡張B: トリアージコマンドをボタン化（HTMLカード外にStreamlitボタンで配置）
+            # ★ 拡張B: 初動トリアージ（旧カードスタイル + バッジボタン化）
+            rec_actions = pc.get('recommended_actions', [])
             if rec_actions:
-                _render_triage_buttons(rec_actions, _pred_device, pc_idx)
+                _render_triage_cards(rec_actions, _pred_device, pc_idx)
 
 
-def _render_triage_buttons(rec_actions: list, device_id: str, card_idx: int):
-    """★ 拡張B: 初動トリアージコマンドをボタンとして描画。
+def _render_triage_cards(rec_actions: list, device_id: str, card_idx: int):
+    """★ 拡張B: 初動トリアージを旧スタイルのカード表示で描画。
 
-    各コマンドに対して実行ボタンを表示し、押下でコマンドを実行して結果をポップアップ表示する。
-    「一括実行」ボタンで全コマンドをまとめて実行することも可能。
+    各カードの「最優先」「推奨」「補助」バッジをボタンにし、
+    押下時にカード内の手順からCLIコマンドのみを抽出して実行、
+    結果をポップアップで表示する。
     """
     # プライオリティ別ソート
-    _priority_order = {"最優先": 0, "high": 0, "推奨": 1, "medium": 1, "low": 2}
+    _priority_order = {"最優先": 0, "high": 0, "推奨": 1, "medium": 1, "補助": 2, "low": 2}
     sorted_actions = sorted(
         rec_actions,
         key=lambda x: _priority_order.get(str(x.get("priority", "")).lower(), 3),
     )
 
-    # 一括実行ボタン + 個別ボタンのレイアウト
-    with st.container():
-        # 一括実行ボタン
-        _bulk_key = f"triage_bulk_{card_idx}_{device_id}"
-        if st.button(
-            f"▶ 全 {len(sorted_actions)} コマンドを一括実行",
-            key=_bulk_key,
-            type="secondary",
-            use_container_width=True,
-        ):
-            _results = []
-            for ra in sorted_actions:
-                _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
-                # steps に改行区切りで複数コマンドが含まれる場合、各行を実行
-                _cmds = [
-                    line.strip()
-                    for line in _steps.replace("\\n", "\n").split("\n")
-                    if line.strip()
-                ]
-                for _cmd in _cmds:
-                    _results.append(simulate_command_execution(_cmd, device_id))
-            render_command_result_popup(
-                f"🔧 初動トリアージ結果: {device_id}",
-                _results,
-            )
-            st.rerun()
+    with st.expander("🛠 初動トリアージ（推奨アクション）", expanded=True):
+        st.caption("🕐 最初の5分: 状況把握のためのshowコマンドです。"
+                   "詳細診断 → 「確認手順を生成」 / 予防措置 → 「予防措置プランを生成」")
 
-        # 個別コマンドボタン
         for act_idx, ra in enumerate(sorted_actions):
-            _title = ra.get("title", "")
-            _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
-            _effect = ra.get("effect", "")
-            _priority = ra.get("priority", "")
+            _title     = ra.get("title", "")
+            _effect    = ra.get("effect", "")
             _rationale = ra.get("rationale", "")
+            _priority  = ra.get("priority", "")
+            _steps     = ra.get("steps", ra.get("command", ra.get("action", "")))
 
-            # プライオリティバッジ
+            # プライオリティ判定
             _pri_lower = str(_priority).lower()
             if _pri_lower in ("最優先", "high"):
-                _badge = "🔴"
-                _btn_type = "primary"
+                _pri_label = "最優先"
+                _pri_bg = "#D32F2F"
             elif _pri_lower in ("推奨", "medium"):
-                _badge = "🟠"
-                _btn_type = "secondary"
+                _pri_label = "推奨"
+                _pri_bg = "#FF9800"
             else:
-                _badge = "🔵"
-                _btn_type = "secondary"
+                _pri_label = "補助"
+                _pri_bg = "#558B2F"
 
-            # コマンド行を抽出
-            _cmds = [
-                line.strip()
-                for line in _steps.replace("\\n", "\n").split("\n")
-                if line.strip()
-            ]
-            _cmd_display = _cmds[0] if _cmds else _steps
-            if len(_cmds) > 1:
-                _cmd_display += f" (+{len(_cmds)-1})"
+            # 手順テキストをフォーマット
+            _steps_display = _steps.replace("\\n", "\n")
+            _steps_lines = [line.strip() for line in _steps_display.split("\n") if line.strip()]
+            _steps_numbered = "\n".join(
+                f"{i+1}. {line}" if not line[0].isdigit() else line
+                for i, line in enumerate(_steps_lines)
+            )
 
-            _btn_key = f"triage_{card_idx}_{act_idx}_{device_id}"
-            _col_btn, _col_info = st.columns([1, 2])
-            with _col_btn:
-                if st.button(
-                    f"{_badge} {_cmd_display}",
-                    key=_btn_key,
-                    type=_btn_type,
-                    use_container_width=True,
-                ):
-                    _results = [
-                        simulate_command_execution(_cmd, device_id)
-                        for _cmd in _cmds
-                    ]
-                    render_command_result_popup(
-                        f"🔧 {_title or _cmd_display}",
-                        _results,
-                    )
-                    st.rerun()
+            # CLIコマンド抽出（ボタン押下時に実行する対象）
+            _cli_cmds = extract_cli_commands(_steps)
+
+            # カード描画: 旧スタイルのレイアウト
+            # ヘッダ行（番号 + タイトル + ボタン）
+            _col_info, _col_btn = st.columns([4, 1])
             with _col_info:
-                _info_parts = []
-                if _title:
-                    _info_parts.append(f"**{_title}**")
-                if _effect:
-                    _info_parts.append(_effect)
-                if _rationale:
-                    _info_parts.append(f"_({_rationale})_")
-                st.caption(" — ".join(_info_parts) if _info_parts else _steps)
+                st.markdown(
+                    f"**🔴 {act_idx + 1}. ⚠ {_title}**" if _pri_label == "最優先"
+                    else f"**🟠 {act_idx + 1}. ⚠ {_title}**" if _pri_label == "推奨"
+                    else f"**🟢 {act_idx + 1}. {_title}**"
+                )
+            with _col_btn:
+                _btn_key = f"triage_{card_idx}_{act_idx}_{device_id}"
+                if _cli_cmds:
+                    if st.button(
+                        _pri_label,
+                        key=_btn_key,
+                        type="primary" if _pri_label == "最優先" else "secondary",
+                        use_container_width=True,
+                    ):
+                        _results = [
+                            simulate_command_execution(cmd, device_id)
+                            for cmd in _cli_cmds
+                        ]
+                        render_command_result_popup(
+                            f"🔧 {_title}: {device_id}",
+                            _results,
+                        )
+                        st.rerun()
+                else:
+                    # CLIコマンドがない場合はバッジのみ表示（ボタンにしない）
+                    st.markdown(
+                        f'<span style="background:{_pri_bg};color:#fff;padding:4px 12px;'
+                        f'border-radius:4px;font-size:13px;font-weight:700;">{_pri_label}</span>',
+                        unsafe_allow_html=True,
+                    )
+
+            # 効果・根拠
+            if _effect:
+                st.caption(f"💡 効果: {_effect}")
+            if _rationale:
+                st.caption(f"⭐ 根拠: {_rationale}")
+
+            # 手順（コードブロック風）
+            if _steps_lines:
+                st.markdown(
+                    f'<div style="background:#f8f8f8;border:1px solid #e8e8e8;border-radius:4px;'
+                    f'padding:8px 12px;font-size:13px;font-family:monospace;margin:4px 0 12px 0;'
+                    f'white-space:pre-wrap;line-height:1.6;">📋 手順:\n{_steps_numbered}</div>',
+                    unsafe_allow_html=True,
+                )

@@ -93,6 +93,48 @@ _DEMO_COMMAND_OUTPUTS = {
 }
 
 
+# ネットワーク機器の実行可能CLIコマンドのプレフィックス
+_CLI_COMMAND_PREFIXES = (
+    "show ", "ping ", "traceroute ", "request ", "display ",
+    "monitor ", "debug ", "test ", "clear ",
+    "show\t",  # タブ補完対応
+)
+
+
+def extract_cli_commands(steps_text: str) -> list:
+    """手順テキストからCLI実行可能なコマンドのみを抽出する。
+
+    「PSU出力電圧の計測」「交換後にRx Powerの回復を確認」などの
+    人手作業はフィルタし、show/ping/request等のCLIコマンドのみ返す。
+
+    Args:
+        steps_text: 改行 or \\n 区切りの手順テキスト
+    Returns:
+        CLIコマンド文字列のリスト
+    """
+    lines = steps_text.replace("\\n", "\n").split("\n")
+    cmds = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 先頭の番号付き("1. ", "2. " 等)を除去
+        import re
+        cleaned = re.sub(r"^\d+[\.\)]\s*", "", stripped)
+        cleaned_lower = cleaned.lower()
+        # CLIコマンドプレフィックスで始まるもののみ抽出
+        if any(cleaned_lower.startswith(p) for p in _CLI_COMMAND_PREFIXES):
+            # "で" や "を" の後の日本語説明部分を除去
+            # 例: "show environment power で電源状態を確認" → "show environment power"
+            for sep in [" で", " を", " の", " に", "　で", "　を"]:
+                if sep in cleaned:
+                    cleaned = cleaned[:cleaned.index(sep)]
+                    break
+            # パイプ(|)やフィルタは残す
+            cmds.append(cleaned.strip())
+    return cmds
+
+
 def simulate_command_execution(command: str, device_id: str) -> dict:
     """デモ環境でコマンド実行をシミュレートする。
 
