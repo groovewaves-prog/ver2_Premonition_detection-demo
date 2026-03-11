@@ -11,6 +11,10 @@ from network_ops import (
 )
 from .helpers import st_html, hash_text
 from .report_builders import build_prevention_plan_scenario
+from .command_popup import (
+    simulate_command_execution,
+    show_command_popup_if_pending,
+)
 
 try:
     import google.generativeai as genai
@@ -30,6 +34,9 @@ def render_remediation(
     dt_engine,
 ):
     """Remediation & Chat セクション（Execute/Cancel含む）を描画"""
+    # ★ 拡張A/C: 保留中のコマンド実行結果ポップアップを表示
+    show_command_popup_if_pending()
+
     st.markdown("---")
     st.subheader("🤖 Remediation & Chat")
 
@@ -222,7 +229,7 @@ def _render_execute_section(cand, topology, scenario, api_key, dt_engine, is_pre
 
 
 def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
-    """修復実行ロジック"""
+    """修復実行ロジック — 結果をポップアップで表示（拡張A/C）"""
     with st.status("🔧 修復処理実行中...", expanded=True) as status_widget:
         target_node_obj = topology.get(cand["id"])
         device_info = (target_node_obj.metadata
@@ -242,13 +249,33 @@ def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
         all_success = True
         remediation_summary = []
 
+        # ★ 拡張A/C: 実行結果をポップアップ用データとして収集
+        _popup_results = []
         for step_name in ["Backup", "Apply", "Verify"]:
             result = results_rem.get(step_name)
             if result:
                 st.write(str(result))
                 remediation_summary.append(str(result))
+                _popup_results.append({
+                    "status": result.status,
+                    "command": step_name,
+                    "output": str(result),
+                    "device_id": cand["id"],
+                    "elapsed_sec": round(time.time() - result.timestamp, 2) if hasattr(result, 'timestamp') else 0.0,
+                })
                 if result.status != "success":
                     all_success = False
+
+        # ★ 拡張A/C: 修復後検証コマンドも実行してポップアップに含める
+        _verify_commands = [
+            f"show interfaces status",
+            f"show logging | last 10",
+            f"ping 8.8.8.8 repeat 5",
+        ]
+        for _vcmd in _verify_commands:
+            _vresult = simulate_command_execution(_vcmd, cand["id"])
+            _popup_results.append(_vresult)
+            remediation_summary.append(_vresult["output"])
 
         verification_log = "\n".join(remediation_summary)
         st.session_state.verification_log = verification_log
@@ -289,12 +316,21 @@ def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
                 st.session_state.balloons_shown = True
             st.success("✅ System Recovered Successfully!")
 
+            # ★ 拡張A/C: 実行結果をポップアップで表示
+            _popup_title = "🔮 予防措置 実行結果" if is_pred_rem else "🚀 修復実行 結果"
+            from .command_popup import render_command_result_popup
+            render_command_result_popup(_popup_title, _popup_results)
+
             if is_pred_rem:
                 time.sleep(0.5)
                 st.rerun()
         else:
             st.write("⚠️ Some remediation steps failed. Please review.")
             status_widget.update(label="Process Finished - With Errors", state="error", expanded=True)
+
+            # ★ エラー時もポップアップで詳細表示
+            from .command_popup import render_command_result_popup
+            render_command_result_popup("⚠️ 修復実行 結果（エラーあり）", _popup_results)
 
 
 def _render_prediction_history(cand, dt_engine, api_key):
