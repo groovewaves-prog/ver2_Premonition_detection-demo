@@ -332,6 +332,40 @@ def _render_weak_signal_injection(target_device: str, scenario_key: str):
                 disp_msg = f"{msg[:80]}..." if len(msg) > 80 else msg
                 st.caption(f"{i}. `{disp_msg}`")
         else:
+            # ★ level=0: 予測キャッシュ + forecast_ledger をクリアして
+            #   Future Radar / トリアージが残留表示されないようにする
+            _prev_injected = st.session_state.get("injected_weak_signal")
+            if _prev_injected is not None:
+                # 以前シミュレーションが動いていた → クリーンアップ必要
+                _prev_device = _prev_injected.get("device_id", "")
+                st.session_state.pop("dt_prediction_cache", None)
+
+                # forecast_ledger からシミュレーション由来の open 予測を削除
+                active_site = st.session_state.get("active_site")
+                if active_site and _prev_device:
+                    dt_key = f"dt_engine_{active_site}"
+                    if dt_key in st.session_state:
+                        dt_engine = st.session_state[dt_key]
+                        try:
+                            if dt_engine and dt_engine.storage._conn:
+                                with dt_engine.storage._db_lock:
+                                    dt_engine.storage._conn.execute("""
+                                        DELETE FROM forecast_ledger
+                                        WHERE device_id=? AND status='open'
+                                              AND source='simulation'
+                                    """, (_prev_device,))
+                                    dt_engine.storage._conn.commit()
+                        except Exception:
+                            pass
+
+                # トリアージキャッシュもクリア
+                _keys_to_clean = [
+                    k for k in list(st.session_state.keys())
+                    if k.startswith("_triage_pred_")
+                ]
+                for k in _keys_to_clean:
+                    st.session_state.pop(k, None)
+
             st.session_state["injected_weak_signal"] = None
 
 
