@@ -22,6 +22,7 @@ import google.generativeai as genai
 from netmiko import ConnectHandler
 
 from rate_limiter import GlobalRateLimiter, RateLimitConfig
+from utils.sanitizer import sanitize_for_llm, sanitize_device_id
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +307,10 @@ def generate_fake_log_by_ai(scenario_name: str, target_node, api_key: str) -> st
         return cached
 
     vendor = target_node.metadata.get("vendor", "Generic")
-    prompt = f"CLIログ生成。ホスト:{target_node.id} ベンダー:{vendor} シナリオ:{scenario_name}。コマンド2個と出力のみ。"
+    _safe_host = sanitize_device_id(target_node.id)
+    _safe_vendor = sanitize_device_id(vendor)
+    _safe_scenario = sanitize_for_llm(scenario_name, max_length=200)
+    prompt = f"CLIログ生成。ホスト:{_safe_host} ベンダー:{_safe_vendor} シナリオ:{_safe_scenario}。コマンド2個と出力のみ。"
 
     try:
         if not limiter.wait_for_slot(timeout=30, model_id=MODEL_NAME):
@@ -337,7 +341,8 @@ def predict_initial_symptoms(scenario_name: str, api_key: str) -> Dict:
     if cached:
         return cached
 
-    prompt = f'シナリオ「{scenario_name}」の症状をJSON出力。キー:alarm,ping,log'
+    _safe_scenario = sanitize_for_llm(scenario_name, max_length=200)
+    prompt = f'シナリオ「{_safe_scenario}」の症状をJSON出力。キー:alarm,ping,log'
 
     try:
         if not limiter.wait_for_slot(timeout=30, model_id=MODEL_NAME):
@@ -376,8 +381,9 @@ def generate_analyst_report(
     if cached:
         return cached
 
-    device_id = target_node.id if target_node else "Unknown"
-    vendor = target_node.metadata.get("vendor", "Unknown") if target_node else "Unknown"
+    device_id = sanitize_device_id(target_node.id) if target_node else "Unknown"
+    vendor = sanitize_device_id(target_node.metadata.get("vendor", "Unknown")) if target_node else "Unknown"
+    _safe_scenario = sanitize_for_llm(scenario, max_length=300)
 
     prompt = f"""あなたはネットワーク障害の分析エキスパートです。
 以下の条件に従って、障害分析レポートを作成してください。
@@ -389,7 +395,7 @@ def generate_analyst_report(
 - 下記のフォーマットに従って本文のみを出力してください
 
 【対象情報】
-シナリオ: {scenario}
+シナリオ: {_safe_scenario}
 デバイス: {device_id} ({vendor})
 
 【出力フォーマット（この見出しは出力せず、以下の内容のみ出力）】
@@ -462,7 +468,9 @@ def generate_analyst_report_streaming(
         yield cached
         return
 
-    vendor = target_node.metadata.get("vendor", "Unknown") if target_node else "Unknown"
+    vendor = sanitize_device_id(target_node.metadata.get("vendor", "Unknown")) if target_node else "Unknown"
+    device_id = sanitize_device_id(device_id)
+    _safe_scenario = sanitize_for_llm(scenario, max_length=500)
 
     # ★ 予兆確認手順モードと通常モードでプロンプトを分岐
     if is_prediction:
@@ -483,7 +491,7 @@ def generate_analyst_report_streaming(
 デバイス: {device_id} ({vendor})
 
 【診断ワークブック指示】
-{scenario}
+{_safe_scenario}
 
 【★ 最重要ルール】
 - 出力フォーマットは上記【診断ワークブック指示】内の番号付きセクション（1〜5）に従ってください
@@ -505,7 +513,7 @@ def generate_analyst_report_streaming(
 - 下記のフォーマットに従って本文のみを出力してください
 
 【対象情報】
-シナリオ: {scenario}
+シナリオ: {_safe_scenario}
 デバイス: {device_id} ({vendor})
 
 【出力フォーマット（この見出しは出力せず、以下の内容のみ出力）】
@@ -549,14 +557,15 @@ def generate_remediation_commands(
         return "Error: API not configured"
 
     limiter = _get_limiter()
-    device_id = target_node.id if target_node else "Unknown"
+    device_id = sanitize_device_id(target_node.id) if target_node else "Unknown"
     cache_key = compute_cache_hash(scenario, device_id, "remediation")
-    
+
     cached = limiter.get_cache(cache_key)
     if cached:
         return cached
 
-    vendor = target_node.metadata.get("vendor", "Unknown") if target_node else "Unknown"
+    vendor = sanitize_device_id(target_node.metadata.get("vendor", "Unknown")) if target_node else "Unknown"
+    _safe_scenario = sanitize_for_llm(scenario, max_length=300)
 
     prompt = f"""あなたはネットワーク復旧のエキスパートです。
 以下の条件に従って、復旧手順を作成してください。
@@ -567,7 +576,7 @@ def generate_remediation_commands(
 
 【対象情報】
 デバイス: {device_id} ({vendor})
-シナリオ: {scenario}
+シナリオ: {_safe_scenario}
 
 【出力フォーマット（この見出しは出力せず、以下の内容のみ出力）】
 ## 前提作業
@@ -624,15 +633,16 @@ def generate_remediation_commands_streaming(
     limiter = _get_limiter()
     
     # ★キャッシュチェック - ヒット時は即座に返却
-    device_id = target_node.id if target_node else "Unknown"
+    device_id = sanitize_device_id(target_node.id) if target_node else "Unknown"
     cache_key = compute_cache_hash(scenario, device_id, f"report_stream_{model_name}")
-    
+
     cached = limiter.get_cache(cache_key)
     if cached:
         yield cached
         return
 
-    vendor = target_node.metadata.get("vendor", "Unknown") if target_node else "Unknown"
+    vendor = sanitize_device_id(target_node.metadata.get("vendor", "Unknown")) if target_node else "Unknown"
+    _safe_scenario = sanitize_for_llm(scenario, max_length=300)
 
     prompt = f"""あなたはネットワーク復旧のエキスパートです。
 以下の条件に従って、復旧手順を作成してください。
@@ -643,7 +653,7 @@ def generate_remediation_commands_streaming(
 
 【対象情報】
 デバイス: {device_id} ({vendor})
-シナリオ: {scenario}
+シナリオ: {_safe_scenario}
 
 【出力フォーマット（この見出しは出力せず、以下の内容のみ出力）】
 ## 実施前提
