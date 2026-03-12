@@ -250,7 +250,7 @@ def show_command_popup_if_pending():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def render_triage_cards(rec_actions: list, device_id: str, card_idx: int):
+def render_triage_cards(rec_actions: list, device_id: str, card_idx):
     """初動トリアージカード表示（L1: 視覚区別 + 一括実行 + インライン結果）。
 
     L1 改善点:
@@ -262,7 +262,7 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx: int):
     Args:
         rec_actions: recommended_actions リスト
         device_id: 対象デバイスID
-        card_idx: ボタンキーの一意化用インデックス
+        card_idx: ボタンキーの一意化用識別子（int or str）
     """
     if not rec_actions:
         return
