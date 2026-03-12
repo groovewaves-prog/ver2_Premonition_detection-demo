@@ -25,7 +25,9 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _topo_cache_key = "_topo_graph_cache"
     _alarm_sig = tuple(sorted((a.device_id, a.severity, a.is_root_cause) for a in alarms))
     _analysis_sig = tuple(sorted((r.get("id", ""), r.get("status", ""), r.get("prob", 0)) for r in analysis_results))
-    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology)))
+    _maint_sig = tuple(sorted(st.session_state.get("maint_devices", {}).get(
+        st.session_state.get("active_site", ""), set())))
+    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology), _maint_sig))
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
         # キャッシュヒット: HTML描画のみ（凡例はHTML内に含まれる）
@@ -171,6 +173,17 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                         font_color = "#607078"
                         status_tag = "Unreachable"
                         state_key = "unreachable"
+
+        # 1.5 メンテナンスモード（アラーム抑制中）
+        elif node_id in st.session_state.get("maint_devices", {}).get(
+            st.session_state.get("active_site", ""), set()
+        ):
+            bg_color = "#B0BEC5"
+            border_color = "#78909C"
+            border_width = 3
+            font_color = "#546E7A"
+            status_tag = "MAINTENANCE"
+            state_key = "maintenance"
 
         # 2. 予兆ハイライト（アラームなし）
         elif node_id in predicted_ids_real:
@@ -336,6 +349,7 @@ def _build_legend_html(used_states: set) -> str:
         ("symptom",     "#FFE0B2", "#906040", "",                  "Symptom (派生)"),
         ("unrelated",   "#E1BEE7", "#604878", "transform:rotate(45deg)", "Unrelated (ノイズ)"),
         ("unreachable", "#cfd8dc", "#6A7A84", "",                  "Unreachable"),
+        ("maintenance", "#B0BEC5", "#78909C", "",                  "Maintenance (メンテ中)"),
         ("normal",      "#e8f5e9", "#6B9E72", "",                  "Normal (正常)"),
     ]
 

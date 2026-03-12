@@ -108,6 +108,26 @@ def render_sidebar():
                 )
                 st.session_state.maint_flags[site_id] = is_maint
 
+                # ★ Phase 1: 機器単位メンテナンスモード
+                if not is_maint:
+                    _topo = load_topology(get_paths(site_id).topology_path)
+                    if _topo:
+                        _dev_ids = sorted(_topo.keys())
+                        _current_maint = st.session_state.maint_devices.get(site_id, set())
+                        # set → list 変換（multiselect用）
+                        _current_list = [d for d in _dev_ids if d in _current_maint]
+                        _selected = st.multiselect(
+                            f"メンテ中機器 ({display_name})",
+                            options=_dev_ids,
+                            default=_current_list,
+                            key=f"maint_dev_{site_id}",
+                            label_visibility="collapsed",
+                            placeholder="機器を選択してメンテモードに設定...",
+                        )
+                        st.session_state.maint_devices[site_id] = set(_selected)
+                        if _selected:
+                            st.caption(f"🔧 {len(_selected)}台がメンテ中（アラーム抑制）")
+
         st.divider()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

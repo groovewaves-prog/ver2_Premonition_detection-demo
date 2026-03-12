@@ -103,11 +103,20 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     else:
         alarms = generate_alarms_for_scenario(topology, scenario)
         st.session_state[_alarm_cache_key] = alarms
+
+    # ★ 機器単位メンテナンスモード: メンテ中デバイスのアラームを抑制
+    _maint_devs = st.session_state.get("maint_devices", {}).get(site_id, set())
+    _suppressed_count = 0
+    if _maint_devs:
+        _original_len = len(alarms)
+        alarms = [a for a in alarms if a.device_id not in _maint_devs]
+        _suppressed_count = _original_len - len(alarms)
+
     status = get_status_from_alarms(scenario, alarms)
 
-    # 予兆シグナル注入
+    # 予兆シグナル注入（メンテ中デバイスはスキップ）
     injected = st.session_state.get("injected_weak_signal")
-    if injected and injected["device_id"] in topology:
+    if injected and injected["device_id"] in topology and injected["device_id"] not in _maint_devs:
         messages = injected.get("messages", [injected.get("message", "")])
         for msg in messages:
             if msg:
@@ -321,95 +330,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                         "recommended_actions": []
                     }]
 
-                # ★ 高速化: AI動的トリアージ生成をキャッシュ化
-                # 同一デバイス+メッセージの組み合わせならLLM呼び出しをスキップ
-                if _src == "simulation" and _injected:
-                    ci = build_ci_context_for_chat(topology, _dev_id)
-                    vendor = ci.get("vendor", "Unknown")
-                    os_type = ci.get("os", "Unknown")
-                    model_name = ci.get("model", "Unknown")
-
-                    for _p in _preds_returned:
-                        _actions = _p.get("recommended_actions", [])
-                        if not _actions or len(_actions) <= 1:
-                            # ★ 高速化: トリアージ結果をsession_stateにキャッシュ
-                            _triage_cache_key = f"_triage_{_dev_id}_{hash(_combined_msg[:200])}"
-                            _cached_triage = st.session_state.get(_triage_cache_key)
-                            if _cached_triage is not None:
-                                _p["recommended_actions"] = _cached_triage
-                            elif _genai_model is not None:
-                                try:
-                                    import json as _json
-                                    import re as _re
-
-                                    _prompt = f"""
-                                    あなたは熟練のネットワークAIOpsエンジニアです。
-                                    現在、以下の【対象機器】で予兆シグナルを検知しました。
-                                    運用者が【最初の5分以内】にCLIで実行すべき「初動トリアージ」コマンドを、重要度順に【最大3つまで】JSON形式で出力してください。
-
-                                    【★ 初動トリアージの定義（厳守）】
-                                    ・目的: 「現状の把握」のみ。状態確認（show系）コマンドだけを提示する
-                                    ・禁止: config系コマンド（設定変更・復旧措置）は絶対に含めない
-                                    ・禁止: 詳細な診断手順や判定基準の解説は不要（それは別レポートの役割）
-                                    ・各コマンドは「何を確認するか」を1行で添え、効果は「この値が分かる」程度に留める
-
-                                    【対象機器の情報】
-                                    ・ホスト名: {_dev_id}
-                                    ・メーカー: {vendor}
-                                    ・OS: {os_type}
-                                    ・機種名: {model_name}
-
-                                    【⚠️ 厳守事項：プラットフォームの限定】
-                                    ・対象は上記の「ネットワーク専用機器」です。汎用Linuxサーバではありません。
-                                    ・必ず {vendor} ({os_type}) の正規コマンド（例: {vendor}がCiscoなら 'show ~', Juniperなら 'show ~' や 'request ~'）を使用してください。
-                                    ・Linux用のコマンド（top, ps, grep, kill, systemctl等）は【絶対に含めないでください】。
-                                    ・監視ツール（Zabbix等）は導入済みのため、「監視設定の強化」等の提案は不要です。
-
-                                    【対象ログ】
-                                    {_combined_msg[:1000]}
-
-                                    【出力JSONフォーマット】
-                                    必ず以下のキー構造のJSON配列（リスト）のみを出力してください。
-                                    [
-                                      {{
-                                        "title": "確認項目のタイトル（例: メモリ使用状況の確認）",
-                                        "effect": "このコマンドで分かること（1行）",
-                                        "priority": "high",
-                                        "rationale": "なぜ最初にこれを確認すべきか（1行）",
-                                        "steps": "show系コマンドのみ (改行は \\n を使用)"
-                                      }}
-                                    ]
-                                    """
-
-                                    _response = _genai_model.generate_content(_prompt)
-
-                                    _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
-
-                                    if _match:
-                                        _json_str = _match.group(0)
-                                        _dynamic_actions = _json.loads(_json_str)
-                                        if isinstance(_dynamic_actions, list) and len(_dynamic_actions) > 0:
-                                            _p["recommended_actions"] = _dynamic_actions[:3]
-                                            # ★ キャッシュに保存
-                                            st.session_state[_triage_cache_key] = _dynamic_actions[:3]
-                                    else:
-                                        raise ValueError("AIの回答からJSONが見つかりませんでした。")
-
-                                except Exception as e:
-                                    _err_msg = str(e)
-                                    _raw_resp = getattr(_response, "text", "レスポンスなし") if '_response' in locals() else "未実行"
-                                    _p["recommended_actions"] = [{
-                                        "title": f"⚠️ 動的生成エラー: {type(e).__name__}",
-                                        "effect": "システムエラーにより生成中断",
-                                        "priority": "high",
-                                        "rationale": f"エラー詳細: {_err_msg}",
-                                        "steps": f"【AIの生の回答】\n{_raw_resp}"
-                                    }]
-
-                        _priority_map = {"high": 0, "medium": 1, "low": 2}
-                        _p.get("recommended_actions", []).sort(
-                            key=lambda x: _priority_map.get(str(x.get("priority", "")).lower(), 3)
-                        )
+                # ★ 高速化: トリアージ生成は future_radar.py で遅延実行
+                # cockpit では recommended_actions を空のまま渡し、
+                # UI表示時にオンデマンド生成する（2-8秒のUI遅延を解消）
 
                 _preds_to_cache = []
                 for _p in _preds_returned:
@@ -523,6 +446,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # 0. コマンド実行結果ポップアップ（@st.dialog の重複登録を防ぐため1箇所で呼ぶ）
     show_command_popup_if_pending()
 
+    # 0.5 メンテナンスモード通知バナー
+    if _maint_devs:
+        _maint_list = ", ".join(sorted(_maint_devs))
+        st.info(
+            f"🔧 **メンテナンスモード**: {len(_maint_devs)}台のアラームを抑制中 "
+            f"({_maint_list})"
+            + (f" — {_suppressed_count}件のアラームを非表示" if _suppressed_count else "")
+        )
+
     # 1. KPIバナー
     prediction_count, noise_reduction = render_kpi_banner(
         analysis_results, alarms,
@@ -531,7 +463,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
     # 2. Future Radar（予兆専用表示）
     prediction_candidates = [c for c in root_cause_candidates if c.get('is_prediction')]
-    render_future_radar(prediction_candidates)
+    render_future_radar(prediction_candidates, topology=topology)
 
     # 3. 根本原因候補テーブル
     selected_incident_candidate, target_device_id = render_root_cause_table(
