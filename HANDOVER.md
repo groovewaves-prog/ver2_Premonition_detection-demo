@@ -4,36 +4,21 @@
 - **日付**: 2026-03-12
 - **ブランチ**: `claude/continue-handover-work-3yYng`
 
+## 未解決の問題（次セッションで最優先で対応）
+
+### コマンド実行結果の全文表示+スクロール化が機能していない
+- **ユーザー要望**: 初動トリアージの「コマンド実行結果」で "(7行)" と表示されている部分を、全出力表示+スクロール表示にしてほしい
+- **今回の修正**: `ui/components/command_popup.py` で6行プレビュー打ち切りを廃止し、`max-height:300px; overflow-y:auto` でスクロール化した
+- **問題**: ユーザーから「問題解決が出来ていません」とのフィードバック。修正が実際の画面に反映されていない、または別の表示箇所が原因の可能性がある
+- **調査ポイント**:
+  1. `command_popup.py` 以外にも結果を表示している箇所があるか確認（`future_radar.py`, `root_cause_table.py` のインライン結果表示部分）
+  2. Streamlit の `unsafe_allow_html=True` による `max-height` / `overflow-y` の実際の挙動確認
+  3. `st.markdown` ではなく `st.code` や `st.expander` を使ったほうが確実にスクロールできる可能性
+  4. 実際に `streamlit run app.py` で画面を確認し、どの箇所の表示が問題なのか特定する
+
 ## 完了したタスク（今回セッション）
 
-### 1. 遅延対策 5項目の実装
-
-#### 対策1: トリアージ生成を遅延ロード化（最大効果: 2-8秒短縮）
-- `cockpit.py` のレンダーループ内で行っていた LLM トリアージ生成（gemma-3-4b-it）を削除
-- `ui/components/future_radar.py` に `_generate_prediction_triage_lazy()` を新設
-- Future Radar カード表示時にのみオンデマンドでLLM呼出（spinner付き）
-- キャッシュキーを `{device}_{scenario}_{level}` ベースに変更（msg非依存で高HIT率）
-
-#### 対策2: RateLimiter をモデル別カウンタに分離
-- `rate_limiter.py` に `_ModelBucket` クラスを導入
-- `GlobalRateLimiter` が `wait_for_slot(model_id=...)` / `record_request(model_id=...)` でモデル別バケットを管理
-- `MODEL_RATE_CONFIGS` で gemma-3-12b-it (30RPM), gemma-3-4b-it (30RPM), gemini-2.0-flash (10RPM) を個別設定
-- 後方互換: model_id 未指定時は `_default` バケットを使用（既存コード変更不要）
-
-#### 対策3: forecast_ledger に source インデックス追加
-- `digital_twin_pkg/engine.py` の `_init_forecast_ledger()` に `idx_fl_source` インデックスを追加
-- simulation DELETE クエリが 100-500ms → <10ms に高速化
-
-#### 対策4: predict_cache TTL を 30s→120s に延長
-- `digital_twin_pkg/engine.py` の `_predict_cache_ttl` を 30.0 → 120.0 に変更
-
-#### 対策5: トリアージキャッシュキーを msg 非依存に変更
-- `future_radar.py` の `_generate_prediction_triage_lazy()` で実装済み
-
-### 2. Phase 1: 機器単位メンテナンスモード
-（内容は前回セッションから継続）
-
-### 3. gemini-2.0-flash-exp → gemma-3-12b-it 全置換 + レートリミッター全面適用
+### 1. gemini-2.0-flash-exp → gemma-3-12b-it 全置換 + レートリミッター全面適用
 - `digital_twin_pkg/engine.py`: gemini-2.0-flash-exp → gemma-3-12b-it に変更
 - `rate_limiter.py`: 実際のGoogle AI Studio無料枠レート制限に修正
   - gemini-2.0-flash-exp: RPM=10, RPD=1500（使用停止推奨）
@@ -42,7 +27,7 @@
 - `digital_twin_pkg/llm_client.py`: _call_llm() にレートリミッター追加
 - `ui/components/future_radar.py`, `root_cause_table.py`, `diagnostic.py`: レートリミッター追加
 
-### 4. APIリクエストのバッチ化 + 全LLM呼出のサニタイズ徹底
+### 2. APIリクエストのバッチ化 + 全LLM呼出のサニタイズ徹底
 
 #### サニタイズ基盤
 - `utils/sanitizer.py` (新規): 共通サニタイズモジュール
@@ -55,59 +40,45 @@
 - `ui/components/root_cause_table.py`: 障害トリアージプロンプトのメッセージ・デバイスID
 - `ui/components/diagnostic.py`: 診断プロンプトのデバイスID・状態記述
 - `ui/components/chat_panel.py`: ユーザー入力・CIコンテキスト
-- `digital_twin_pkg/engine.py`: アクション生成プロンプトのメッセージ・デバイスID（メッセージ数50→20、文字数300に制限）
-- `network_ops.py`: 全6関数のdevice_id/vendor/scenario（generate_fake_log_by_ai, predict_initial_symptoms, generate_analyst_report, generate_analyst_report_streaming, generate_remediation_commands, generate_remediation_commands_streaming）
+- `digital_twin_pkg/engine.py`: アクション生成プロンプトのメッセージ・デバイスID
+- `network_ops.py`: 全6関数のdevice_id/vendor/scenario
 
 #### APIバッチ化
 - `digital_twin_pkg/engine.py`: rule_patternレベルのキャッシュ導入
-  - 同一パターンの複数デバイスが同じLLM応答を共有（APIコール数を大幅削減）
   - `_gemini_actions_cache` + 5分TTL
 
-### 5. トリアージキャッシュキー不一致修正 + インライン結果キー安定化
-- `future_radar.py`: pc.get('predicted_state') のフォールバック不一致を修正
-- card_idx を `enumerate()` ベース → `f"pred_{device_id}"` ベースに変更（rerun間で安定）
-- `root_cause_table.py`: card_idx を `100` → `f"incident_{device_id}"` に変更
-
-### 6. 全コマンド一括実行の結果表示
-- `command_popup.py`: 実行結果サマリーブロック追加（緑カードで各コマンドの出力プレビュー・経過時間を表示）
+### 3. コマンド実行結果の全文表示（未解決 — 上記参照）
+- `command_popup.py`: 6行プレビュー打ち切りを廃止、`max-height:300px; overflow-y:auto` を追加
+- **ユーザー確認で未解決と判明**
 
 ## 過去セッションの完了タスク（参考）
-- stream_dashboard.py リファクタリング
-- サービスティアの実運用組み込み
-- cockpit.py リファクタリング
+- 遅延対策 5項目（トリアージ遅延ロード、モデル別RateLimiter、forecast_ledgerインデックス、キャッシュTTL延長、トリアージキャッシュキー改善）
+- Phase 1/2: メンテナンスモード（機器単位 + 時間帯指定ウィンドウ）
+- stream_dashboard.py / cockpit.py リファクタリング
+- サービスティア基盤・実運用組み込み
 - 画面表示の高速化（2段階）
-- 将来拡張 A/B/C の実装
-- 障害発生時の初動トリアージ対応
-- トリアージ結果 → AI復旧計画への自動連携
+- 将来拡張 A/B/C
+- 障害発生時の初動トリアージ + AI復旧計画連携
 - 障害シナリオ切替時の描画高速化
 - トポロジーマップ/Legend間隔修正
 - バグ修正: 劣化進行度0で予測が残留する問題
-- 推奨アクション自動実行 L1
-- メンテナンスモード Phase 2: 時間帯指定
+- 推奨アクション自動実行 L1 + AI自動実行
 - RateLimiter model_id 明示指定
 - cockpit.py DT予兆パイプライン分離
 - 描画遅延の根本修正: LLM呼出をレンダーパスから完全排除
-- L1トリアージ: AI自動実行
-
-## 未完了・保留タスク
-
-### 推奨アクション L2: 実機接続
-- `simulate_command_execution()` を SSH executor に差し替えるだけで L2 移行可能
-
-### メンテナンスモード Phase 3: 永続化
-- 現状 session_state のみ（リロードで消失）→ DB or ファイル保存に拡張可能
+- トリアージキャッシュキー不一致修正 + インライン結果キー安定化
+- 全コマンド一括実行の結果サマリーブロック追加
 
 ## 既知の問題・注意点
 - `rate_limiter.py` の `GlobalRateLimiter` はシングルトンのため、既存インスタンスがある場合は再起動が必要
 - `predict_cache_ttl` の120秒化により、スライダー操作直後に最大120秒間古い予測が表示される可能性あり
 - `maint_devices` / `maint_windows` は session_state のみで永続化されない
-- `google.generativeai` のインストール環境依存あり。CI環境での動作確認を推奨
 - `command_popup.py` のコマンド出力はデモ用テンプレート。本番環境では SSH executor に差し替え必要
-- 予兆ステータス履歴のインシデント名はデフォルト名を使用
 
 ## 次セッションへの推奨アクション
-1. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認
-2. **サニタイズ動作確認**: IP/MAC/認証情報がマスクされていることを確認
-3. **レート制限動作確認**: 30RPM超過時にwait_for_slotが正しく待機することを確認
-4. **推奨アクション L2**: SSH executor の接続設計
-5. **メンテナンスモード永続化**: DB保存の設計・実装
+1. **最優先: コマンド実行結果の全文表示問題を解決**（上記「未解決の問題」参照）
+   - まず `streamlit run app.py` で実際の画面を確認し、どの箇所が問題か特定する
+   - `command_popup.py` のHTML/CSS修正が反映されているか、別の表示箇所があるか調査
+2. **Streamlit 実行テスト**: 全機能の動作確認
+3. **推奨アクション L2**: SSH executor の接続設計
+4. **メンテナンスモード永続化**: DB保存の設計・実装
