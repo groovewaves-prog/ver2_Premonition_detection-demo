@@ -251,13 +251,14 @@ def show_command_popup_if_pending():
 
 
 def render_triage_cards(rec_actions: list, device_id: str, card_idx):
-    """初動トリアージカード表示（L1: 視覚区別 + 一括実行 + インライン結果）。
+    """初動トリアージカード表示。
 
-    L1 改善点:
-    - CLIコマンドと人手作業を視覚的に区別（▶/🔧アイコン、色分け）
-    - 「全 show コマンド一括実行」ボタン
-    - 実行結果をカード直下にインライン表示（ポップアップ不要）
-    - 実行済みカードにはチェックマーク表示
+    過去バージョン準拠の整理されたカードレイアウト:
+    - 各カードが優先度別の色付き左ボーダー枠で囲まれる
+    - 優先度バッジが右上に配置
+    - 効果・根拠・手順がカード内に収まる
+    - コマンド実行結果はカード内の手順セクションに折りたたみ表示
+    - サマリーブロックは廃止（二重表示を解消）
 
     Args:
         rec_actions: recommended_actions リスト
@@ -289,8 +290,7 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
         with _batch_col1:
             _executed = st.session_state.get(_inline_key)
             if _executed:
-                _n = len(_executed)
-                st.caption(f"✅ {_n} コマンド実行済み")
+                st.caption(f"✅ {len(_executed)} コマンド実行済み")
             else:
                 st.caption(f"📡 実行対象: {len(_all_cli_cmds)} コマンド")
         with _batch_col2:
@@ -305,7 +305,6 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
                 for cmd in _all_cli_cmds:
                     _results[cmd] = simulate_command_execution(cmd, device_id)
                 st.session_state[_inline_key] = _results
-                # トリアージ結果を蓄積（AI復旧計画連携用）
                 _store_triage_results(
                     device_id, f"一括トリアージ ({len(_all_cli_cmds)}cmd)",
                     list(_results.values()),
@@ -315,40 +314,7 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
     # ── 実行済み結果の取得 ──
     _inline_results = st.session_state.get(_inline_key, {})
 
-    # ── 実行結果サマリー（結果がある場合、常に表示）──
-    if _inline_results:
-        _summary_parts = []
-        for _cmd, _res in _inline_results.items():
-            _status_icon = "✅" if _res.get("status") == "success" else "❌"
-            _out = _res.get("output", "").strip()
-            _elapsed = _res.get("elapsed_sec", 0)
-            _summary_parts.append(
-                f'<div style="background:#F1F8E9;border:1px solid #C5E1A5;'
-                f'border-radius:6px;padding:8px 12px;margin:6px 0;">'
-                f'<div style="font-weight:700;color:#33691E;font-size:13px;">'
-                f'{_status_icon} <code>{_cmd}</code>'
-                f'<span style="float:right;font-size:11px;color:#689F38;">'
-                f'{_elapsed:.2f}s</span></div>'
-                f'<pre style="font-size:11px;color:#444;margin:6px 0 0 0;'
-                f'white-space:pre-wrap;line-height:1.4;background:#FAFAFA;'
-                f'padding:6px;border-radius:4px;max-height:300px;'
-                f'overflow-y:auto;">{_out}</pre>'
-                f'</div>'
-            )
-        _n_cmds = len(_inline_results)
-        _total_elapsed = sum(r.get("elapsed_sec", 0) for r in _inline_results.values())
-        st.markdown(
-            f'<div style="background:#E8F5E9;border:2px solid #4CAF50;'
-            f'border-radius:8px;padding:12px;margin:8px 0;">'
-            f'<div style="font-size:15px;font-weight:700;color:#2E7D32;margin-bottom:8px;">'
-            f'📋 コマンド実行結果 — {_n_cmds}件完了 '
-            f'(合計 {_total_elapsed:.2f}s)</div>'
-            f'{"".join(_summary_parts)}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-    # ── 各カード描画 ──
+    # ── 各カード描画（過去バージョン準拠のカードレイアウト）──
     for act_idx, ra in enumerate(sorted_actions):
         _title     = ra.get("title", "")
         _effect    = ra.get("effect", "")
@@ -356,111 +322,98 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
         _priority  = ra.get("priority", "")
         _steps     = ra.get("steps", ra.get("command", ra.get("action", "")))
 
-        # プライオリティ判定
+        # プライオリティ判定 → カード色
         _pri_lower = str(_priority).lower()
         if _pri_lower in ("最優先", "high"):
             _pri_label = "最優先"
-            _pri_bg = "#D32F2F"
+            _border_color = "#D32F2F"
+            _bg_color = "#FFF5F5"
+            _badge_bg = "#D32F2F"
         elif _pri_lower in ("推奨", "medium"):
             _pri_label = "推奨"
-            _pri_bg = "#FF9800"
+            _border_color = "#FF9800"
+            _bg_color = "#FFF8E1"
+            _badge_bg = "#FF9800"
         else:
             _pri_label = "補助"
-            _pri_bg = "#558B2F"
+            _border_color = "#558B2F"
+            _bg_color = "#F1F8E9"
+            _badge_bg = "#455A64"
 
         # 手順を CLI / 人手 に分類
         _classified = classify_steps(_steps)
         _cli_cmds = [s["cleaned"] for s in _classified if s["is_cli"]]
-        _has_cli = len(_cli_cmds) > 0
 
-        # このカードの CLI が全て実行済みか判定
-        _card_executed = _has_cli and all(cmd in _inline_results for cmd in _cli_cmds)
-
-        # ── カードヘッダ行 ──
-        _col_info, _col_btn = st.columns([4, 1])
-        with _col_info:
-            _check = "✅ " if _card_executed else ""
-            if _pri_label == "最優先":
-                st.markdown(f"**{_check}🔴 {act_idx + 1}. ⚠ {_title}**")
-            elif _pri_label == "推奨":
-                st.markdown(f"**{_check}🟠 {act_idx + 1}. ⚠ {_title}**")
-            else:
-                st.markdown(f"**{_check}🟢 {act_idx + 1}. {_title}**")
-        with _col_btn:
-            _btn_key = f"triage_{card_idx}_{act_idx}_{device_id}"
-            if _has_cli:
-                if st.button(
-                    _pri_label,
-                    key=_btn_key,
-                    type="primary" if _pri_label == "最優先" else "secondary",
-                    use_container_width=True,
-                ):
-                    # 個別カード実行: インラインストアに結果追加
-                    for cmd in _cli_cmds:
-                        if cmd not in _inline_results:
-                            _inline_results[cmd] = simulate_command_execution(cmd, device_id)
-                    st.session_state[_inline_key] = _inline_results
-                    _store_triage_results(device_id, _title, [
-                        _inline_results[cmd] for cmd in _cli_cmds
-                    ])
-                    st.rerun()
-            else:
-                # CLI コマンドなし → 人手作業バッジ
-                st.markdown(
-                    f'<span style="background:#78909C;color:#fff;padding:4px 12px;'
-                    f'border-radius:4px;font-size:13px;font-weight:700;">'
-                    f'🔧 人手</span>',
-                    unsafe_allow_html=True,
-                )
-
-        # 効果・根拠
-        if _effect:
-            st.caption(f"💡 効果: {_effect}")
-        if _rationale:
-            st.caption(f"⭐ 根拠: {_rationale}")
-
-        # ── 手順表示: CLI と人手作業を視覚的に区別 ──
+        # 手順HTML構築
+        _steps_html = ""
         if _classified:
-            _step_html_parts = []
+            _step_lines = []
             for i, step in enumerate(_classified):
                 _num = i + 1
                 if step["is_cli"]:
                     _cmd = step["cleaned"]
                     _result = _inline_results.get(_cmd)
                     if _result:
-                        # 実行済み: 緑背景 + 全結果スクロール表示
-                        _out_full = _result.get("output", "")
-                        _step_html_parts.append(
-                            f'<div style="background:#E8F5E9;border-left:3px solid #4CAF50;'
-                            f'padding:4px 8px;margin:2px 0;border-radius:2px;">'
-                            f'<span style="color:#2E7D32;">▶ {_num}. <code>{_cmd}</code> ✅</span>'
-                            f'<pre style="font-size:11px;color:#555;margin:4px 0 0 16px;'
-                            f'white-space:pre-wrap;line-height:1.4;'
-                            f'max-height:200px;overflow-y:auto;'
-                            f'background:#FAFAFA;padding:6px;border-radius:4px;">{_out_full}</pre>'
-                            f'</div>'
+                        _step_lines.append(
+                            f'<div style="font-size:13px;color:#2E7D32;padding:1px 0;">'
+                            f'{_num}. <code>{_cmd}</code> ✅</div>'
                         )
                     else:
-                        # 未実行: 青背景
-                        _step_html_parts.append(
-                            f'<div style="background:#E3F2FD;border-left:3px solid #1976D2;'
-                            f'padding:4px 8px;margin:2px 0;border-radius:2px;">'
-                            f'<span style="color:#1565C0;">▶ {_num}. <code>{step["cleaned"]}</code></span>'
-                            f'</div>'
+                        _step_lines.append(
+                            f'<div style="font-size:13px;color:#333;padding:1px 0;">'
+                            f'{_num}. <code>{_cmd}</code></div>'
                         )
                 else:
-                    # 人手作業: グレー背景 + 🔧 アイコン
-                    _step_html_parts.append(
-                        f'<div style="background:#F5F5F5;border-left:3px solid #9E9E9E;'
-                        f'padding:4px 8px;margin:2px 0;border-radius:2px;">'
-                        f'<span style="color:#616161;">🔧 {_num}. {step["text"]}</span>'
-                        f'</div>'
+                    _step_lines.append(
+                        f'<div style="font-size:13px;color:#333;padding:1px 0;">'
+                        f'{_num}. {step["text"]}</div>'
                     )
-
-            st.markdown(
-                f'<div style="margin:4px 0 12px 0;">{"".join(_step_html_parts)}</div>',
-                unsafe_allow_html=True,
+            _steps_html = (
+                f'<div style="margin-top:8px;padding:6px 10px;background:#FAFAFA;'
+                f'border-radius:4px;">'
+                f'<div style="font-size:12px;font-weight:600;color:#555;margin-bottom:4px;">'
+                f'📋 手順:</div>'
+                f'{"".join(_step_lines)}'
+                f'</div>'
             )
+
+        # 効果・根拠HTML
+        _meta_html = ""
+        if _effect:
+            _meta_html += (
+                f'<div style="font-size:12px;color:#666;padding:2px 0;">'
+                f'💡 効果: {_effect}</div>'
+            )
+        if _rationale:
+            _meta_html += (
+                f'<div style="font-size:12px;color:#666;padding:2px 0;">'
+                f'⭐ 根拠: {_rationale}</div>'
+            )
+
+        # カード全体を1つのHTMLブロックで描画
+        st.markdown(
+            f'<div style="background:{_bg_color};border:1px solid {_border_color};'
+            f'border-left:4px solid {_border_color};border-radius:6px;'
+            f'padding:12px 16px;margin:8px 0;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div style="font-size:14px;font-weight:700;color:#333;">'
+            f'🔴 {act_idx + 1}. ⚠ {_title}</div>'
+            f'<span style="background:{_badge_bg};color:#fff;padding:3px 12px;'
+            f'border-radius:4px;font-size:12px;font-weight:700;">{_pri_label}</span>'
+            f'</div>'
+            f'{_meta_html}'
+            f'{_steps_html}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── コマンド実行結果（カード直下に折りたたみ表示）──
+        _card_results = {cmd: _inline_results[cmd] for cmd in _cli_cmds if cmd in _inline_results}
+        if _card_results:
+            with st.expander(f"📊 実行結果 ({len(_card_results)}件)", expanded=False):
+                for _cmd, _res in _card_results.items():
+                    _out = _res.get("output", "").strip()
+                    st.code(_out, language="text")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
