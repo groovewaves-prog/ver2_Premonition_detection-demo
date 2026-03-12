@@ -165,18 +165,11 @@ def _render_incident_triage_fragment(cand: dict, topology: dict):
             )
             render_triage_cards(_rc_actions, _rc_dev, card_idx=f"incident_{_rc_dev}")
     else:
-        # トリアージ未生成 → ボタンで生成
-        _gen_key = f"_gen_triage_incident_{_rc_dev}"
-        if st.button(
-            f"🔍 {_rc_dev} の初動トリアージを生成",
-            key=_gen_key,
-            type="secondary",
-        ):
-            _rc_actions = _generate_incident_triage_lazy(cand, topology)
-            if _rc_actions:
-                cand['recommended_actions'] = _rc_actions
-                # ★ AI自動実行: 生成と同時に全showコマンドを事前実行
-                _auto_execute_incident_triage(_rc_actions, _rc_dev)
+        # ★ 障害時は即座にトリアージを自動生成（ボタン待ち不要）
+        _rc_actions = _generate_incident_triage_lazy(cand, topology)
+        if _rc_actions:
+            cand['recommended_actions'] = _rc_actions
+            _auto_execute_incident_triage(_rc_actions, _rc_dev)
             st.rerun()
 
 
