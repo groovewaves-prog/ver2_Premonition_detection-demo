@@ -105,6 +105,17 @@
   - 修正後: `gemma-3-4b-it` 専用バケット（30RPM）が正しく使用される
 - `rate_limiter.py`: `rate_limited_with_retry` デコレータに `model_id` パラメータ追加
 
+### 7. cockpit.py DT予兆パイプライン分離
+- `cockpit.py` (574行 → 375行): 約200行の予兆パイプラインを削除
+- `ui/prediction_pipeline.py` (316行, 新規) に以下を分離:
+  - `run_prediction_pipeline()`: メインエントリポイント（cockpit から1行で呼出）
+  - `_show_conflict_warnings()`: 競合検出 & 警告バナー
+  - `_collect_message_sources()`: メッセージ集約
+  - `_run_predict_loop()`: predict_api ループ + キャッシュ管理
+  - `_auto_resolve_outcomes()`: 自動 outcome 登録
+  - `_reset_on_sim_change()`: シミュレーション変更検知
+- cockpit.py の不要 import (`time`, `List`, `genai`, `GENAI_AVAILABLE`) を削除
+
 ## 未完了・保留タスク
 
 ### 推奨アクション L2: 実機接続
