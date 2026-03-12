@@ -29,114 +29,144 @@ class RateLimitConfig:
     cache_ttl: int = 3600
 
 
+class _ModelBucket:
+    """モデル別のレート制限バケット"""
+
+    def __init__(self, config: RateLimitConfig):
+        self.config = config
+        self._request_times: deque = deque(maxlen=config.rpm * 2)
+        self._daily_count: int = 0
+        self._daily_reset_time: float = time.time()
+
+    def clean_old_requests(self):
+        now = time.time()
+        while self._request_times and now - self._request_times[0] > 60:
+            self._request_times.popleft()
+
+    def check_limits(self) -> tuple:
+        now = time.time()
+        if now - self._daily_reset_time > 86400:
+            self._daily_count = 0
+            self._daily_reset_time = now
+        self.clean_old_requests()
+        rpm_limit = int(self.config.rpm * self.config.safety_margin)
+        rpd_limit = int(self.config.rpd * self.config.safety_margin)
+        current_rpm = len(self._request_times)
+        if self._daily_count >= rpd_limit:
+            return False, 3600
+        if current_rpm < rpm_limit:
+            return True, 0
+        if self._request_times:
+            oldest = self._request_times[0]
+            wait_time = max(0.1, 60 - (now - oldest) + 0.1)
+            return False, wait_time
+        return True, 0
+
+    def record(self):
+        self._request_times.append(time.time())
+        self._daily_count += 1
+
+    def stats(self) -> Dict[str, Any]:
+        self.clean_old_requests()
+        return {
+            'requests_last_minute': len(self._request_times),
+            'rpm_limit': self.config.rpm,
+            'daily_count': self._daily_count,
+        }
+
+
+# モデル別のデフォルトRPM設定
+MODEL_RATE_CONFIGS: Dict[str, RateLimitConfig] = {
+    "gemma-3-12b-it":     RateLimitConfig(rpm=30,  rpd=14400),
+    "gemma-3-4b-it":      RateLimitConfig(rpm=30,  rpd=14400),
+    "gemini-2.0-flash":   RateLimitConfig(rpm=60,  rpd=28800),
+    "gemini-2.0-flash-exp": RateLimitConfig(rpm=60, rpd=28800),
+}
+
+
 class GlobalRateLimiter:
     """
-    スレッドセーフなグローバルレートリミッター（遅延解消版）
-    
+    スレッドセーフなグローバルレートリミッター（モデル別カウンタ版）
+
     ★改善ポイント:
-    - 即時チェック: 制限内なら待機なしで即座にTrue返却
-    - 最小待機: 制限超過時のみ必要最小限の待機
+    - モデル別に独立したRPMカウンタを保持
+    - 異なるモデルへのリクエストが互いを圧迫しない
+    - 後方互換: model_id 未指定時は "_default" バケットを使用
     """
-    
+
     _instance: Optional['GlobalRateLimiter'] = None
     _lock = threading.Lock()
-    
+
     def __new__(cls, config: Optional[RateLimitConfig] = None):
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
                 cls._instance._initialized = False
             return cls._instance
-    
+
     def __init__(self, config: Optional[RateLimitConfig] = None):
         if getattr(self, '_initialized', False):
             return
-        
+
         self.config = config or RateLimitConfig()
-        self._request_times: deque = deque(maxlen=self.config.rpm * 2)
-        self._daily_count: int = 0
-        self._daily_reset_time: float = time.time()
+        self._buckets: Dict[str, _ModelBucket] = {}
+        self._bucket_lock = threading.Lock()
+        # 後方互換: デフォルトバケット
+        self._buckets["_default"] = _ModelBucket(self.config)
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._cache_lock = threading.Lock()
         self._request_lock = threading.Lock()
         self._initialized = True
-    
+
+    def _get_bucket(self, model_id: Optional[str] = None) -> _ModelBucket:
+        """モデル別バケットを取得（なければ作成）"""
+        key = model_id or "_default"
+        if key not in self._buckets:
+            with self._bucket_lock:
+                if key not in self._buckets:
+                    cfg = MODEL_RATE_CONFIGS.get(key, self.config)
+                    self._buckets[key] = _ModelBucket(cfg)
+        return self._buckets[key]
+
     def _clean_old_requests(self):
-        """1分以上前のリクエストを削除"""
-        now = time.time()
-        while self._request_times and now - self._request_times[0] > 60:
-            self._request_times.popleft()
-    
+        """後方互換: デフォルトバケットの古いリクエストを削除"""
+        self._get_bucket().clean_old_requests()
+
     def _check_limits(self) -> tuple:
+        """後方互換: デフォルトバケットの制限チェック"""
+        return self._get_bucket().check_limits()
+
+    def wait_for_slot(self, timeout: float = 60.0, model_id: Optional[str] = None) -> bool:
         """
-        制限チェック
-        
-        Returns:
-            (can_proceed, wait_time): 実行可否と必要な待機時間
+        リクエスト可能になるまで待機（モデル別カウンタ版）
+
+        Args:
+            timeout: 最大待機時間（秒）
+            model_id: モデル名（例: "gemma-3-12b-it"）。None でデフォルトバケット使用
         """
-        now = time.time()
-        
-        # 日次リセット
-        if now - self._daily_reset_time > 86400:
-            self._daily_count = 0
-            self._daily_reset_time = now
-        
-        # 古いリクエストを削除
-        self._clean_old_requests()
-        
-        # 制限計算
-        rpm_limit = int(self.config.rpm * self.config.safety_margin)
-        rpd_limit = int(self.config.rpd * self.config.safety_margin)
-        
-        current_rpm = len(self._request_times)
-        
-        # 日次制限チェック
-        if self._daily_count >= rpd_limit:
-            return False, 3600  # 1時間待機（実質ブロック）
-        
-        # 分間制限チェック
-        if current_rpm < rpm_limit:
-            return True, 0  # ★即座に実行可能
-        
-        # 待機時間計算：最古のリクエストが1分経過するまで
-        if self._request_times:
-            oldest = self._request_times[0]
-            wait_time = max(0.1, 60 - (now - oldest) + 0.1)
-            return False, wait_time
-        
-        return True, 0
-    
-    def wait_for_slot(self, timeout: float = 60.0) -> bool:
-        """
-        リクエスト可能になるまで待機（遅延最小化版）
-        
-        ★改善: 制限内なら待機なしで即座にTrue返却
-        """
+        bucket = self._get_bucket(model_id)
         start_time = time.time()
-        
+
         while True:
             with self._request_lock:
-                can_proceed, wait_time = self._check_limits()
-                
+                can_proceed, wait_time = bucket.check_limits()
                 if can_proceed:
-                    return True  # ★即座に返却
-            
-            # タイムアウトチェック
+                    return True
+
             elapsed = time.time() - start_time
             if elapsed >= timeout:
                 return False
-            
-            # 必要最小限の待機
+
             actual_wait = min(wait_time, timeout - elapsed, 5.0)
             if actual_wait > 0:
                 time.sleep(actual_wait)
-    
-    def record_request(self):
-        """リクエストを記録"""
+
+    def record_request(self, model_id: Optional[str] = None):
+        """リクエストを記録（モデル別）"""
+        bucket = self._get_bucket(model_id)
         with self._request_lock:
-            self._request_times.append(time.time())
-            self._daily_count += 1
-    
+            bucket.record()
+
     def get_cache(self, key: str) -> Optional[Any]:
         """キャッシュ取得"""
         with self._cache_lock:
@@ -144,21 +174,34 @@ class GlobalRateLimiter:
             if entry and time.time() - entry['ts'] < self.config.cache_ttl:
                 return entry['val']
         return None
-    
+
     def set_cache(self, key: str, value: Any):
         """キャッシュ設定"""
         with self._cache_lock:
             self._cache[key] = {'val': value, 'ts': time.time()}
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """統計取得"""
+
+    def get_stats(self, model_id: Optional[str] = None) -> Dict[str, Any]:
+        """統計取得（モデル別またはデフォルト）"""
         with self._request_lock:
-            self._clean_old_requests()
+            if model_id:
+                bucket = self._get_bucket(model_id)
+                stats = bucket.stats()
+                stats['model_id'] = model_id
+                stats['cache_size'] = len(self._cache)
+                return stats
+            # 後方互換: 全バケットの合計を返す
+            total_rpm = 0
+            total_daily = 0
+            for b in self._buckets.values():
+                b.clean_old_requests()
+                total_rpm += len(b._request_times)
+                total_daily += b._daily_count
             return {
-                'requests_last_minute': len(self._request_times),
+                'requests_last_minute': total_rpm,
                 'rpm_limit': self.config.rpm,
-                'daily_count': self._daily_count,
-                'cache_size': len(self._cache)
+                'daily_count': total_daily,
+                'cache_size': len(self._cache),
+                'active_models': [k for k in self._buckets if k != "_default"],
             }
 
 

@@ -188,7 +188,7 @@ class DigitalTwinEngine:
         self._model_loaded = False
         # ★ 予測結果キャッシュ（再描画時の冗長API呼び出し防止）
         self._predict_cache: Dict[str, Any] = {}   # key: "dev_id|pattern|level" → predictions
-        self._predict_cache_ttl = 30.0              # 30秒間キャッシュ有効
+        self._predict_cache_ttl = 120.0             # 120秒間キャッシュ有効（30s→120sに延長）
         self._auto_tuning_interval = 300.0          # 自動チューニングサイクル間隔（5分）
         self._auto_tuning_last_ts = 0.0
         self._rules_sot = (os.environ.get(ENV_RULES_SOT, "json") or "json").strip().lower()
@@ -2090,6 +2090,10 @@ class DigitalTwinEngine:
                 self.storage._conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_fl_device "
                     "ON forecast_ledger (device_id, created_at)")
+                # ★ 対策3: source インデックス追加（simulation DELETE 高速化）
+                self.storage._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_fl_source "
+                    "ON forecast_ledger (source, device_id, status)")
                 # migration: add source column if missing
                 cur = self.storage._conn.cursor()
                 cur.execute("PRAGMA table_info(forecast_ledger)")

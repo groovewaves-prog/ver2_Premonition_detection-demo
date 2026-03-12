@@ -27,9 +27,12 @@ def build_site_statuses() -> List[SiteStatus]:
     # ★ 高速化: シナリオ・メンテフラグが変わらなければキャッシュを返す
     _scenarios_sig = hash(tuple(sorted(st.session_state.site_scenarios.items())))
     _maint_sig = hash(tuple(sorted(st.session_state.maint_flags.items())))
+    _maint_dev_sig = hash(tuple(
+        (k, tuple(sorted(v))) for k, v in sorted(st.session_state.get("maint_devices", {}).items())
+    ))
     _cache_key = "_site_statuses_cache"
     _cached = st.session_state.get(_cache_key)
-    if _cached and _cached.get("sig") == (_scenarios_sig, _maint_sig):
+    if _cached and _cached.get("sig") == (_scenarios_sig, _maint_sig, _maint_dev_sig):
         return _cached["data"]
 
     sites = list_sites()
@@ -58,7 +61,7 @@ def build_site_statuses() -> List[SiteStatus]:
 
     priority = {"停止": 0, "要対応": 1, "注意": 2, "正常": 3}
     statuses.sort(key=lambda s: (priority.get(s.status, 4), -s.alarm_count))
-    st.session_state[_cache_key] = {"sig": (_scenarios_sig, _maint_sig), "data": statuses}
+    st.session_state[_cache_key] = {"sig": (_scenarios_sig, _maint_sig, _maint_dev_sig), "data": statuses}
     return statuses
 
 
@@ -102,8 +105,14 @@ def _render_site_card(site: SiteStatus):
     # シナリオ表示
     scenario_display = site.scenario.split(". ", 1)[-1] if ". " in site.scenario else site.scenario
 
-    # メンテナンスバッジ
-    maint_badge = '<span style="background:#E3F2FD;color:#1565C0;font-size:11px;padding:2px 6px;border-radius:3px;margin-left:8px;">🛠 メンテ中</span>' if site.is_maintenance else ""
+    # メンテナンスバッジ（拠点全体 + 機器単位）
+    _dev_maint = st.session_state.get("maint_devices", {}).get(site.site_id, set())
+    if site.is_maintenance:
+        maint_badge = '<span style="background:#E3F2FD;color:#1565C0;font-size:11px;padding:2px 6px;border-radius:3px;margin-left:8px;">🛠 メンテ中</span>'
+    elif _dev_maint:
+        maint_badge = f'<span style="background:#E3F2FD;color:#1565C0;font-size:11px;padding:2px 6px;border-radius:3px;margin-left:8px;">🔧 {len(_dev_maint)}台メンテ中</span>'
+    else:
+        maint_badge = ""
 
     # 影響機器テキスト
     if site.affected_devices:

@@ -7,6 +7,7 @@ def init_session_state():
         "site_scenarios": {},
         "active_site": None,
         "maint_flags": {},
+        "maint_devices": {},  # {site_id: set(device_ids)} 機器単位メンテナンスモード
         "live_result": None,
         "verification_result": None,
         "generated_report": None,
