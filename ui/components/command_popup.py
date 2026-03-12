@@ -315,6 +315,42 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
     # ── 実行済み結果の取得 ──
     _inline_results = st.session_state.get(_inline_key, {})
 
+    # ── 実行結果サマリー（結果がある場合、常に表示）──
+    if _inline_results:
+        _summary_parts = []
+        for _cmd, _res in _inline_results.items():
+            _status_icon = "✅" if _res.get("status") == "success" else "❌"
+            _out = _res.get("output", "").strip()
+            _out_lines = _out.split("\n")
+            _out_preview = "\n".join(_out_lines[:6])
+            if len(_out_lines) > 6:
+                _out_preview += f"\n... ({len(_out_lines)}行)"
+            _elapsed = _res.get("elapsed_sec", 0)
+            _summary_parts.append(
+                f'<div style="background:#F1F8E9;border:1px solid #C5E1A5;'
+                f'border-radius:6px;padding:8px 12px;margin:6px 0;">'
+                f'<div style="font-weight:700;color:#33691E;font-size:13px;">'
+                f'{_status_icon} <code>{_cmd}</code>'
+                f'<span style="float:right;font-size:11px;color:#689F38;">'
+                f'{_elapsed:.2f}s</span></div>'
+                f'<pre style="font-size:11px;color:#444;margin:6px 0 0 0;'
+                f'white-space:pre-wrap;line-height:1.4;background:#FAFAFA;'
+                f'padding:6px;border-radius:4px;">{_out_preview}</pre>'
+                f'</div>'
+            )
+        _n_cmds = len(_inline_results)
+        _total_elapsed = sum(r.get("elapsed_sec", 0) for r in _inline_results.values())
+        st.markdown(
+            f'<div style="background:#E8F5E9;border:2px solid #4CAF50;'
+            f'border-radius:8px;padding:12px;margin:8px 0;">'
+            f'<div style="font-size:15px;font-weight:700;color:#2E7D32;margin-bottom:8px;">'
+            f'📋 コマンド実行結果 — {_n_cmds}件完了 '
+            f'(合計 {_total_elapsed:.2f}s)</div>'
+            f'{"".join(_summary_parts)}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
     # ── 各カード描画 ──
     for act_idx, ra in enumerate(sorted_actions):
         _title     = ra.get("title", "")

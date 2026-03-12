@@ -2039,11 +2039,13 @@ class DigitalTwinEngine:
 
             record_forecast = bool(request.get("record_forecast", True))
             forecast_ids: List[str] = []
-            if record_forecast and preds:
+            # ★ 高速化: simulation 時は forecast_ledger への DB 書き込みをスキップ
+            #   シミュレーション予測は精度評価対象外であり、DB I/O を削減する
+            if record_forecast and preds and _source != "simulation":
                 fid = self._forecast_record(
                     req=req.to_dict(),
                     top_prediction=preds[0],
-                    source=_source,  # ★ simulation/real を正しく記録
+                    source=_source,
                 )
                 if fid:
                     forecast_ids.append(fid)

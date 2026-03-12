@@ -402,20 +402,9 @@ def _render_weak_signal_injection(target_device: str, scenario_key: str):
                 and _prev_injected.get("level") != degradation_level
             )
             if _level_changed:
-                dt_key = f"dt_engine_{active_site}"
-                if dt_key in st.session_state:
-                    dt_engine = st.session_state[dt_key]
-                    try:
-                        if dt_engine and dt_engine.storage._conn:
-                            with dt_engine.storage._db_lock:
-                                dt_engine.storage._conn.execute("""
-                                    DELETE FROM forecast_ledger
-                                    WHERE device_id=? AND status='open' AND source='simulation'
-                                """, (target_device,))
-                                dt_engine.storage._conn.commit()
-                    except Exception as e:
-                        pass
-                # ★ cockpit キャッシュもクリア（新レベルで再計算させる）
+                # ★ 高速化: DB DELETE を除去（_forecast_record 内で simulation 行は
+                #   自動クリーンアップされるため、ここでの二重削除は不要）
+                # cockpit キャッシュのみクリア（新レベルで再計算させる）
                 st.session_state.pop("dt_prediction_cache", None)
 
             st.session_state["injected_weak_signal"] = {
