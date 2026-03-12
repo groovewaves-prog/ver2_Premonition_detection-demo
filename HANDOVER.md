@@ -116,6 +116,23 @@
   - `_reset_on_sim_change()`: シミュレーション変更検知
 - cockpit.py の不要 import (`time`, `List`, `genai`, `GENAI_AVAILABLE`) を削除
 
+### 8. 描画遅延の根本修正: LLM呼出をレンダーパスから完全排除
+- **原因特定**: レンダーループ内の同期LLM呼出が3箇所で15-30秒のブロックを発生
+  - `future_radar.py:87` — 予兆トリアージ自動生成
+  - `root_cause_table.py:237` — 障害トリアージ自動生成
+  - `remediation.py:401` — インシデント名の自動学習
+- **修正内容**:
+  - トリアージ生成を **ボタン押下時のみ** に変更（レンダー中のLLM呼出ゼロ）
+  - キャッシュ済みデータは即座に表示（LLM呼出なし）
+  - インシデント名の自動学習LLM呼出を削除（デフォルト名を使用）
+  - `simulate_command_execution()` の `time.sleep(0.3)` を削除
+
+### 9. L1トリアージ: AI自動実行
+- トリアージ生成ボタン押下時に全showコマンドを自動実行
+- `_auto_execute_triage_commands()` / `_auto_execute_incident_triage()` を新設
+- ユーザーは「トリアージ生成」ボタン1回で生成+全コマンド実行+結果表示が完了
+- 個別ボタン・一括実行ボタンは追加操作として残存
+
 ## 未完了・保留タスク
 
 ### 推奨アクション L2: 実機接続
@@ -136,11 +153,12 @@
 - `maint_devices` / `maint_windows` は session_state のみで永続化されない（ブラウザリロードで消失）
 - `google.generativeai` のインストール環境依存（cffi_backendエラー）があるため、CI環境での動作確認を推奨
 - `command_popup.py` のコマンド出力はデモ用テンプレート。本番環境では `simulate_command_execution()` を SSH executor に差し替え必要
-- `simulate_command_execution()` のデモ用 sleep(0.3s) は一括実行時にコマンド数 × 0.3s の遅延。必要に応じて短縮可
 - メンテナンスウィンドウの `device_ids` が空の場合は拠点全体がメンテ対象になる
+- 予兆ステータス履歴のインシデント名は自動学習ではなくデフォルト名（`異常シグナル検知 (パターン名)`）を使用
 
 ## 次セッションへの推奨アクション
-1. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認
-2. **メンテナンスウィンドウ動作確認**: ウィンドウ追加→アクティブ化→終了自動解除の一連フロー確認
-3. **推奨アクション L2**: SSH executor の接続設計（`simulate_command_execution` の差し替え）
-4. **UI コンポーネントの RateLimiter 統合**: future_radar.py 等の直接 generate_content 呼出に rate limiter を適用
+1. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認（描画速度の改善を確認）
+2. **トリアージ生成ボタン動作確認**: 予兆/障害の両方でボタン→生成→自動実行→結果表示の一連フロー確認
+3. **メンテナンスウィンドウ動作確認**: ウィンドウ追加→アクティブ化→終了自動解除の一連フロー確認
+4. **推奨アクション L2**: SSH executor の接続設計（`simulate_command_execution` の差し替え）
+5. **UI コンポーネントの RateLimiter 統合**: future_radar.py 等の直接 generate_content 呼出に rate limiter を適用
