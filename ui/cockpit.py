@@ -68,6 +68,65 @@ from ui.components.diagnostic import run_diagnostic  # noqa: F401
 
 
 # =====================================================
+# Phase 2: メンテナンスウィンドウの時間判定
+# =====================================================
+def _resolve_maint_windows(site_id: str, topology: dict):
+    """アクティブなメンテナンスウィンドウの device_ids を maint_devices にマージ。
+
+    終了済みウィンドウは自動クリーンアップし、終了通知バナーを表示する。
+    """
+    from datetime import datetime
+    _now = datetime.now()
+    _windows = st.session_state.get("maint_windows", [])
+    if not _windows:
+        return
+
+    _active_devs = set()
+    _expired_labels = []
+    _surviving = []
+
+    for _w in _windows:
+        if _w.get("site_id") != site_id:
+            _surviving.append(_w)
+            continue
+
+        _start = _w.get("start")
+        _end = _w.get("end")
+
+        if _now > _end:
+            # 終了済み → クリーンアップ + 通知ラベル収集
+            _label = _w.get("label") or ", ".join(sorted(_w.get("device_ids", set()))) or "拠点全体"
+            _expired_labels.append(_label)
+            # ★ 終了済みウィンドウを一覧から除去（自動クリーンアップ）
+            continue
+
+        _surviving.append(_w)
+
+        if _now >= _start:
+            # アクティブ → device_ids をマージ
+            _w_devs = _w.get("device_ids", set())
+            if _w_devs:
+                _active_devs.update(_w_devs)
+            else:
+                # 空 = 拠点全体 → トポロジーの全デバイスを追加
+                _active_devs.update(topology.keys())
+
+    # ウィンドウリストを更新（終了済みを除去）
+    if len(_surviving) != len(_windows):
+        st.session_state["maint_windows"] = _surviving
+
+    # maint_devices にマージ
+    if _active_devs:
+        _current = st.session_state.get("maint_devices", {}).get(site_id, set())
+        st.session_state["maint_devices"][site_id] = _current | _active_devs
+
+    # 終了通知バナー
+    if _expired_labels:
+        _labels_str = "、".join(_expired_labels)
+        st.success(f"✅ **メンテナンス終了**: {_labels_str} — アラーム抑制を解除しました")
+
+
+# =====================================================
 # メインエントリポイント
 # =====================================================
 def render_incident_cockpit(site_id: str, api_key: Optional[str]):
@@ -103,6 +162,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     else:
         alarms = generate_alarms_for_scenario(topology, scenario)
         st.session_state[_alarm_cache_key] = alarms
+
+    # ★ Phase 2: メンテナンスウィンドウの時間判定 → maint_devices にマージ
+    _resolve_maint_windows(site_id, topology)
 
     # ★ 機器単位メンテナンスモード: メンテ中デバイスのアラームを抑制
     _maint_devs = st.session_state.get("maint_devices", {}).get(site_id, set())
@@ -449,10 +511,21 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # 0.5 メンテナンスモード通知バナー
     if _maint_devs:
         _maint_list = ", ".join(sorted(_maint_devs))
+        # アクティブなウィンドウ情報を付加
+        _active_win_info = ""
+        from datetime import datetime as _dt_cls
+        _now_ts = _dt_cls.now()
+        for _w in st.session_state.get("maint_windows", []):
+            if (_w.get("site_id") == site_id
+                    and _w.get("start") <= _now_ts <= _w.get("end")):
+                _end_str = _w["end"].strftime("%m/%d %H:%M")
+                _wlabel = _w.get("label", "")
+                _active_win_info += f" | 📅 {_wlabel or 'ウィンドウ'} 〜{_end_str}"
         st.info(
             f"🔧 **メンテナンスモード**: {len(_maint_devs)}台のアラームを抑制中 "
             f"({_maint_list})"
             + (f" — {_suppressed_count}件のアラームを非表示" if _suppressed_count else "")
+            + _active_win_info
         )
 
     # 1. KPIバナー

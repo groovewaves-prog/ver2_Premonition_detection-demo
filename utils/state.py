@@ -8,6 +8,7 @@ def init_session_state():
         "active_site": None,
         "maint_flags": {},
         "maint_devices": {},  # {site_id: set(device_ids)} 機器単位メンテナンスモード
+        "maint_windows": [],  # メンテナンスウィンドウ [{id, site_id, device_ids, start, end, label}]
         "live_result": None,
         "verification_result": None,
         "generated_report": None,

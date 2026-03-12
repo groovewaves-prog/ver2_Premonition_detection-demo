@@ -83,27 +83,43 @@
   - 実行済みカードに ✅ チェックマーク
 - **future_radar.py / root_cause_table.py**: キャプションを L1 仕様に更新
 
+### 5. メンテナンスモード Phase 2: 時間帯指定メンテナンスウィンドウ
+- **データ構造**: `maint_windows: []` を `utils/state.py` に追加
+  - 各ウィンドウ: `{id, site_id, device_ids, start, end, label}`
+- **サイドバーUI** (`sidebar.py`):
+  - 「📅 メンテナンスウィンドウ」セクション（メンテナンス設定 expander 内）
+  - `st.popover` で追加フォーム（開始/終了日時、対象拠点、対象機器、ラベル）
+  - 一覧表示: 🟢アクティブ / ⏳予定 / ⏹終了 のステータス色分け + 個別削除ボタン
+- **コックピット** (`cockpit.py`):
+  - `_resolve_maint_windows()`: 毎 rerun で現在時刻と比較
+  - アクティブウィンドウの `device_ids` を `maint_devices` にマージ（Phase 1 再利用）
+  - 終了済みウィンドウを自動クリーンアップ（一覧から除去）
+  - 「✅ メンテナンス終了: {label}」バナーで通知
+  - メンテバナーにアクティブウィンドウの終了時刻を表示
+- **ダッシュボード** (`dashboard.py`):
+  - 「📅 N件実行中」（緑）/ 「📅 N件予定」（オレンジ）バッジ追加
+
 ## 未完了・保留タスク
 
 ### 推奨アクション L2: 実機接続
 - `simulate_command_execution()` を SSH executor に差し替えるだけで L2 移行可能
 - L1 の UI（インライン結果表示 + 一括実行）はそのまま再利用
 
-### メンテナンスモード Phase 2
-- 時間帯指定メンテナンスウィンドウの実装（計画保全との連携）
+### メンテナンスモード Phase 3: 永続化
+- 現状 session_state のみ（リロードで消失）→ DB or ファイル保存に拡張可能
 
 ## 既知の問題・注意点
 - `rate_limiter.py` の `GlobalRateLimiter` はシングルトンのため、既存インスタンスがある場合は再起動が必要
 - `forecast_ledger` のインデックス追加は既存DBに対して `CREATE INDEX IF NOT EXISTS` で安全に適用
 - `predict_cache_ttl` の120秒化により、スライダー操作直後に最大120秒間古い予測が表示される可能性あり
-- `maint_devices` は session_state のみで永続化されない（ブラウザリロードで消失）
+- `maint_devices` / `maint_windows` は session_state のみで永続化されない（ブラウザリロードで消失）
 - `google.generativeai` のインストール環境依存（cffi_backendエラー）があるため、CI環境での動作確認を推奨
 - `command_popup.py` のコマンド出力はデモ用テンプレート。本番環境では `simulate_command_execution()` を SSH executor に差し替え必要
 - `simulate_command_execution()` のデモ用 sleep(0.3s) は一括実行時にコマンド数 × 0.3s の遅延。必要に応じて短縮可
+- メンテナンスウィンドウの `device_ids` が空の場合は拠点全体がメンテ対象になる
 
 ## 次セッションへの推奨アクション
-1. **Streamlit 実行テスト**: `streamlit run app.py` で L1 UX の動作確認（一括実行、インライン結果、人手作業バッジ）
-2. **劣化進行度0バグ修正の確認**: スライダー 3→0 に戻して Future Radar が消えることを確認
+1. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認
+2. **メンテナンスウィンドウ動作確認**: ウィンドウ追加→アクティブ化→終了自動解除の一連フロー確認
 3. **推奨アクション L2**: SSH executor の接続設計（`simulate_command_execution` の差し替え）
-4. **メンテナンスモード Phase 2**: 時間帯指定メンテナンスウィンドウの実装
-5. **RateLimiter のモデル別 model_id 渡し**: `network_ops.py` の各呼び出し箇所で `model_id` を明示的に渡す
+4. **RateLimiter のモデル別 model_id 渡し**: `network_ops.py` の各呼び出し箇所で `model_id` を明示的に渡す

@@ -105,7 +105,7 @@ def _render_site_card(site: SiteStatus):
     # シナリオ表示
     scenario_display = site.scenario.split(". ", 1)[-1] if ". " in site.scenario else site.scenario
 
-    # メンテナンスバッジ（拠点全体 + 機器単位）
+    # メンテナンスバッジ（拠点全体 + 機器単位 + ウィンドウ予定）
     _dev_maint = st.session_state.get("maint_devices", {}).get(site.site_id, set())
     if site.is_maintenance:
         maint_badge = '<span style="background:#E3F2FD;color:#1565C0;font-size:11px;padding:2px 6px;border-radius:3px;margin-left:8px;">🛠 メンテ中</span>'
@@ -113,6 +113,29 @@ def _render_site_card(site: SiteStatus):
         maint_badge = f'<span style="background:#E3F2FD;color:#1565C0;font-size:11px;padding:2px 6px;border-radius:3px;margin-left:8px;">🔧 {len(_dev_maint)}台メンテ中</span>'
     else:
         maint_badge = ""
+
+    # ウィンドウ予定バッジ
+    from datetime import datetime as _dt_cls
+    _now_ts = _dt_cls.now()
+    _site_windows = [
+        w for w in st.session_state.get("maint_windows", [])
+        if w.get("site_id") == site.site_id and w.get("end") > _now_ts
+    ]
+    if _site_windows:
+        _active_w = sum(1 for w in _site_windows if w.get("start") <= _now_ts)
+        _upcoming_w = len(_site_windows) - _active_w
+        if _active_w:
+            maint_badge += (
+                f'<span style="background:#E8F5E9;color:#2E7D32;font-size:11px;'
+                f'padding:2px 6px;border-radius:3px;margin-left:4px;">'
+                f'📅 {_active_w}件実行中</span>'
+            )
+        if _upcoming_w:
+            maint_badge += (
+                f'<span style="background:#FFF3E0;color:#E65100;font-size:11px;'
+                f'padding:2px 6px;border-radius:3px;margin-left:4px;">'
+                f'📅 {_upcoming_w}件予定</span>'
+            )
 
     # 影響機器テキスト
     if site.affected_devices:

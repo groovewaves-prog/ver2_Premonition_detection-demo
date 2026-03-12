@@ -128,6 +128,104 @@ def render_sidebar():
                         if _selected:
                             st.caption(f"🔧 {len(_selected)}台がメンテ中（アラーム抑制）")
 
+            # ── Phase 2: メンテナンスウィンドウ（時間帯指定）──
+            st.markdown("---")
+            st.markdown("**📅 メンテナンスウィンドウ**")
+
+            # 登録済みウィンドウの一覧表示
+            from datetime import datetime, timedelta
+            _now = datetime.now()
+            _windows = st.session_state.get("maint_windows", [])
+
+            if _windows:
+                for _w in list(_windows):
+                    _wid = _w.get("id", "")
+                    _w_start = _w.get("start")
+                    _w_end = _w.get("end")
+                    _w_label = _w.get("label", "")
+                    _w_site = _w.get("site_id", "")
+                    _w_devs = _w.get("device_ids", set())
+
+                    if _now > _w_end:
+                        _status = "⏹ 終了"
+                        _color = "#9E9E9E"
+                    elif _now >= _w_start:
+                        _status = "🟢 アクティブ"
+                        _color = "#4CAF50"
+                    else:
+                        _status = "⏳ 予定"
+                        _color = "#FF9800"
+
+                    _dev_str = ", ".join(sorted(_w_devs)) if _w_devs else "拠点全体"
+                    _start_str = _w_start.strftime("%m/%d %H:%M")
+                    _end_str = _w_end.strftime("%m/%d %H:%M")
+
+                    _col_info, _col_del = st.columns([5, 1])
+                    with _col_info:
+                        st.markdown(
+                            f'<div style="font-size:12px;border-left:3px solid {_color};'
+                            f'padding:4px 8px;margin:2px 0;">'
+                            f'<b>{_status}</b> {_start_str}〜{_end_str}<br>'
+                            f'<span style="color:#666;">{_w_label or _dev_str}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with _col_del:
+                        if st.button("✕", key=f"mw_del_{_wid}", help="削除"):
+                            st.session_state["maint_windows"] = [
+                                w for w in _windows if w.get("id") != _wid
+                            ]
+                            st.rerun()
+            else:
+                st.caption("登録なし")
+
+            # ウィンドウ追加フォーム
+            with st.popover("+ ウィンドウ追加", use_container_width=True):
+                _add_site = st.selectbox(
+                    "拠点", options=sites,
+                    format_func=get_display_name,
+                    key="_mw_add_site",
+                )
+                _add_label = st.text_input("ラベル", placeholder="例: FW更新メンテ", key="_mw_add_label")
+
+                _col_sd, _col_st = st.columns(2)
+                with _col_sd:
+                    _add_sdate = st.date_input("開始日", value=_now.date(), key="_mw_add_sdate")
+                with _col_st:
+                    _add_stime = st.time_input("開始時刻", value=_now.replace(minute=0, second=0).time(), key="_mw_add_stime")
+
+                _col_ed, _col_et = st.columns(2)
+                with _col_ed:
+                    _add_edate = st.date_input("終了日", value=(_now + timedelta(hours=4)).date(), key="_mw_add_edate")
+                with _col_et:
+                    _add_etime = st.time_input("終了時刻", value=(_now + timedelta(hours=4)).replace(minute=0, second=0).time(), key="_mw_add_etime")
+
+                # 対象機器（空=拠点全体）
+                _add_topo = load_topology(get_paths(_add_site).topology_path)
+                _add_dev_opts = sorted(_add_topo.keys()) if _add_topo else []
+                _add_devs = st.multiselect(
+                    "対象機器（空=拠点全体）",
+                    options=_add_dev_opts,
+                    key="_mw_add_devs",
+                )
+
+                if st.button("登録", key="_mw_add_submit", type="primary", use_container_width=True):
+                    _start_dt = datetime.combine(_add_sdate, _add_stime)
+                    _end_dt = datetime.combine(_add_edate, _add_etime)
+                    if _end_dt <= _start_dt:
+                        st.error("終了は開始より後に設定してください")
+                    else:
+                        _new_window = {
+                            "id": f"mw_{int(_start_dt.timestamp())}_{_add_site}",
+                            "site_id": _add_site,
+                            "device_ids": set(_add_devs),
+                            "start": _start_dt,
+                            "end": _end_dt,
+                            "label": _add_label,
+                        }
+                        st.session_state["maint_windows"].append(_new_window)
+                        st.rerun()
+
         st.divider()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
