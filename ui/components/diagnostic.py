@@ -54,21 +54,27 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
             else:
                 state_desc = f"「{pred_scenario}」の微細な劣化兆候（レベル{level}/5）が検知されています。"
 
+            # ★ サニタイズ: デバイスIDと状態説明をマスキング
+            from utils.sanitizer import sanitize_device_id, sanitize_for_llm
+            _safe_dev = sanitize_device_id(device_id)
+            _safe_state = sanitize_for_llm(state_desc, max_length=500)
+            _safe_scenario = sanitize_for_llm(str(pred_scenario), max_length=200)
+
             prompt = f"""
-            あなたはCisco/Juniper等の実在するネットワーク機器（ホスト名: {device_id}）です。
-            現在、{state_desc}
+            あなたはCisco/Juniper等の実在するネットワーク機器（ホスト名: {_safe_dev}）です。
+            現在、{_safe_state}
             管理者がターミナルでトラブルシューティングを行っています。実際の機器が出力するような、極めてリアルで生々しいターミナル出力（生ログ）を生成してください。
 
             【必須で含めるコマンドと出力要件（※ログ監視パーサーが読み取るため絶対遵守）】
-            1. `{device_id}# ping 8.8.8.8 repeat 5`
+            1. `{_safe_dev}# ping 8.8.8.8 repeat 5`
                - 正常時はパケットロス0% (!!!!!) と `100 percent` を出力。異常時はロスを表現 (..!!!等)。
-            2. `{device_id}# show ip interface brief`
+            2. `{_safe_dev}# show ip interface brief`
                - 正常時（レベル0含む）は必ず `up up` という連続した文字列（間にスペース1つ）を含めること（例: `GigabitEthernet0/0/0  10.1.1.1  YES NVRAM  up up`）。
                - 異常時（ダウン時）は `down down` という連続した文字列を含めること。
-            3. `{device_id}# show environment` (または show chassis hardware)
+            3. `{_safe_dev}# show environment` (または show chassis hardware)
                - 正常時（レベル0含む）は必ず `NORMAL` または `OK` というキーワードのみを含めること（例: `Fan 1: NORMAL`）。
                - 異常がある場合は `WARNING` や `FAIL` を含めること。
-            4. 劣化原因（{pred_scenario}）または障害に直結する詳細確認コマンド
+            4. 劣化原因（{_safe_scenario}）または障害に直結する詳細確認コマンド
                - 例: 光減衰なら `show interfaces transceiver detail` 等。レベルに応じた数値をリアルに出力する。
                - レベル0（正常時）の場合は、すべての数値が完全に正常であることを示し、WARNING等の警告文は一切出さないこと。
 
@@ -81,6 +87,12 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
             api_key = cfg.get("google_key")
 
             if api_key:
+                from rate_limiter import GlobalRateLimiter
+                _rl = GlobalRateLimiter()
+                if not _rl.wait_for_slot(timeout=10, model_id="gemma-3-4b-it"):
+                    return {"status": "RATE_LIMITED", "sanitized_log": "レートリミット超過", "device_id": device_id}
+                _rl.record_request(model_id="gemma-3-4b-it")
+
                 client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
                     model='gemma-3-4b-it',

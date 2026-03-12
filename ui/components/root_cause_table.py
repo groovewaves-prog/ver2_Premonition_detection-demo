@@ -216,6 +216,8 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
 
     from .helpers import build_ci_context_for_chat
 
+    from utils.sanitizer import sanitize_for_llm, sanitize_device_id
+
     ci = build_ci_context_for_chat(topology, _dev_id)
     vendor = ci.get("vendor", "Unknown")
     os_type = ci.get("os", "Unknown")
@@ -223,6 +225,10 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
 
     import json as _json
     import re as _re
+
+    # ★ サニタイズ: デバイスIDとアラームラベルをマスキング
+    _safe_dev_id = sanitize_device_id(_dev_id)
+    _safe_label = sanitize_for_llm(_label, max_length=1000)
 
     _prompt = f"""あなたは熟練のネットワークAIOpsエンジニアです。
 現在、以下の【対象機器】で障害アラームが発報されました。
@@ -235,7 +241,7 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
 ・各コマンドは「何を確認するか」を1行で添え、効果は「この値が分かる」程度に留める
 
 【対象機器の情報】
-・ホスト名: {_dev_id}
+・ホスト名: {_safe_dev_id}
 ・メーカー: {vendor}
 ・OS: {os_type}
 ・機種名: {model_name}
@@ -247,7 +253,7 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
 ・監視ツール（Zabbix等）は導入済みのため、「監視設定の強化」等の提案は不要です。
 
 【発報アラーム】
-{_label[:1000]}
+{_safe_label}
 
 【出力JSONフォーマット】
 必ず以下のキー構造のJSON配列（リスト）のみを出力してください。
@@ -262,6 +268,13 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
 ]
 """
     try:
+        from rate_limiter import GlobalRateLimiter
+        _rl = GlobalRateLimiter()
+        if not _rl.wait_for_slot(timeout=10, model_id="gemma-3-4b-it"):
+            logger.warning(f"Rate limit reached for gemma-3-4b-it, skipping triage for {_dev_id}")
+            return []
+        _rl.record_request(model_id="gemma-3-4b-it")
+
         with st.spinner(f"🔄 {_dev_id} の初動トリアージを生成中..."):
             _response = _genai_model.generate_content(_prompt)
             _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)

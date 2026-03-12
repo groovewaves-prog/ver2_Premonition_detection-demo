@@ -156,7 +156,7 @@ class DigitalTwinEngine:
 
         # ★ LLM クライアント初期化
         #   スコアリング（6次元）: gemma-3-12b-it（軽量・高速）
-        #   推奨アクション生成: gemini-2.0-flash-exp（高推論能力）← engine.py 内で直接呼出
+        #   推奨アクション生成: gemma-3-12b-it ← engine.py 内で直接呼出
         _api_key = (
             (llm_config or {}).get("google_key")
             or os.environ.get("GOOGLE_API_KEY")
@@ -519,6 +519,10 @@ class DigitalTwinEngine:
         
         return llm_cache
 
+    # ★ API バッチ化: ルールパターン別キャッシュ（同一パターンへの重複API呼出を排除）
+    _gemini_actions_cache: Dict[str, List[Dict[str, str]]] = {}
+    _gemini_actions_cache_ts: float = 0.0
+
     def _generate_actions_with_gemini(
         self,
         rule_pattern: str,
@@ -528,10 +532,11 @@ class DigitalTwinEngine:
         device_id: str
     ) -> Optional[List[Dict[str, str]]]:
         """
-        Gemini API を使って状況に応じた推奨アクションを動的生成
-        
+        Gemma API を使って状況に応じた推奨アクションを動的生成
+
         ⚠️ セキュリティ: データをサニタイズしてから送信
-        
+        ★ バッチ化: 同一 rule_pattern の結果を5分間キャッシュ
+
         Args:
             rule_pattern: 検出されたルールパターン
             affected_count: 影響を受けたコンポーネント数
@@ -546,27 +551,39 @@ class DigitalTwinEngine:
             import google.generativeai as genai
             import os
             import json
-            
+
+            # ★ バッチ化: 同一 rule_pattern の結果をキャッシュ（5分間有効）
+            _now = time.time()
+            if (_now - self._gemini_actions_cache_ts) > 300:
+                self._gemini_actions_cache.clear()
+                self._gemini_actions_cache_ts = _now
+            _cache_hit = self._gemini_actions_cache.get(rule_pattern)
+            if _cache_hit is not None:
+                logger.debug(f"Gemma actions cache HIT: {rule_pattern}")
+                return _cache_hit
+
             # ★ LLM送信の設定確認（オプトアウト可能）
             enable_llm = os.environ.get("ENABLE_LLM_RECOMMENDATIONS", "true").lower()
             if enable_llm not in ["true", "1", "yes"]:
                 logger.info("LLM recommendations disabled by configuration")
                 return None
-            
+
             # API キーの取得
             api_key = os.environ.get("GEMINI_API_KEY")
             if not api_key:
                 logger.warning("GEMINI_API_KEY not found. Using static recommendations.")
                 return None
+
+            # ★ データのサニタイズ（機密情報の除去 — 共通サニタイザー使用）
+            from utils.sanitizer import sanitize_for_llm, sanitize_device_id
+            sanitized_device_id = sanitize_device_id(device_id)
+            # ★ 全メッセージをサニタイズ（最大20件に制限 — トークン消費抑制）
+            sanitized_messages = [sanitize_for_llm(msg, max_length=300) for msg in messages[:20]]
             
-            # ★ データのサニタイズ（機密情報の除去）
-            sanitized_device_id = self._sanitize_for_llm(device_id)
-            # ★ 全メッセージをサニタイズ（最大50件まで）
-            sanitized_messages = [self._sanitize_for_llm(msg) for msg in messages[:50]]
-            
-            # Gemini API の設定
+            # Gemma API の設定（gemini-2.0-flash-exp → gemma-3-12b-it に変更:
+            #   RPM制限が gemini-2.0-flash-exp=10RPM と厳しくレート超過頻発のため）
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash-exp')
+            model = genai.GenerativeModel('gemma-3-12b-it')
             
             # デバイスタイプの推定（一般化）
             device_type = "Network Device"
@@ -667,8 +684,16 @@ class DigitalTwinEngine:
 5. 個別部品交換はlow優先度
 6. stepsには\\nで改行"""
 
-            # Gemini API 呼び出し
-            logger.info(f"Calling Gemini API for {affected_count} affected components")
+            # ★ レートリミッター適用
+            from rate_limiter import GlobalRateLimiter
+            _rl = GlobalRateLimiter()
+            if not _rl.wait_for_slot(timeout=10, model_id="gemma-3-12b-it"):
+                logger.warning("Rate limit reached for gemma-3-12b-it, using fallback")
+                return None
+            _rl.record_request(model_id="gemma-3-12b-it")
+
+            # Gemma API 呼び出し
+            logger.info(f"Calling Gemma API for {affected_count} affected components")
             response = model.generate_content(prompt)
             response_text = response.text.strip()
             
@@ -693,14 +718,16 @@ class DigitalTwinEngine:
                     validated_actions.append(action)
             
             if validated_actions:
-                logger.info(f"Generated {len(validated_actions)} actions using Gemini API")
+                logger.info(f"Generated {len(validated_actions)} actions using Gemma API")
+                # ★ バッチ化: 結果をキャッシュ（同一パターンの後続呼出でAPI節約）
+                self._gemini_actions_cache[rule_pattern] = validated_actions
                 return validated_actions
             else:
-                logger.warning("No valid actions in Gemini API response")
+                logger.warning("No valid actions in Gemma API response")
                 return None
-        
+
         except Exception as e:
-            logger.warning(f"Failed to generate actions with Gemini API: {e}")
+            logger.warning(f"Failed to generate actions with Gemma API: {e}")
             return None
 
     def _generate_smart_recommendations(
@@ -717,7 +744,7 @@ class DigitalTwinEngine:
         ★ 推奨アクション生成（LLM真因推論 + ルールベースフォールバック）
 
         戦略:
-        - affected_count >= 3 → 常に gemini-2.0-flash-exp で真因分析
+        - affected_count >= 3 → 常に gemma-3-12b-it で真因分析
         - LLM 失敗時 → ルールベースの知的フォールバック
         - affected_count < 3  → ルール定義の base_actions を返す
         """
@@ -1932,7 +1959,7 @@ class DigitalTwinEngine:
 
         # ★ LLM ベースの推奨アクション生成
         #   simulation 時: ルールベースフォールバック（高速）
-        #   real 時: gemini-2.0-flash-exp で真因推論
+        #   real 時: gemma-3-12b-it で真因推論
         if results:
             _top = results[0]
             try:

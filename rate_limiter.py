@@ -75,12 +75,14 @@ class _ModelBucket:
         }
 
 
-# モデル別のデフォルトRPM設定
+# モデル別のデフォルトRPM設定（Google AI Studio 無料枠に準拠）
+# ★ gemini-2.0-flash-exp: RPM=10, RPD=1500 と非常に厳しいため使用停止
+# ★ gemma-3 シリーズ: RPM=30, RPD=14400（Google API サービス利用時）
 MODEL_RATE_CONFIGS: Dict[str, RateLimitConfig] = {
     "gemma-3-12b-it":     RateLimitConfig(rpm=30,  rpd=14400),
     "gemma-3-4b-it":      RateLimitConfig(rpm=30,  rpd=14400),
-    "gemini-2.0-flash":   RateLimitConfig(rpm=60,  rpd=28800),
-    "gemini-2.0-flash-exp": RateLimitConfig(rpm=60, rpd=28800),
+    "gemini-2.0-flash":   RateLimitConfig(rpm=10,  rpd=1500),
+    "gemini-2.0-flash-exp": RateLimitConfig(rpm=10, rpd=1500),
 }
 
 
