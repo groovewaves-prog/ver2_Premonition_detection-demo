@@ -307,9 +307,17 @@ class InternalLLMClient:
                     f"falling back to Google Gemma API: {e}"
                 )
 
-        # Google Gemma API
+        # Google Gemma API（レートリミッター適用）
         if self._google_client is not None:
             try:
+                from rate_limiter import GlobalRateLimiter
+                _rl = GlobalRateLimiter()
+                if not _rl.wait_for_slot(timeout=15, model_id=self._google_model):
+                    raise RuntimeError(
+                        f"Rate limit reached for {self._google_model}"
+                    )
+                _rl.record_request(model_id=self._google_model)
+
                 resp = self._google_client.models.generate_content(
                     model=self._google_model,
                     contents=prompt,

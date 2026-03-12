@@ -156,7 +156,7 @@ class DigitalTwinEngine:
 
         # ★ LLM クライアント初期化
         #   スコアリング（6次元）: gemma-3-12b-it（軽量・高速）
-        #   推奨アクション生成: gemini-2.0-flash-exp（高推論能力）← engine.py 内で直接呼出
+        #   推奨アクション生成: gemma-3-12b-it ← engine.py 内で直接呼出
         _api_key = (
             (llm_config or {}).get("google_key")
             or os.environ.get("GOOGLE_API_KEY")
@@ -564,9 +564,10 @@ class DigitalTwinEngine:
             # ★ 全メッセージをサニタイズ（最大50件まで）
             sanitized_messages = [self._sanitize_for_llm(msg) for msg in messages[:50]]
             
-            # Gemini API の設定
+            # Gemma API の設定（gemini-2.0-flash-exp → gemma-3-12b-it に変更:
+            #   RPM制限が gemini-2.0-flash-exp=10RPM と厳しくレート超過頻発のため）
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash-exp')
+            model = genai.GenerativeModel('gemma-3-12b-it')
             
             # デバイスタイプの推定（一般化）
             device_type = "Network Device"
@@ -667,8 +668,16 @@ class DigitalTwinEngine:
 5. 個別部品交換はlow優先度
 6. stepsには\\nで改行"""
 
-            # Gemini API 呼び出し
-            logger.info(f"Calling Gemini API for {affected_count} affected components")
+            # ★ レートリミッター適用
+            from rate_limiter import GlobalRateLimiter
+            _rl = GlobalRateLimiter()
+            if not _rl.wait_for_slot(timeout=10, model_id="gemma-3-12b-it"):
+                logger.warning("Rate limit reached for gemma-3-12b-it, using fallback")
+                return None
+            _rl.record_request(model_id="gemma-3-12b-it")
+
+            # Gemma API 呼び出し
+            logger.info(f"Calling Gemma API for {affected_count} affected components")
             response = model.generate_content(prompt)
             response_text = response.text.strip()
             
@@ -717,7 +726,7 @@ class DigitalTwinEngine:
         ★ 推奨アクション生成（LLM真因推論 + ルールベースフォールバック）
 
         戦略:
-        - affected_count >= 3 → 常に gemini-2.0-flash-exp で真因分析
+        - affected_count >= 3 → 常に gemma-3-12b-it で真因分析
         - LLM 失敗時 → ルールベースの知的フォールバック
         - affected_count < 3  → ルール定義の base_actions を返す
         """
@@ -1932,7 +1941,7 @@ class DigitalTwinEngine:
 
         # ★ LLM ベースの推奨アクション生成
         #   simulation 時: ルールベースフォールバック（高速）
-        #   real 時: gemini-2.0-flash-exp で真因推論
+        #   real 時: gemma-3-12b-it で真因推論
         if results:
             _top = results[0]
             try:

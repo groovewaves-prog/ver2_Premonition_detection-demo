@@ -494,4 +494,4 @@ def _render_api_key_input():
 # ─────────────────────────────────────────────────────────
 # 1つの GOOGLE_API_KEY で2モデルを自動振り分け:
 #   スコアリング・判定       → gemma-3-12b-it      (llm_client.py)
-#   レポート・推奨アクション → gemini-2.0-flash-exp (engine.py / cockpit.py)
+#   レポート・推奨アクション → gemma-3-12b-it (engine.py / cockpit.py)

@@ -262,6 +262,13 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
 ]
 """
     try:
+        from rate_limiter import GlobalRateLimiter
+        _rl = GlobalRateLimiter()
+        if not _rl.wait_for_slot(timeout=10, model_id="gemma-3-4b-it"):
+            logger.warning(f"Rate limit reached for gemma-3-4b-it, skipping triage for {_dev_id}")
+            return []
+        _rl.record_request(model_id="gemma-3-4b-it")
+
         with st.spinner(f"🔄 {_dev_id} の初動トリアージを生成中..."):
             _response = _genai_model.generate_content(_prompt)
             _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)

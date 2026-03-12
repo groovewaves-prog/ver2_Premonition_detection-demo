@@ -29,39 +29,13 @@ except ImportError:
     google_exceptions = _DummyExceptions()
 
 
-class RateLimitConfig:
-    def __init__(self, rpm=30, rpd=14400, safety_margin=0.9):
-        self.rpm = rpm
-        self.rpd = rpd
-        self.safety_margin = safety_margin
+# ★ rate_limiter.py の実装を使用（スタブ廃止）
+from rate_limiter import GlobalRateLimiter as _RealRateLimiter
 
 
-class GlobalRateLimiter:
-    def __init__(self, config):
-        self.config = config
-        self.requests_last_minute = 0
-        self.requests_today = 0
-
-    def wait_for_slot(self, timeout=60):
-        return True
-
-    def record_request(self):
-        self.requests_last_minute += 1
-        self.requests_today += 1
-
-    def get_stats(self):
-        return {
-            'requests_last_minute': self.requests_last_minute,
-            'requests_today': self.requests_today,
-            'rpm_limit': self.config.rpm,
-            'rpd_limit': self.config.rpd
-        }
-
-
-@st.cache_resource
 def get_rate_limiter():
-    """レートリミッターのシングルトン"""
-    return GlobalRateLimiter(RateLimitConfig(rpm=30, rpd=14400, safety_margin=0.9))
+    """レートリミッターのシングルトン（rate_limiter.py の実装を使用）"""
+    return _RealRateLimiter()
 
 
 def get_genai_client(api_key: str):
@@ -91,9 +65,9 @@ def generate_content_with_retry(client, model_name: str, prompt: str, stream: bo
     limiter = get_rate_limiter()
     for i in range(retries):
         try:
-            if not limiter.wait_for_slot(timeout=60):
-                raise RuntimeError("Rate limit timeout")
-            limiter.record_request()
+            if not limiter.wait_for_slot(timeout=15, model_id=model_name):
+                raise RuntimeError(f"Rate limit timeout for {model_name}")
+            limiter.record_request(model_id=model_name)
             if stream:
                 return client.models.generate_content_stream(
                     model=model_name,

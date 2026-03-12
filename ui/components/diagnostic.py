@@ -81,6 +81,12 @@ def run_diagnostic(scenario: str, target_node_obj, use_llm: bool = True) -> dict
             api_key = cfg.get("google_key")
 
             if api_key:
+                from rate_limiter import GlobalRateLimiter
+                _rl = GlobalRateLimiter()
+                if not _rl.wait_for_slot(timeout=10, model_id="gemma-3-4b-it"):
+                    return {"status": "RATE_LIMITED", "sanitized_log": "レートリミット超過", "device_id": device_id}
+                _rl.record_request(model_id="gemma-3-4b-it")
+
                 client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
                     model='gemma-3-4b-it',
