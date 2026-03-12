@@ -428,18 +428,16 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
                     _cmd = step["cleaned"]
                     _result = _inline_results.get(_cmd)
                     if _result:
-                        # 実行済み: 緑背景 + 結果プレビュー
-                        _out_preview = _result.get("output", "")
-                        _out_lines = _out_preview.strip().split("\n")
-                        _out_short = "\n".join(_out_lines[:4])
-                        if len(_out_lines) > 4:
-                            _out_short += "\n..."
+                        # 実行済み: 緑背景 + 全結果スクロール表示
+                        _out_full = _result.get("output", "")
                         _step_html_parts.append(
                             f'<div style="background:#E8F5E9;border-left:3px solid #4CAF50;'
                             f'padding:4px 8px;margin:2px 0;border-radius:2px;">'
                             f'<span style="color:#2E7D32;">▶ {_num}. <code>{_cmd}</code> ✅</span>'
                             f'<pre style="font-size:11px;color:#555;margin:4px 0 0 16px;'
-                            f'white-space:pre-wrap;line-height:1.4;">{_out_short}</pre>'
+                            f'white-space:pre-wrap;line-height:1.4;'
+                            f'max-height:200px;overflow-y:auto;'
+                            f'background:#FAFAFA;padding:6px;border-radius:4px;">{_out_full}</pre>'
                             f'</div>'
                         )
                     else:

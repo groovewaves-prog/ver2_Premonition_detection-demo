@@ -438,7 +438,14 @@ class LogicalRCA:
             }]
 
         # ★ 高速化: アラームセットのハッシュを計算（GrayScope/Granger キャッシュ判定用）
-        _alarm_hash = hash(tuple(sorted((a.device_id, a.message, a.severity) for a in alarms)))
+        # ★ BugFix: INFOアラーム（シミュレーション注入）を除外してハッシュ計算。
+        #   cockpit.py 側もINFO除外ハッシュを使用しており、
+        #   シミュレーション level 変更時にGrayScope/Granger/LLMが
+        #   不必要に再実行されるのを防止（数秒の遅延を解消）。
+        _alarm_hash = hash(tuple(sorted(
+            (a.device_id, a.message, a.severity) for a in alarms
+            if a.severity != "INFO"
+        )))
         _use_cached_analysis = (_alarm_hash == self._analyze_cache_hash)
 
         msg_map: Dict[str, List[str]] = {}

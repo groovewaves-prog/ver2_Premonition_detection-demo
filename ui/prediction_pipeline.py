@@ -57,10 +57,16 @@ def run_prediction_pipeline(
     _auto_resolve_outcomes(dt_engine, alarms, site_id, _conflict)
 
     # ── Step 5: analysis_results にマージ ──
-    existing_pred_ids = {r.get("id") for r in analysis_results if r.get("is_prediction")}
+    # ★ BugFix: 古い予測を analysis_results から完全除去してから新しい予測を追加する。
+    #   以前は既存予測を残したまま append していたため、analysis_results が
+    #   session_state のキャッシュ参照である場合にキャッシュを汚染し、
+    #   level=0 でも古い予測が残留 / level 変更時に内容が更新されない問題があった。
+    _old_pred_count = len(analysis_results)
+    analysis_results[:] = [r for r in analysis_results if not r.get("is_prediction")]
+    if _old_pred_count != len(analysis_results):
+        logger.debug(f"Stripped {_old_pred_count - len(analysis_results)} stale predictions from analysis_results")
     for _dp in dt_predictions:
-        if _dp.get("id") not in existing_pred_ids:
-            analysis_results.append(_dp)
+        analysis_results.append(_dp)
 
     # ── Step 6: シミュレーション変更検知 → レポートリセット ──
     _reset_on_sim_change(_injected, site_id)
