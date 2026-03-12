@@ -406,12 +406,14 @@ def _render_weak_signal_injection(target_device: str, scenario_key: str):
                 #   自動クリーンアップされるため、ここでの二重削除は不要）
                 # cockpit キャッシュのみクリア（新レベルで再計算させる）
                 st.session_state.pop("dt_prediction_cache", None)
-                # ★ BugFix: analysis_cache + トリアージキャッシュ + インライン結果もクリア
-                #   予測が analysis_results にマージ済みのため、レベル変更時に
-                #   古い予測・トリアージが残留するのを防止
+                # ★ BugFix: トリアージキャッシュ + インライン結果をクリア
+                #   （_analysis_cache は意図的にクリアしない:
+                #    cockpitのhashはINFO除外のため変わらず、
+                #    prediction_pipeline.pyのスライス代入で古い予測は自動除去される。
+                #    _analysis_cacheをクリアするとanalyze()が毎回フル実行され
+                #    GrayScope/Granger/LLM呼出で数秒の遅延が発生する）
                 _keys_to_clear = [k for k in list(st.session_state.keys())
-                                  if k.startswith("_analysis_cache_")
-                                  or k.startswith("_triage_pred_")
+                                  if k.startswith("_triage_pred_")
                                   or k.startswith("_triage_inline_")]
                 for k in _keys_to_clear:
                     st.session_state.pop(k, None)
@@ -435,11 +437,9 @@ def _render_weak_signal_injection(target_device: str, scenario_key: str):
                 # 以前シミュレーションが動いていた → クリーンアップ必要
                 _prev_device = _prev_injected.get("device_id", "")
                 st.session_state.pop("dt_prediction_cache", None)
-                # ★ BugFix: analysis_cache もクリア（予測残留防止）
-                _keys_to_clear = [k for k in list(st.session_state.keys())
-                                  if k.startswith("_analysis_cache_")]
-                for k in _keys_to_clear:
-                    st.session_state.pop(k, None)
+                # ★ _analysis_cache は意図的にクリアしない
+                #   （prediction_pipeline.pyのスライス代入で古い予測を自動除去。
+                #    クリアするとanalyze()フル実行で重大な遅延が発生する）
 
                 # forecast_ledger からシミュレーション由来の open 予測を削除
                 active_site = st.session_state.get("active_site")
