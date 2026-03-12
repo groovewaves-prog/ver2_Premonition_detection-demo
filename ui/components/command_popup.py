@@ -180,10 +180,7 @@ def simulate_command_execution(command: str, device_id: str) -> dict:
     else:
         output = f"{device_id}# {command}\nCommand executed successfully."
 
-    # デモ用: 実行時間シミュレーション (0.3〜1.5秒)
-    elapsed = time.time() - start
-    if elapsed < 0.3:
-        time.sleep(0.3 - elapsed)
+    # デモ用: 実行時間シミュレーション（最小遅延）
     elapsed = time.time() - start
 
     return {

@@ -110,7 +110,7 @@ def render_root_cause_table(
         selected_incident_candidate = root_cause_candidates[0]
         target_device_id = root_cause_candidates[0]['id']
 
-    # ★ 障害時初動トリアージ: 選択された root_cause 候補のみオンデマンド生成+表示
+    # ★ 障害時初動トリアージ: ボタン押下時にのみ生成（描画パスから LLM 排除）
     if selected_incident_candidate:
         _is_pred = selected_incident_candidate.get('is_prediction', False)
         _rc_dev = selected_incident_candidate.get('id', '')
@@ -118,11 +118,11 @@ def render_root_cause_table(
         if not _is_pred and _rc_dev != 'SYSTEM':
             _rc_actions = selected_incident_candidate.get('recommended_actions', [])
 
-            # トリアージ未生成の場合、この候補だけオンデマンド生成
+            # キャッシュ済みならそのまま使う（LLM呼出なし）
             if not _rc_actions:
-                _rc_actions = _generate_incident_triage_lazy(selected_incident_candidate, topology or {})
-                if _rc_actions:
-                    selected_incident_candidate['recommended_actions'] = _rc_actions
+                _rc_label = selected_incident_candidate.get('label', '')
+                _triage_ck = f"_triage_incident_{_rc_dev}_{hash(_rc_label[:200])}"
+                _rc_actions = st.session_state.get(_triage_ck, [])
 
             if _rc_actions:
                 with st.expander(f"🛠 初動トリアージ: {_rc_dev}", expanded=True):
@@ -132,6 +132,20 @@ def render_root_cause_table(
                         "🔧マークは人手作業です。"
                     )
                     render_triage_cards(_rc_actions, _rc_dev, card_idx=100)
+            else:
+                # トリアージ未生成 → ボタンで生成
+                _gen_key = f"_gen_triage_incident_{_rc_dev}"
+                if st.button(
+                    f"🔍 {_rc_dev} の初動トリアージを生成",
+                    key=_gen_key,
+                    type="secondary",
+                ):
+                    _rc_actions = _generate_incident_triage_lazy(selected_incident_candidate, topology or {})
+                    if _rc_actions:
+                        selected_incident_candidate['recommended_actions'] = _rc_actions
+                        # ★ AI自動実行: 生成と同時に全showコマンドを事前実行
+                        _auto_execute_incident_triage(_rc_actions, _rc_dev)
+                    st.rerun()
 
     # 派生アラート（Symptom）一覧
     if symptom_devices:
@@ -158,6 +172,20 @@ def render_root_cause_table(
             st.dataframe(ur_df, use_container_width=True, hide_index=True)
 
     return selected_incident_candidate, target_device_id
+
+
+def _auto_execute_incident_triage(rec_actions: list, device_id: str):
+    """障害トリアージ生成と同時に全showコマンドを自動実行する。"""
+    from .command_popup import extract_cli_commands, simulate_command_execution
+    _inline_key = f"_triage_inline_100_{device_id}"
+    _results = {}
+    for ra in rec_actions:
+        _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
+        for cmd in extract_cli_commands(_steps):
+            if cmd not in _results:
+                _results[cmd] = simulate_command_execution(cmd, device_id)
+    if _results:
+        st.session_state[_inline_key] = _results
 
 
 def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:

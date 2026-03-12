@@ -11,6 +11,20 @@ from ui.service_tier import render_tier_gated, TIER_PHM
 logger = logging.getLogger(__name__)
 
 
+def _auto_execute_triage_commands(rec_actions: list, device_id: str, card_idx: int):
+    """トリアージ生成と同時に全showコマンドを自動実行し、インライン結果に格納する。"""
+    from .command_popup import extract_cli_commands, simulate_command_execution
+    _inline_key = f"_triage_inline_{card_idx}_{device_id}"
+    _results = {}
+    for ra in rec_actions:
+        _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
+        for cmd in extract_cli_commands(_steps):
+            if cmd not in _results:
+                _results[cmd] = simulate_command_execution(cmd, device_id)
+    if _results:
+        st.session_state[_inline_key] = _results
+
+
 def _generate_prediction_triage_lazy(pc: dict, topology: dict) -> list:
     """予兆候補に対してオンデマンドでトリアージを生成する。
 
@@ -192,10 +206,15 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
             """
             st_html(card_html)
 
-            # ★ 初動トリアージ: 遅延ロードで表示時にのみ LLM 呼出
+            # ★ 初動トリアージ: ボタン押下時にのみ LLM 呼出（描画パスから排除）
             rec_actions = pc.get('recommended_actions', [])
             if not rec_actions:
-                rec_actions = _generate_prediction_triage_lazy(pc, topology)
+                # キャッシュ済みならそのまま使う（LLM呼出なし）
+                _injected_fr = st.session_state.get("injected_weak_signal", {})
+                _level_fr = _injected_fr.get("level", 0)
+                _triage_ck = f"_triage_pred_{_pred_device}_{pc.get('predicted_state', '')}_{_level_fr}"
+                rec_actions = st.session_state.get(_triage_ck, [])
+
             if rec_actions:
                 with st.expander("🛠 初動トリアージ（推奨アクション）", expanded=True):
                     st.caption(
@@ -204,3 +223,17 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
                         "🔧マークは人手作業です。"
                     )
                     render_triage_cards(rec_actions, _pred_device, pc_idx)
+            else:
+                # トリアージ未生成 → ボタンで生成（render中にLLMを呼ばない）
+                _gen_key = f"_gen_triage_pred_{pc_idx}_{_pred_device}"
+                if st.button(
+                    f"🔍 {_pred_device} の初動トリアージを生成",
+                    key=_gen_key,
+                    type="secondary",
+                ):
+                    rec_actions = _generate_prediction_triage_lazy(pc, topology)
+                    if rec_actions:
+                        pc['recommended_actions'] = rec_actions
+                        # ★ AI自動実行: 生成と同時に全showコマンドを事前実行
+                        _auto_execute_triage_commands(rec_actions, _pred_device, pc_idx)
+                    st.rerun()

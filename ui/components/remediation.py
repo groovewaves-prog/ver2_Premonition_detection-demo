@@ -381,40 +381,8 @@ def _render_prediction_history(cand, dt_engine, api_key):
         if _pattern_key in st.session_state.auto_learned_rules:
             _incident_name = st.session_state.auto_learned_rules[_pattern_key]
         else:
-            if api_key and GENAI_AVAILABLE:
-                try:
-                    _sample_logs = "\n".join([p.get("message", "") for p in _pred_group[:3]])
-
-                    _prompt = f"""
-                    あなたは熟練のネットワークAIOpsエンジニアです。
-                    以下のCisco/Juniperのシステムログ（現在 {_group_size}件 同時発生中）から、根本的な原因となる「インシデントタイトル」を命名してください。
-
-                    【条件】
-                    ・20文字以内の簡潔な日本語で出力すること。
-                    ・「〇〇の疑い」「〇〇の異常」などの表現を含めること。
-                    ・ログが複数（3件以上）発生している場合は、単体故障ではなく「共通基板」「電源」「ファブリック」などの上位レイヤーの異常を疑うこと。
-
-                    【対象ログサンプル】
-                    {_sample_logs}
-                    """
-
-                    _model = genai.GenerativeModel('gemma-3-4b-it')
-                    _response = _model.generate_content(_prompt)
-
-                    _learned_title = _response.text.strip()
-
-                    if _learned_title:
-                        _learned_title = _learned_title.replace('\n', ' ').replace('"', '').replace("'", "")[:30]
-                        st.session_state.auto_learned_rules[_pattern_key] = _learned_title
-                        _incident_name = _learned_title
-                    else:
-                        _incident_name = f"異常シグナル検知 ({_rule_pattern})"
-
-                except Exception as e:
-                    logger.warning(f"Auto-Rule generation failed: {e}")
-                    _incident_name = f"異常シグナル検知 ({_rule_pattern})"
-            else:
-                _incident_name = f"異常シグナル検知 ({_rule_pattern})"
+            # ★ LLM呼出を描画パスから排除: デフォルト名を使用
+            _incident_name = f"異常シグナル検知 ({_rule_pattern})"
 
     # 統計情報の計算
     _confidences = [float(p.get("confidence", 0.0)) for p in _pred_group]
