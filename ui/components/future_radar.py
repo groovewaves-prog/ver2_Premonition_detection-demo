@@ -11,7 +11,7 @@ from ui.service_tier import render_tier_gated, TIER_PHM
 logger = logging.getLogger(__name__)
 
 
-def _auto_execute_triage_commands(rec_actions: list, device_id: str, card_idx: int):
+def _auto_execute_triage_commands(rec_actions: list, device_id: str, card_idx):
     """トリアージ生成と同時に全showコマンドを自動実行し、インライン結果に格納する。"""
     from .command_popup import extract_cli_commands, simulate_command_execution
     _inline_key = f"_triage_inline_{card_idx}_{device_id}"
@@ -210,10 +210,15 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
             rec_actions = pc.get('recommended_actions', [])
             if not rec_actions:
                 # キャッシュ済みならそのまま使う（LLM呼出なし）
+                # ★ BugFix: 生成関数と同じフォールバックロジックでキャッシュキー生成
                 _injected_fr = st.session_state.get("injected_weak_signal", {})
                 _level_fr = _injected_fr.get("level", 0)
-                _triage_ck = f"_triage_pred_{_pred_device}_{pc.get('predicted_state', '')}_{_level_fr}"
+                _scenario_fr = pc.get('predicted_state', pc.get('label', ''))
+                _triage_ck = f"_triage_pred_{_pred_device}_{_scenario_fr}_{_level_fr}"
                 rec_actions = st.session_state.get(_triage_ck, [])
+
+            # ★ BugFix: inline結果キーを device_id ベースに安定化（card_idx 依存を排除）
+            _stable_card_idx = f"pred_{_pred_device}"
 
             if rec_actions:
                 with st.expander("🛠 初動トリアージ（推奨アクション）", expanded=True):
@@ -222,10 +227,10 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
                         "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
                         "🔧マークは人手作業です。"
                     )
-                    render_triage_cards(rec_actions, _pred_device, pc_idx)
+                    render_triage_cards(rec_actions, _pred_device, _stable_card_idx)
             else:
                 # トリアージ未生成 → ボタンで生成（render中にLLMを呼ばない）
-                _gen_key = f"_gen_triage_pred_{pc_idx}_{_pred_device}"
+                _gen_key = f"_gen_triage_pred_{_pred_device}"
                 if st.button(
                     f"🔍 {_pred_device} の初動トリアージを生成",
                     key=_gen_key,
@@ -235,5 +240,5 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
                     if rec_actions:
                         pc['recommended_actions'] = rec_actions
                         # ★ AI自動実行: 生成と同時に全showコマンドを事前実行
-                        _auto_execute_triage_commands(rec_actions, _pred_device, pc_idx)
+                        _auto_execute_triage_commands(rec_actions, _pred_device, _stable_card_idx)
                     st.rerun()

@@ -131,7 +131,7 @@ def render_root_cause_table(
                         "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
                         "🔧マークは人手作業です。"
                     )
-                    render_triage_cards(_rc_actions, _rc_dev, card_idx=100)
+                    render_triage_cards(_rc_actions, _rc_dev, card_idx=f"incident_{_rc_dev}")
             else:
                 # トリアージ未生成 → ボタンで生成
                 _gen_key = f"_gen_triage_incident_{_rc_dev}"
@@ -177,7 +177,7 @@ def render_root_cause_table(
 def _auto_execute_incident_triage(rec_actions: list, device_id: str):
     """障害トリアージ生成と同時に全showコマンドを自動実行する。"""
     from .command_popup import extract_cli_commands, simulate_command_execution
-    _inline_key = f"_triage_inline_100_{device_id}"
+    _inline_key = f"_triage_inline_incident_{device_id}_{device_id}"
     _results = {}
     for ra in rec_actions:
         _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
