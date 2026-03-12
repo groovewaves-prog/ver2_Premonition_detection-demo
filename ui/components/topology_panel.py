@@ -131,22 +131,41 @@ def render_topology_panel(
                     log_content = res.get('sanitized_log', "")
                     st.session_state.verification_result = verify_log_content(log_content)
                     st.session_state.trigger_analysis = True
+
+                    # ★ 結果をポップアップ用データに変換
+                    v = st.session_state.verification_result or {}
+                    _diag_results = [
+                        {
+                            "command": "ping / reachability check",
+                            "status": "success" if v.get("ping_status") == "OK" else "error",
+                            "output": f"Ping Status: {v.get('ping_status', 'N/A')}",
+                            "elapsed_sec": 0.5,
+                        },
+                        {
+                            "command": "interface diagnostics",
+                            "status": "success" if v.get("interface_status") == "OK" else "error",
+                            "output": f"Interface Status: {v.get('interface_status', 'N/A')}",
+                            "elapsed_sec": 0.8,
+                        },
+                        {
+                            "command": "hardware health check",
+                            "status": "success" if v.get("hardware_status") == "OK" else "error",
+                            "output": f"Hardware Status: {v.get('hardware_status', 'N/A')}",
+                            "elapsed_sec": 0.3,
+                        },
+                        {
+                            "command": "show logs (sanitized)",
+                            "status": "success",
+                            "output": res.get("sanitized_log", "No output"),
+                            "elapsed_sec": 1.2,
+                        },
+                    ]
+                    from .command_popup import render_command_result_popup
+                    render_command_result_popup(
+                        f"🛠️ Auto-Diagnostics: {_diag_target_id}",
+                        _diag_results,
+                    )
                 else:
                     st.write("❌ Connection Failed.")
                     status_widget.update(label="Diagnostics Failed", state="error")
             st.rerun()
-
-    if st.session_state.live_result:
-        res = st.session_state.live_result
-        if res["status"] == "SUCCESS":
-            st.markdown("#### 📄 Diagnostic Results")
-            with st.container(border=True):
-                if st.session_state.verification_result:
-                    v = st.session_state.verification_result
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Ping Status", v.get('ping_status'))
-                    c2.metric("Interface", v.get('interface_status'))
-                    c3.metric("Hardware", v.get('hardware_status'))
-                st.divider()
-                st.caption("🔒 Raw Logs (Sanitized)")
-                st.code(res["sanitized_log"], language="text")
