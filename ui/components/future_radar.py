@@ -198,6 +198,9 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
                 rec_actions = _generate_prediction_triage_lazy(pc, topology)
             if rec_actions:
                 with st.expander("🛠 初動トリアージ（推奨アクション）", expanded=True):
-                    st.caption("🕐 最初の5分: 状況把握のためのshowコマンドです。"
-                               "詳細診断 → 「確認手順を生成」 / 予防措置 → 「予防措置プランを生成」")
+                    st.caption(
+                        "🕐 最初の5分: 状況把握のためのshowコマンドです。"
+                        "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
+                        "🔧マークは人手作業です。"
+                    )
                     render_triage_cards(rec_actions, _pred_device, pc_idx)

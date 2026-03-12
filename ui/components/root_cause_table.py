@@ -126,8 +126,11 @@ def render_root_cause_table(
 
             if _rc_actions:
                 with st.expander(f"🛠 初動トリアージ: {_rc_dev}", expanded=True):
-                    st.caption("🕐 最初の5分: 状況把握のためのshowコマンドです。"
-                               "ボタン押下で対象機器にコマンドを実行し、結果をポップアップ表示します。")
+                    st.caption(
+                        "🕐 最初の5分: 状況把握のためのshowコマンドです。"
+                        "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
+                        "🔧マークは人手作業です。"
+                    )
                     render_triage_cards(_rc_actions, _rc_dev, card_idx=100)
 
     # 派生アラート（Symptom）一覧
