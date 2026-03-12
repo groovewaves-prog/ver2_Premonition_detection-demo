@@ -240,28 +240,30 @@ def check_input_limit(text: str, limit: int = 100000) -> bool:
     return estimate_tokens(text) < limit
 
 
-def rate_limited_with_retry(max_retries: int = 3, base_delay: float = 2.0):
+def rate_limited_with_retry(max_retries: int = 3, base_delay: float = 2.0,
+                           model_id: str = None):
     """
     レート制限とリトライを適用するデコレータ
-    
+
     Args:
         max_retries: 最大リトライ回数
         base_delay: 基本待機時間（秒）
+        model_id: モデル別バケットを使用する場合のモデルID
     """
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
             limiter = GlobalRateLimiter()
-            
+
             for attempt in range(max_retries + 1):
                 try:
-                    if not limiter.wait_for_slot(timeout=30):
+                    if not limiter.wait_for_slot(timeout=30, model_id=model_id):
                         if attempt < max_retries:
                             time.sleep(base_delay * (attempt + 1))
                             continue
                         raise RuntimeError("Rate limit timeout")
-                    
-                    limiter.record_request()
+
+                    limiter.record_request(model_id=model_id)
                     return func(*args, **kwargs)
                     
                 except Exception as e:
