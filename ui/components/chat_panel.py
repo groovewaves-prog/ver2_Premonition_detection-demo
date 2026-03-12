@@ -84,15 +84,21 @@ def render_chat_panel(
             if send_button and prompt:
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 if st.session_state.chat_session:
+                    from utils.sanitizer import sanitize_user_input, sanitize_for_llm
                     ci = build_ci_context_for_chat(topology, _chat_target_id) if _chat_target_id else {}
+                    # ★ サニタイズ: ユーザー入力とCI情報をマスキング
+                    _safe_prompt = sanitize_user_input(prompt, max_length=1000)
+                    _safe_ci = sanitize_for_llm(
+                        json.dumps(ci, ensure_ascii=False, indent=2), max_length=1500
+                    )
                     ci_prompt = f"""あなたはネットワーク運用（NOC/SRE）の実務者です。
 次の CI 情報と Config 抜粋を必ず参照して、具体的に回答してください。一般論だけで終わらせないでください。
 
 【CI (JSON)】
-{json.dumps(ci, ensure_ascii=False, indent=2)}
+{_safe_ci}
 
 【ユーザーの質問】
-{prompt}
+{_safe_prompt}
 
 回答ルール:
 - CI/Config に基づく具体手順・コマンド例を提示する
