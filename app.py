@@ -4,7 +4,7 @@ import time
 from utils.state import init_session_state
 from ui.sidebar import render_sidebar
 from ui.dashboard import render_site_status_board, render_triage_center
-from ui.cockpit import render_incident_cockpit
+from ui.cockpit import render_incident_cockpit, prewarm_engines
 from ui.tuning import render_tuning_dashboard
 from ui.stream_dashboard import render_stream_dashboard, _get_simulator
 
@@ -55,6 +55,9 @@ def main():
             time.sleep(1)
             st.rerun()
     else:
+        # ★ エンジン事前ウォームアップ: ダッシュボード表示中にバックグラウンドで
+        #   LogicalRCA / DigitalTwinEngine を初期化し、「詳細」押下時の待ち時間を解消
+        prewarm_engines()
         tab1, tab2 = st.tabs(["📊 拠点状態ボード", "🚨 トリアージ"])
         with tab1: render_site_status_board()
         with tab2: render_triage_center()
