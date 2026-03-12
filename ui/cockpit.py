@@ -187,8 +187,13 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     engine = _get_cached_logical_rca(topology)
 
     # 分析結果キャッシュ
+    # ★ 高速化: RCA分析のハッシュはINFO以外のアラームのみで計算
+    #   シミュレーション注入（INFO）はRCA結果に影響しないためスキップ
     _analysis_cache_key = f"_analysis_cache_{site_id}_{scenario}"
-    _alarm_hash = hash(tuple((a.device_id, a.message, a.severity) for a in alarms)) if alarms else 0
+    _alarm_hash = hash(tuple(
+        (a.device_id, a.message, a.severity) for a in alarms
+        if a.severity != "INFO"
+    )) if alarms else 0
     _cached_analysis = st.session_state.get(_analysis_cache_key)
     if _cached_analysis and _cached_analysis.get("hash") == _alarm_hash:
         analysis_results = _cached_analysis["results"]
@@ -234,10 +239,13 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 st.rerun()
 
     # 自動チューニング + 自動TP確認
-    if dt_engine:
+    # ★ 高速化: シミュレーション操作中（スライダー変更）は
+    #   auto_tuning と auto_confirm をスキップ（DB I/O 削減）
+    _sim_active = bool(st.session_state.get("injected_weak_signal"))
+    if dt_engine and not _sim_active:
         dt_engine.maybe_run_auto_tuning()
 
-    if dt_engine and scenario != "正常稼働":
+    if dt_engine and scenario != "正常稼働" and not _sim_active:
         critical_devices = {a.device_id for a in alarms if a.severity == "CRITICAL"}
         for dev_id in critical_devices:
             confirmed_count = dt_engine.forecast_auto_confirm_on_incident(
