@@ -170,14 +170,14 @@ def _stream_generate(
     for attempt in range(max_retries + 1):
         try:
             # レート制限チェック（即時判定）
-            if not limiter.wait_for_slot(timeout=30):
+            if not limiter.wait_for_slot(timeout=30, model_id=MODEL_NAME):
                 if attempt < max_retries:
                     yield "⏳ レート制限中...\n"
                     continue
                 yield "❌ レート制限タイムアウト"
                 return
             
-            limiter.record_request()
+            limiter.record_request(model_id=MODEL_NAME)
             
             # ★ストリーミング開始 - 即座にイテレート
             # temperature=0.1で出力のブレを抑制
@@ -309,9 +309,9 @@ def generate_fake_log_by_ai(scenario_name: str, target_node, api_key: str) -> st
     prompt = f"CLIログ生成。ホスト:{target_node.id} ベンダー:{vendor} シナリオ:{scenario_name}。コマンド2個と出力のみ。"
 
     try:
-        if not limiter.wait_for_slot(timeout=30):
+        if not limiter.wait_for_slot(timeout=30, model_id=MODEL_NAME):
             return "Error: Rate limit"
-        limiter.record_request()
+        limiter.record_request(model_id=MODEL_NAME)
         
         response = model.generate_content(prompt)
         result = response.text if response else "Error: No response"
@@ -340,9 +340,9 @@ def predict_initial_symptoms(scenario_name: str, api_key: str) -> Dict:
     prompt = f'シナリオ「{scenario_name}」の症状をJSON出力。キー:alarm,ping,log'
 
     try:
-        if not limiter.wait_for_slot(timeout=30):
+        if not limiter.wait_for_slot(timeout=30, model_id=MODEL_NAME):
             return {}
-        limiter.record_request()
+        limiter.record_request(model_id=MODEL_NAME)
         
         response = model.generate_content(prompt)
         text = response.text.replace("```json", "").replace("```", "").strip()
@@ -400,9 +400,9 @@ def generate_analyst_report(
 """
 
     try:
-        if not limiter.wait_for_slot(timeout=30):
+        if not limiter.wait_for_slot(timeout=30, model_id=MODEL_NAME):
             return "Error: Rate limit"
-        limiter.record_request()
+        limiter.record_request(model_id=MODEL_NAME)
         
         response = model.generate_content(
             prompt,
@@ -576,9 +576,9 @@ def generate_remediation_commands(
 """
 
     try:
-        if not limiter.wait_for_slot(timeout=30):
+        if not limiter.wait_for_slot(timeout=30, model_id=MODEL_NAME):
             return "Error: Rate limit"
-        limiter.record_request()
+        limiter.record_request(model_id=MODEL_NAME)
         
         response = model.generate_content(
             prompt,

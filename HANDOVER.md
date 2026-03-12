@@ -99,6 +99,12 @@
 - **ダッシュボード** (`dashboard.py`):
   - 「📅 N件実行中」（緑）/ 「📅 N件予定」（オレンジ）バッジ追加
 
+### 6. RateLimiter model_id 明示指定
+- `network_ops.py`: 5箇所の `wait_for_slot()` / `record_request()` に `model_id=MODEL_NAME` を追加
+  - 修正前: 全リクエストが `_default` バケットに集中（モデル別バケットが未活用）
+  - 修正後: `gemma-3-4b-it` 専用バケット（30RPM）が正しく使用される
+- `rate_limiter.py`: `rate_limited_with_retry` デコレータに `model_id` パラメータ追加
+
 ## 未完了・保留タスク
 
 ### 推奨アクション L2: 実機接続
@@ -107,6 +113,10 @@
 
 ### メンテナンスモード Phase 3: 永続化
 - 現状 session_state のみ（リロードで消失）→ DB or ファイル保存に拡張可能
+
+### UI コンポーネントの RateLimiter 統合
+- `future_radar.py`, `root_cause_table.py`, `chat_panel.py`, `diagnostic.py`, `remediation.py` は RateLimiter を経由せず直接 `generate_content()` を呼んでいる
+- これらの呼出にも rate limiter を適用すると、API 429 エラーの抑制効果がさらに向上
 
 ## 既知の問題・注意点
 - `rate_limiter.py` の `GlobalRateLimiter` はシングルトンのため、既存インスタンスがある場合は再起動が必要
@@ -122,4 +132,4 @@
 1. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認
 2. **メンテナンスウィンドウ動作確認**: ウィンドウ追加→アクティブ化→終了自動解除の一連フロー確認
 3. **推奨アクション L2**: SSH executor の接続設計（`simulate_command_execution` の差し替え）
-4. **RateLimiter のモデル別 model_id 渡し**: `network_ops.py` の各呼び出し箇所で `model_id` を明示的に渡す
+4. **UI コンポーネントの RateLimiter 統合**: future_radar.py 等の直接 generate_content 呼出に rate limiter を適用
