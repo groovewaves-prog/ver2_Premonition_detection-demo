@@ -321,10 +321,6 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
         for _cmd, _res in _inline_results.items():
             _status_icon = "✅" if _res.get("status") == "success" else "❌"
             _out = _res.get("output", "").strip()
-            _out_lines = _out.split("\n")
-            _out_preview = "\n".join(_out_lines[:6])
-            if len(_out_lines) > 6:
-                _out_preview += f"\n... ({len(_out_lines)}行)"
             _elapsed = _res.get("elapsed_sec", 0)
             _summary_parts.append(
                 f'<div style="background:#F1F8E9;border:1px solid #C5E1A5;'
@@ -335,7 +331,8 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
                 f'{_elapsed:.2f}s</span></div>'
                 f'<pre style="font-size:11px;color:#444;margin:6px 0 0 0;'
                 f'white-space:pre-wrap;line-height:1.4;background:#FAFAFA;'
-                f'padding:6px;border-radius:4px;">{_out_preview}</pre>'
+                f'padding:6px;border-radius:4px;max-height:300px;'
+                f'overflow-y:auto;">{_out}</pre>'
                 f'</div>'
             )
         _n_cmds = len(_inline_results)
