@@ -47,7 +47,7 @@ def _compute_topo_hash(topology: dict) -> str:
 # =====================================================
 # キャッシュ済みエンジン取得
 # =====================================================
-@st.cache_resource
+@st.cache_resource(show_spinner="🧠 LogicalRCA エンジン (GrayScope/Granger) をロード中...")
 def _get_cached_logical_rca(_topology):
     return LogicalRCA(_topology)
 
@@ -59,6 +59,39 @@ def _get_cached_dt_engine(site_id: str, topo_hash: str, _topology):
 # run_diagnostic の後方互換エクスポート
 # =====================================================
 from ui.components.diagnostic import run_diagnostic  # noqa: F401
+
+
+# =====================================================
+# エンジン事前ウォームアップ（ダッシュボード表示時に呼出）
+# =====================================================
+def prewarm_engines():
+    """ダッシュボード表示中にエンジンを事前初期化する。
+
+    「詳細」ボタン押下時のコールドスタート遅延を解消するため、
+    拠点状態ボード表示時に @st.cache_resource をウォームアップしておく。
+    2回目以降はキャッシュヒットで即座に返る。
+    """
+    _warmup_key = "_engines_prewarmed"
+    if st.session_state.get(_warmup_key):
+        return  # 既にウォームアップ済み
+
+    try:
+        from registry import list_sites, get_paths, load_topology
+        with st.spinner("🧠 AI分析エンジンを事前ロード中...（初回のみ）"):
+            for site_id in list_sites():
+                paths = get_paths(site_id)
+                topology = load_topology(paths.topology_path)
+                if not topology:
+                    continue
+                # LogicalRCA をウォームアップ（@st.cache_resource）
+                _get_cached_logical_rca(topology)
+                # DigitalTwinEngine をウォームアップ（@st.cache_resource）
+                topo_hash = compute_topo_hash(topology)
+                get_cached_dt_engine(site_id, topo_hash, topology)
+    except Exception as e:
+        logger.warning(f"Engine prewarm failed: {e}")
+
+    st.session_state[_warmup_key] = True
 
 
 # =====================================================
@@ -152,7 +185,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # アラーム生成（シナリオ不変ならキャッシュ利用）
     _alarm_cache_key = f"_alarm_cache_{site_id}_{scenario}"
     if _alarm_cache_key in st.session_state:
-        alarms = st.session_state[_alarm_cache_key]
+        alarms = list(st.session_state[_alarm_cache_key])  # ★ コピー: キャッシュ汚染防止
     else:
         alarms = generate_alarms_for_scenario(topology, scenario)
         st.session_state[_alarm_cache_key] = alarms
