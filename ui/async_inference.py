@@ -252,7 +252,11 @@ def get_rca_result(site_id: str, alarms: list,
     # fingerprint不一致（シナリオ切替直後）→ fallback を優先する。
     # 旧シナリオのキャッシュを返すと、障害シナリオなのに「正常稼働」と
     # 表示されるUI同期バグの原因になる。
-    if fallback_results:
+    # ★ BugFix: `is not None` で判定。空リスト [] も有効な fallback
+    #   （正常稼働時にアラーム0件 → fallback=[] は正しい結果）。
+    #   旧コード `if fallback_results:` は [] を falsy 扱いし、
+    #   stale な WAN全回線断 の結果を返すバグがあった。
+    if fallback_results is not None:
         return fallback_results, is_analyzing
 
     # fallback もない場合のみ、stale でも前回結果を返す（空表示よりまし）
