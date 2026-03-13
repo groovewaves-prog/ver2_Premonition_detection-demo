@@ -105,12 +105,15 @@ def render_root_cause_table(
     df = pd.DataFrame(df_data)
 
     st.markdown("#### 🎯 根本原因候補")
+    # 候補データの構成が変わった際にUIを強制リセットするための動的キー
+    _table_key = f"rc_table_{hash(str([c['id'] for c in root_cause_candidates]))}"
     event = st.dataframe(
         df[["順位", "ステータス", "デバイス", "原因", "確信度", "推奨アクション"]],
         use_container_width=True,
         hide_index=True,
         selection_mode="single-row",
-        on_select="rerun"
+        on_select="rerun",
+        key=_table_key
     )
 
     if event.selection and len(event.selection.rows) > 0:

@@ -13,7 +13,7 @@ def render_kpi_banner(
 ):
     """KPI メトリクスとステータスバナーを描画。返り値: (prediction_count, noise_reduction)"""
     total_alarms = len(alarms)
-    root_cause_count = len(root_cause_candidates)
+    root_cause_count = len([c for c in root_cause_candidates if c.get('id') != 'SYSTEM'])
     symptom_count = len(symptom_devices)
     unrelated_count = len(unrelated_devices)
     prediction_results = [r for r in analysis_results if r.get('is_prediction')]
