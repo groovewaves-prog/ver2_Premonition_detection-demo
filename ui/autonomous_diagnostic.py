@@ -128,6 +128,13 @@ _DIAGNOSTIC_COMMAND_MAP = {
         ("show ip interface brief", "インターフェースの状態を確認"),
         ("ping 8.8.8.8 repeat 10", "外部への疎通をパケットロス率で確認"),
     ],
+    # サイレント障害（L2レベル）
+    "silent": [
+        ("show mac address-table", "MACアドレステーブルの異常（エントリ消失・フラッピング）を確認"),
+        ("show spanning-tree", "STPトポロジー変更やブロッキングポートの有無を確認"),
+        ("show interfaces counters errors", "CRC/入力エラーなどエラーカウンタの蓄積を確認"),
+        ("show vlan brief", "VLAN設定の不整合や欠落を確認"),
+    ],
     # フォールバック（汎用）
     "_default": [
         ("show ip interface brief", "全インターフェースの状態を一覧確認"),
@@ -279,6 +286,20 @@ def analyze_command_results(
         if "cpu" in cmd.lower() and any(w in output for w in ["high", "99%", "98%", "97%"]):
             insights.append(f"🔴 {cmd}: CPU高負荷を検出")
 
+        # サイレント障害（L2レベル）
+        if "mac address-table" in cmd.lower() and "flapping" in output:
+            insights.append(f"🔴 {cmd}: MACアドレスフラッピングを検出 — L2ループまたはポート不安定の疑い")
+        if "spanning-tree" in cmd.lower():
+            if "topology change" in output.lower():
+                insights.append(f"🔴 {cmd}: STPトポロジー変更を検出 — ネットワーク不安定の疑い")
+            if " blk " in output.lower():
+                insights.append(f"🟡 {cmd}: ブロッキングポートを検出 — 通信経路の遮断の可能性")
+        if "counters errors" in cmd.lower():
+            if any(w in output for w in ["crc", "input errors", "output errors"]):
+                insights.append(f"🟡 {cmd}: インターフェースエラーカウンタの蓄積を検出")
+        if "vlan" in cmd.lower() and "no active uplink" in output.lower():
+            insights.append(f"🔴 {cmd}: アクティブなアップリンクが存在しないVLANを検出 — 通信断の原因")
+
     if not insights:
         insights.append(f"ラウンド{round_num}: 明確な異常パターンは検出されませんでした")
 
@@ -419,11 +440,32 @@ def run_autonomous_diagnostic(
     has_critical = any("🔴" in i for i in all_insights)
     has_warning = any("🟡" in i or "⚠" in i for i in all_insights)
     has_normal = any("✅" in i for i in all_insights)
+    # サイレント障害判定: アラームラベルに "silent" を含む場合、
+    # ハードウェア正常だけで「正常」と結論してはならない
+    _is_silent = "silent" in alarm_label.lower()
 
     if has_critical:
-        conclusion_parts.append("重大な異常を検出しました。即座の対応が必要です。")
+        if _is_silent:
+            conclusion_parts.append(
+                "サイレント障害の兆候を検出しました。L2レベル（MAC/STP/VLAN）に異常があり、"
+                "配下デバイスへの通信影響が発生している可能性があります。即座の対応を推奨します。"
+            )
+        else:
+            conclusion_parts.append("重大な異常を検出しました。即座の対応が必要です。")
     elif has_warning:
-        conclusion_parts.append("警告レベルの異常を検出しました。経過観察または予防的対処を推奨します。")
+        if _is_silent:
+            conclusion_parts.append(
+                "サイレント障害の疑いがあります。ハードウェアは正常ですが、"
+                "L2レベルで警告兆候を検出しました。詳細調査を推奨します。"
+            )
+        else:
+            conclusion_parts.append("警告レベルの異常を検出しました。経過観察または予防的対処を推奨します。")
+    elif _is_silent:
+        # サイレント障害アラームが出ているのに全て正常 → 潜在的リスクを警告
+        conclusion_parts.append(
+            "サイレント障害の疑いが報告されています。CLIレベルでは明確な異常を検出できませんでしたが、"
+            "配下デバイスとの疎通確認およびトラフィック監視を推奨します。"
+        )
     elif has_normal:
         conclusion_parts.append("主要指標は正常範囲内です。引き続き監視を継続してください。")
     else:
@@ -511,12 +553,15 @@ def _render_thought_log(session: DiagnosticSession):
     """思考ログを時系列で表示する。"""
     # 結論サマリー
     if session.conclusion:
-        has_critical = "重大" in session.conclusion
-        has_warning = "警告" in session.conclusion
+        _is_silent_conclusion = "サイレント障害" in session.conclusion
+        has_critical = "重大" in session.conclusion or ("サイレント障害の兆候" in session.conclusion)
+        has_warning = "警告" in session.conclusion or ("サイレント障害の疑い" in session.conclusion)
         if has_critical:
             st.error(f"🔴 **診断結論**: {session.conclusion}")
         elif has_warning:
             st.warning(f"🟡 **診断結論**: {session.conclusion}")
+        elif _is_silent_conclusion:
+            st.warning(f"🟣 **診断結論**: {session.conclusion}")
         else:
             st.success(f"✅ **診断結論**: {session.conclusion}")
 

@@ -75,6 +75,42 @@ _DEMO_COMMAND_OUTPUTS = {
             "10.0.0.2        4 65001    5000    4800     1234    0    0 30d12h         50\n"
             "10.0.0.3        4 65002    3000    2900     1234    0    0 15d06h         30"
         ),
+        # サイレント障害検出用コマンド出力（異常状態をシミュレート）
+        "show mac address-table": (
+            "Mac Address Table\n"
+            "-------------------------------------------\n"
+            "Vlan    Mac Address       Type        Ports\n"
+            "----    -----------       --------    -----\n"
+            " 10     0050.56ff.0001    DYNAMIC     Gi0/1\n"
+            " 10     0050.56ff.0002    DYNAMIC     Gi0/1  ← flapping detected\n"
+            " 20     0050.56ff.0010    DYNAMIC     Gi0/2\n"
+            "Total Mac Addresses for this criterion: 3\n"
+            "WARNING: MAC address flapping detected between Gi0/1 and Gi0/3"
+        ),
+        "show spanning-tree": (
+            "VLAN0010\n"
+            "  Spanning tree enabled protocol ieee\n"
+            "  Root ID    Priority    32778\n"
+            "             Address     0050.56ff.aa01\n"
+            "             This bridge is the root\n"
+            "  Bridge ID  Priority    32778\n"
+            "             Address     0050.56ff.aa01\n"
+            "Interface        Role Sts Cost      Prio.Nbr Type\n"
+            "---------------- ---- --- --------- -------- ------\n"
+            "Gi0/1            Desg BLK 4         128.1    P2p\n"
+            "Gi0/2            Desg FWD 4         128.2    P2p\n"
+            "Gi0/3            Desg BLK 4         128.3    P2p\n"
+            "WARNING: Topology Change detected — 3 changes in last 60 seconds"
+        ),
+        "show vlan brief": (
+            "VLAN Name                             Status    Ports\n"
+            "---- -------------------------------- --------- ------\n"
+            "1    default                          active    Gi0/4\n"
+            "10   DATA                             active    Gi0/1, Gi0/2\n"
+            "20   VOICE                            active    Gi0/3\n"
+            "99   MGMT                             active\n"
+            "NOTE: VLAN 10 has no active uplink port — traffic isolation possible"
+        ),
     },
     "request": {
         "default": (
