@@ -1,53 +1,56 @@
 # Session Handover
 
 ## 日付・ブランチ
-- **日付**: 2026-03-12
+- **日付**: 2026-03-13
 - **ブランチ**: `claude/fix-triage-display-bug-EwNlo`
 
 ## 完了したタスク（今回セッション）
 
-### 1. 劣化進行度0でトリアージが残留表示される問題の根本修正（3度目報告の最終修正）
+### パフォーマンス最適化: 3つのエッセンス実装
 
-#### 根本原因（真因）
-`cockpit.py` が `st.session_state[_alarm_cache_key]` の参照をそのまま取得し、
-シミュレーション用 INFO アラームを `.append()` で直接追加していた。
-これにより、キャッシュされたアラームリストが恒久的に汚染され：
-- level=0 に戻しても、キャッシュ済みアラームリストに INFO アラームが残留
-- `_alarm_hash` が 0 にならず、`analysis_results` に空が設定されない
-- `prediction_pipeline.py` が残留 INFO アラームを基に予測を生成し続ける
+レビュー指摘に基づき、画面表示の異常な遅延を解消するための3つの構造的改善を実施。
 
-これは `prediction_pipeline.py` の `analysis_results` キャッシュ汚染（前回修正済み）と
-同じカテゴリの問題：**session_state に格納されたミュータブルリストの参照を直接変更している**。
+#### エッセンス1: エンジンの完全Singleton化（engine_cache.py）
 
-#### 修正内容
-- `cockpit.py` (line 188): `alarms = st.session_state[_alarm_cache_key]` → `alarms = list(st.session_state[_alarm_cache_key])`
-  - キャッシュからコピーを取得し、以降の `.append()` がキャッシュを汚染しないようにした
+**問題**: `get_cached_dt_engine` / `_get_cached_logical_rca` に巨大なtopology辞書を引数として渡しており、Streamlitのキャッシュ機構が毎回ハッシュ計算に時間を取られていた。
 
-### 2.「詳細」ボタン押下時のコールドスタート遅延の対策
+**修正内容**:
+- `get_cached_dt_engine(site_id, topo_hash)` — 引数を軽量な文字列のみに変更
+- `get_cached_logical_rca(site_id, topo_hash)` — 新規追加。LogicalRCA も同様に軽量キー化
+- `get_topo_hash_cached(site_id)` — topo_hash の session_state キャッシュ
+- `_load_topology_for_site(site_id)` — トポロジー読み込みをキャッシュ関数内部に隠蔽
+- `prewarm_engines()` も軽量キーのみでウォームアップするよう更新
+- レガシー `streamlit_cache.py` も同様に辞書引数を排除
 
-#### 根本原因
-リブート直後に「詳細」ボタンを押すと、以下が同期的に初期化される：
-1. `LogicalRCA.__init__` → `DigitalTwinEngine("default")` 生成（ChromaDB + SentenceTransformer + GNN + GrayScope + Granger）
-2. `get_cached_dt_engine(site_id)` → 別の `DigitalTwinEngine(site_id)` 生成
-3. `analyze()` 初回実行 → GrayScope + Granger フル分析
+#### エッセンス2: タブ切り替え時の空回し排除（app.py）
 
-これらは全て `@st.cache_resource` でキャッシュされるため初回のみだが、
-初回は数十秒の待ち時間が発生していた。
+**問題**: `tab_ops` と `tab_tune` の両方の render 関数が毎回実行され、非表示タブの重い計算（推論等）も裏で走っていた。
 
-#### 修正内容
-- `cockpit.py`: `prewarm_engines()` 関数を追加
-  - ダッシュボード（拠点状態ボード）表示時に全拠点の `LogicalRCA` + `DigitalTwinEngine` を事前初期化
-  - スピナー表示（「🧠 AI分析エンジンを事前ロード中...（初回のみ）」）でユーザーに進捗を通知
-  - `session_state["_engines_prewarmed"]` で2回目以降はスキップ
-- `app.py`: ダッシュボード表示パスで `prewarm_engines()` を呼出
-- `cockpit.py`: `_get_cached_logical_rca` に `show_spinner` パラメータを追加
+**修正内容**:
+- Tuning タブは「チューニング開始」ボタンで明示的にアクティベートされるまで `render_tuning_dashboard()` を呼ばない
+- `session_state[_tune_tab_activated_{site_id}]` フラグで計算の発火を制御
 
-#### 効果
-- ダッシュボード表示中にエンジンが事前ロードされるため、「詳細」ボタン押下時は即座にコックピットが表示される
-- 初回のみスピナーが表示され、2回目以降はキャッシュヒットで即座
+#### エッセンス3: グローバル推論結果キャッシュ（engine_cache.py）
+
+**問題**: 画面遷移のたびにベイズ推論やGNNの計算が再実行されていた。
+
+**修正内容**:
+- `cached_rca_analyze(site_id, topo_hash, alarms)` — RCA分析結果をアラームハッシュベースでキャッシュ
+- `cached_predict_api(dt_engine, device_id, ...)` — predict_api の結果をキャッシュ
+- `prediction_pipeline.py` をキャッシュ層経由に書き換え、重複キャッシュロジックを削除
+
+### 修正ファイル一覧
+| ファイル | 変更内容 |
+|----------|----------|
+| `ui/engine_cache.py` | 3つのエッセンスの中核実装 |
+| `ui/cockpit.py` | 軽量キーAPI への移行 + RCA分析キャッシュ層利用 |
+| `ui/prediction_pipeline.py` | cached_predict_api 経由に書き換え |
+| `app.py` | タブ遅延読み込み制御 |
+| `streamlit_cache.py` | レガシー互換の軽量キー化 |
 
 ## 過去セッションの完了タスク（参考）
-- 劣化進行度0でトリアージが残留表示される問題の対策（analysis_results キャッシュ汚染修正）
+- 劣化進行度0でトリアージが残留表示される問題の根本修正（アラームキャッシュ汚染）
+- 「詳細」ボタン押下時のコールドスタート遅延対策（prewarm_engines）
 - 劣化進行度を上げてもトリアージ内容が変わらない問題の修正
 - コマンド実行結果の全行表示 + スクロール化
 - 描画遅延の根本対策（@st.fragment + INFOアラーム除外ハッシュ）
@@ -55,9 +58,6 @@
 - Phase 1/2: 機器単位メンテナンスモード + 時間帯指定
 - gemini-2.0-flash-exp → gemma-3-12b-it 全置換 + レートリミッター全面適用
 - APIバッチ化 + 全LLM呼出サニタイズ
-- トリアージキャッシュキー不一致修正 + インライン結果キー安定化
-- 全コマンド一括実行の結果表示
-- stream_dashboard.py リファクタリング
 - cockpit.py リファクタリング + DT予兆パイプライン分離
 - L1トリアージ: AI自動実行
 
@@ -71,7 +71,7 @@
 
 ### Cython コンパイル（追加高速化オプション）
 - `inference_engine.py`, `digital_twin_pkg/engine.py` 等の計算集約モジュールを Cython 化
-- 現時点では @st.fragment + prewarm による描画最適化で十分。計算ボトルネックが顕在化した場合に検討
+- 現時点では @st.fragment + prewarm + キャッシュ層による描画最適化で十分
 
 ## 既知の問題・注意点
 - `rate_limiter.py` の `GlobalRateLimiter` はシングルトンのため、既存インスタンスがある場合は再起動が必要
@@ -83,7 +83,7 @@
 
 ## 次セッションへの推奨アクション
 1. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認
-2. **トリアージ表示確認**: 劣化進行度 0→3→5→0 と操作し、トリアージの表示・非表示・内容変更を確認
-3. **コールドスタート確認**: リブート後、ダッシュボードでスピナーが表示され、「詳細」押下時に即座に表示されることを確認
-4. **推奨アクション L2**: SSH executor の接続設計
-5. **メンテナンスモード永続化**: DB保存の設計・実装
+2. **パフォーマンス確認**: タブ切り替え・シナリオ変更時の体感速度を測定
+3. **トリアージ表示確認**: 劣化進行度 0→3→5→0 と操作し、トリアージの表示・非表示・内容変更を確認
+4. **Tuning タブ確認**: 「チューニング開始」ボタンの動作確認
+5. **推奨アクション L2**: SSH executor の接続設計
