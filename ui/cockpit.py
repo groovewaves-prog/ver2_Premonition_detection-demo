@@ -25,6 +25,9 @@ from ui.engine_cache import (
     compute_topo_hash, get_cached_dt_engine, get_cached_logical_rca,
     get_topo_hash_cached, cached_rca_analyze,
 )
+from ui.async_inference import (
+    submit_rca_task, get_rca_result, is_any_analyzing,
+)
 
 # コンポーネントインポート
 from ui.components.helpers import build_ci_context_for_chat
@@ -222,8 +225,25 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     current_topo_hash = get_topo_hash_cached(site_id)
     engine = _get_cached_logical_rca_by_site(site_id, current_topo_hash)
 
-    # ★ エッセンス3: RCA分析結果をキャッシュ層経由で取得
-    analysis_results = cached_rca_analyze(site_id, current_topo_hash, alarms)
+    # ★ エッセンス4: 非同期推論（ゼロ・ウェイティング）
+    #   バックグラウンドで RCA 分析をキックし、結果はキャッシュから即座に取得。
+    #   計算中は前回結果をフォールバック表示し、完了後に最新結果に切り替わる。
+    submit_rca_task(site_id, current_topo_hash, alarms)
+
+    # フォールバック: @st.cache_data にキャッシュ済みの結果があればそれを使う
+    _fallback = None
+    try:
+        _fallback = cached_rca_analyze(site_id, current_topo_hash, alarms)
+    except Exception:
+        pass
+
+    analysis_results, _is_analyzing = get_rca_result(
+        site_id, alarms, fallback_results=_fallback
+    )
+
+    # デフォルト結果（初回で何もない場合）
+    if not analysis_results:
+        analysis_results = cached_rca_analyze(site_id, current_topo_hash, alarms)
 
     # =====================================================
     # DigitalTwinEngine 初期化
@@ -346,6 +366,10 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             + (f" — {_suppressed_count}件のアラームを非表示" if _suppressed_count else "")
             + _active_win_info
         )
+
+    # 0.9 AI分析中インジケーター
+    if _is_analyzing or is_any_analyzing(site_id):
+        st.info("🧠 **AI分析中...** バックグラウンドで推論を実行しています。完了次第、結果が更新されます。")
 
     # 1. KPIバナー
     prediction_count, noise_reduction = render_kpi_banner(
