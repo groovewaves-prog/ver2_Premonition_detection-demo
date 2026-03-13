@@ -44,8 +44,10 @@ def main():
         if stream_visible:
             needs_refresh = render_stream_dashboard()
 
-        # ★ エッセンス2: タブ切り替え時の「空回し」排除
-        #   session_state でアクティブタブを追跡し、非表示タブの重い計算をスキップ
+        # ★ エッセンス2: タブ切り替え時の「空回し」完全排除
+        #   session_state でアクティブタブを追跡し、選択中のタブのみ重い計算を実行。
+        #   Streamlit の仕様上 with tab: ブロック内も裏で実行されるため、
+        #   if ガードで処理の発火そのものを制御する。
         _TAB_NAMES = ["🚀 Incident Cockpit", "🔧 Digital Twin Tuning"]
         _tab_key = "_active_ops_tab"
         if _tab_key not in st.session_state:
@@ -53,27 +55,22 @@ def main():
 
         tab_ops, tab_tune = st.tabs(_TAB_NAMES)
         with tab_ops:
-            # タブ選択フラグ: Cockpit タブ内のボタンでアクティブ判定
-            if st.session_state.get(_tab_key) != _TAB_NAMES[0]:
-                _switch_col = st.columns([1, 4])
-                with _switch_col[0]:
-                    if st.button("📊 分析を実行", key="_activate_cockpit", type="primary"):
-                        st.session_state[_tab_key] = _TAB_NAMES[0]
-                        st.rerun()
-            # Cockpit は常に描画（メインタブのため）
-            render_incident_cockpit(active_site, api_key)
+            if st.session_state[_tab_key] == _TAB_NAMES[0]:
+                render_incident_cockpit(active_site, api_key)
+            else:
+                st.info("🚀 「Cockpit を表示」を押すとインシデント分析を実行します。")
+                if st.button("🚀 Cockpit を表示", key="_activate_cockpit", type="primary"):
+                    st.session_state[_tab_key] = _TAB_NAMES[0]
+                    st.rerun()
 
         with tab_tune:
-            # ★ エッセンス2: Tuning タブは選択時のみ重い計算を実行
-            _tune_activated_key = f"_tune_tab_activated_{active_site}"
-            if not st.session_state.get(_tune_activated_key):
+            if st.session_state[_tab_key] == _TAB_NAMES[1]:
+                render_tuning_dashboard(active_site)
+            else:
                 st.info("🔧 「チューニング開始」を押すと Digital Twin の詳細分析が実行されます。")
                 if st.button("🔧 チューニング開始", key="_activate_tuning", type="primary"):
-                    st.session_state[_tune_activated_key] = True
                     st.session_state[_tab_key] = _TAB_NAMES[1]
                     st.rerun()
-            else:
-                render_tuning_dashboard(active_site)
 
         # ストリーム実行中: 自動リフレッシュ（間隔を短縮して俊敏性向上）
         if stream_running and needs_refresh:

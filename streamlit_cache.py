@@ -1,56 +1,40 @@
 # streamlit_cache.py
-# ★ レガシー互換: 新しい ui/engine_cache.py に委譲
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 廃止: エンジンキャッシュは ui/engine_cache.py に一本化。
+# このファイルは後方互換のリダイレクトのみ提供する。
+# 新規コードでは ui.engine_cache.get_dt_engine_for_site() を使用すること。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 import logging
 
 logger = logging.getLogger(__name__)
 
-try:
-    import streamlit as st
-    HAS_STREAMLIT = True
-except ImportError:
-    HAS_STREAMLIT = False
 
-try:
-    from digital_twin_pkg import DigitalTwinEngine
-    HAS_DT = True
-except ImportError:
-    HAS_DT = False
+def get_digital_twin_engine(topology: dict, children_map: dict):
+    """後方互換エントリポイント → ui.engine_cache に委譲。
 
-
-if HAS_STREAMLIT and HAS_DT:
-    @st.cache_resource
-    def _load_digital_twin_singleton(_topology_hash: str):
-        """
-        Streamlit process-level cache for the engine.
-        ★ エッセンス1: 引数は軽量な文字列のみ（重い辞書を排除）。
-        """
-        logger.info("Initializing Digital Twin Engine (V45 - cached)...")
-        from registry import get_paths, load_topology, list_sites
-        # デフォルトサイトのトポロジーを内部で読み込み
-        sites = list_sites()
-        site_id = sites[0] if sites else "A"
-        paths = get_paths(site_id)
-        topology = load_topology(paths.topology_path)
-        children_map = {}
-        for nid, n in topology.items():
-            pid = n.get('parent_id') if isinstance(n, dict) else getattr(n, 'parent_id', None)
-            if pid:
-                children_map.setdefault(pid, []).append(nid)
-        return DigitalTwinEngine(topology, children_map, tenant_id="default")
-
-    def get_digital_twin_engine(topology: dict, children_map: dict):
-        """
-        Entry point from app.py.
-        ★ エッセンス1: トポロジーのハッシュのみをキーとして渡す。
-        """
-        import hashlib, json
-        topo_hash = hashlib.md5(
-            json.dumps(sorted(topology.keys())).encode()
-        ).hexdigest()
-        return _load_digital_twin_singleton(topo_hash)
-
-else:
-    def get_digital_twin_engine(topology: dict, children_map: dict):
-        if HAS_DT:
+    ★ 注意: この関数は非推奨です。
+    新規コードでは ui.engine_cache.get_dt_engine_for_site(site_id) を使用してください。
+    独自の @st.cache_resource を持たず、ui/engine_cache.py の Singleton に委譲するため
+    メモリの二重持ちは発生しません。
+    """
+    try:
+        from ui.engine_cache import compute_topo_hash, get_cached_dt_engine
+        topo_hash = compute_topo_hash(topology)
+        # topology のキーから site_id を推定（後方互換）
+        site_id = "default"
+        try:
+            from registry import list_sites
+            sites = list_sites()
+            if sites:
+                site_id = sites[0]
+        except Exception:
+            pass
+        return get_cached_dt_engine(site_id, topo_hash)
+    except Exception as e:
+        logger.warning("streamlit_cache fallback: %s", e)
+        # フォールバック: 直接生成（キャッシュなし）
+        try:
+            from digital_twin_pkg import DigitalTwinEngine
             return DigitalTwinEngine(topology, children_map, tenant_id="default")
-        return None
+        except Exception:
+            return None
