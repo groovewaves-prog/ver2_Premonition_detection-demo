@@ -25,6 +25,7 @@ def render_topology_panel(
     engine,  # LogicalRCA engine
     scenario: str,
     api_key: Optional[str],
+    symptom_devices: Optional[List[dict]] = None,
 ):
     """左カラム全体を描画: トポロジーマップ + 影響伝搬 + AI学習ルール + Auto-Diagnostics"""
 
@@ -46,13 +47,18 @@ def render_topology_panel(
             if not _impact_data:
                 _impact_data = _compute_downstream_fallback(topology, _impact_rc_id)
 
-            if _impact_data:
+            # 派生アラート（symptom）が存在する場合のみ影響伝搬マップを表示
+            _has_symptoms = bool(symptom_devices)
+            if _impact_data and _has_symptoms:
                 with st.expander(f"🌊 影響伝搬マップ: {_impact_rc_id} → {len(_impact_data)}台", expanded=True):
                     render_impact_graph(
                         _impact_rc_id, _impact_data, topology,
                         analysis_results=analysis_results,
                         alarms=alarms,
                     )
+            elif _impact_data and not _has_symptoms:
+                with st.expander(f"🌊 影響伝搬マップ: {_impact_rc_id}", expanded=False):
+                    st.info("✅ 配下デバイスへの影響はありません（冗長系が引き継ぎ中）")
     except Exception as _impact_err:
         logger.warning(f"影響伝搬マップ描画エラー: {_impact_err}")
 
