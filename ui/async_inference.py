@@ -249,12 +249,15 @@ def get_rca_result(site_id: str, alarms: list,
     if cached and cached.fingerprint == fingerprint and not cached.is_stale:
         return cached.results, False
 
-    # キャッシュミス or stale → フォールバック（前回結果 or デフォルト）
-    if cached:
-        return cached.results, is_analyzing  # stale でも前回結果を返す
-
+    # fingerprint不一致（シナリオ切替直後）→ fallback を優先する。
+    # 旧シナリオのキャッシュを返すと、障害シナリオなのに「正常稼働」と
+    # 表示されるUI同期バグの原因になる。
     if fallback_results:
         return fallback_results, is_analyzing
+
+    # fallback もない場合のみ、stale でも前回結果を返す（空表示よりまし）
+    if cached:
+        return cached.results, is_analyzing
 
     return [], is_analyzing
 
