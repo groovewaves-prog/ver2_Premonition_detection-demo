@@ -115,30 +115,50 @@ def get_dt_engine_for_site(site_id: str = None):
 
 
 # =====================================================
-# ★ エッセンス3: 推論結果キャッシュ層
+# ★ 推論結果キャッシュ層（@st.cache_data + TTL）
+# =====================================================
+#
+# 設計方針:
+#   - @st.cache_data: 計算結果（データ）のキャッシュに使用
+#     （@st.cache_resource はエンジン等の重いオブジェクト用）
+#   - 入力の「指紋（フィンガープリント）」を軽量な文字列で作成し、
+#     キャッシュキーとして使用。入力が変わらなければ計算をスキップ。
+#   - TTL を設定し、古い情報が残り続けるのを防止。
+#   - エンジンは @st.cache_resource で保持された Singleton を内部で取得。
 # =====================================================
 
-def cached_rca_analyze(site_id: str, topo_hash: str, alarms: list) -> list:
-    """RCA分析結果をキャッシュする窓口関数。
 
-    アラームのハッシュが同一なら前回の結果を即座に返す。
+def compute_alarm_fingerprint(alarms: list) -> str:
+    """アラームリストの指紋（フィンガープリント）を計算する。
+
+    推論関数への入力が前回と同じかどうかを高速に判定するための軽量ハッシュ。
     ★ INFO アラームは RCA 結果に影響しないためハッシュから除外。
     """
-    _alarm_hash = hash(tuple(
+    if not alarms:
+        return "empty"
+    _sig = tuple(
         (a.device_id, a.message, a.severity) for a in alarms
         if a.severity != "INFO"
-    )) if alarms else 0
+    )
+    return hashlib.md5(str(_sig).encode()).hexdigest()
 
-    _cache_key = f"_analysis_cache_{site_id}"
-    _cached = st.session_state.get(_cache_key)
-    if _cached and _cached.get("hash") == _alarm_hash and _cached.get("topo") == topo_hash:
-        return _cached["results"]
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _rca_analyze_cached(site_id: str, topo_hash: str, alarm_fingerprint: str,
+                        _alarm_tuples: tuple) -> list:
+    """RCA分析結果を @st.cache_data でキャッシュする内部関数。
+
+    ★ @st.cache_data(ttl=60): 60秒間キャッシュ。
+      入力（alarm_fingerprint）が変わらなければ即座に前回結果を返す。
+      60秒経過後は自動的に再計算が走り、最新の推論結果に更新される。
+
+    引数は全て hashable な文字列/タプルのみ。
+    エンジンは内部で Singleton を取得する。
+    """
     engine = get_cached_logical_rca(site_id, topo_hash)
-    if alarms:
-        results = engine.analyze(alarms)
-    else:
-        results = [{
+
+    if not _alarm_tuples:
+        return [{
             "id": "SYSTEM",
             "label": "正常稼働",
             "prob": 0.0,
@@ -147,33 +167,47 @@ def cached_rca_analyze(site_id: str, topo_hash: str, alarms: list) -> list:
             "reason": "アラームなし"
         }]
 
-    st.session_state[_cache_key] = {
-        "hash": _alarm_hash,
-        "topo": topo_hash,
-        "results": results,
-    }
-    return results
+    # Alarm オブジェクトを再構築して analyze に渡す
+    from alarm_generator import Alarm
+    alarms = [
+        Alarm(device_id=t[0], message=t[1], severity=t[2], is_root_cause=t[3])
+        for t in _alarm_tuples
+    ]
+    return engine.analyze(alarms)
 
 
-def cached_predict_api(dt_engine, device_id: str, combined_msg: str,
-                       site_id: str, source: str, sim_level: int,
-                       signal_count: int, api_key=None) -> list:
-    """predict_api の結果をキャッシュする窓口関数。
+def cached_rca_analyze(site_id: str, topo_hash: str, alarms: list) -> list:
+    """RCA分析の窓口関数。
 
-    device_id + sim_level + メッセージハッシュが同一なら前回結果を即座に返す。
+    アラームリストを指紋化し、@st.cache_data 経由でキャッシュされた結果を返す。
+    呼び出し側はアラームリストをそのまま渡すだけでよい。
     """
-    _cache_key_pred = "dt_prediction_cache"
-    if _cache_key_pred not in st.session_state:
-        st.session_state[_cache_key_pred] = {}
+    fingerprint = compute_alarm_fingerprint(alarms)
+    # Alarm を hashable なタプルに変換（@st.cache_data の引数制約）
+    _alarm_tuples = tuple(
+        (a.device_id, a.message, a.severity, a.is_root_cause)
+        for a in alarms
+    ) if alarms else ()
+    return _rca_analyze_cached(site_id, topo_hash, fingerprint, _alarm_tuples)
 
-    _msg_hash = hash(combined_msg[:200])
-    _ck = f"v4_{device_id}|{sim_level}|{_msg_hash}"
 
-    _cached = st.session_state[_cache_key_pred].get(_ck)
-    if _cached is not None:
-        return _cached
+@st.cache_data(ttl=120, show_spinner=False)
+def _predict_api_cached(site_id: str, topo_hash: str,
+                        device_id: str, msg_fingerprint: str,
+                        combined_msg: str, source: str,
+                        sim_level: int, signal_count: int) -> list:
+    """predict_api 結果を @st.cache_data でキャッシュする内部関数。
 
+    ★ @st.cache_data(ttl=120): 120秒間キャッシュ。
+      予測は RCA より変化が少ないため、やや長めの TTL を設定。
+      device_id + sim_level + メッセージ指紋が同一なら即座に前回結果を返す。
+
+    引数は全て hashable な文字列/数値のみ。
+    エンジンは内部で Singleton を取得する。
+    """
     import time as _time
+    dt_engine = get_cached_dt_engine(site_id, topo_hash)
+
     _resp = dt_engine.predict_api({
         "tenant_id":       site_id,
         "device_id":       device_id,
@@ -187,15 +221,20 @@ def cached_predict_api(dt_engine, device_id: str, combined_msg: str,
         }
     })
 
-    _preds = _resp.get("predictions", []) if _resp.get("ok") else []
+    return _resp.get("predictions", []) if _resp.get("ok") else []
 
-    st.session_state[_cache_key_pred][_ck] = _preds
 
-    # キャッシュサイズ制限
-    _cache = st.session_state[_cache_key_pred]
-    if len(_cache) > 20:
-        _keys = list(_cache.keys())
-        for _old_k in _keys[:10]:
-            _cache.pop(_old_k, None)
+def cached_predict_api(dt_engine, device_id: str, combined_msg: str,
+                       site_id: str, source: str, sim_level: int,
+                       signal_count: int, api_key=None) -> list:
+    """predict_api の窓口関数。
 
-    return _preds
+    メッセージを指紋化し、@st.cache_data 経由でキャッシュされた結果を返す。
+    dt_engine 引数は後方互換のため残すが、内部では Singleton を使用する。
+    """
+    topo_hash = get_topo_hash_cached(site_id)
+    msg_fingerprint = hashlib.md5(combined_msg[:500].encode()).hexdigest()
+    return _predict_api_cached(
+        site_id, topo_hash, device_id, msg_fingerprint,
+        combined_msg, source, sim_level, signal_count,
+    )
