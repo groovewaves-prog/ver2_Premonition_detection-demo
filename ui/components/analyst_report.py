@@ -8,6 +8,7 @@ from network_ops import generate_analyst_report_streaming
 from .helpers import st_html, hash_text
 from .report_builders import build_prediction_report_scenario
 from ui.service_tier import render_tier_gated, tier_has_access, TIER_PHM, TIER_FULL
+from ui.autonomous_diagnostic import get_thought_log_for_llm, get_diagnostic_session
 
 
 def render_analyst_report(
@@ -120,6 +121,28 @@ def render_analyst_report(
             if _gs_rec:
                 st.caption(f"💡 推奨: {_gs_rec}")
 
+    # ★ エッセンス6: AI自律診断の思考ログ表示
+    _diag_session = get_diagnostic_session(cand.get("id", ""))
+    if _diag_session and _diag_session.is_complete:
+        with st.expander("🧠 AI診断プロセス（思考ログ）", expanded=False):
+            for _step in _diag_session.steps:
+                _step_icons = {
+                    "plan": "🧠", "execute": "⚡",
+                    "analyze": "🔍", "conclude": "📋",
+                }
+                _icon = _step_icons.get(_step.step_type, "❓")
+                st.markdown(
+                    f"<div style='font-size:13px;padding:2px 0;'>"
+                    f"{_icon} <b>R{_step.round_num}</b>: {_step.description}</div>",
+                    unsafe_allow_html=True,
+                )
+                if _step.insights:
+                    for _ins in _step.insights:
+                        st.markdown(
+                            f"<div style='font-size:12px;color:#555;padding:1px 0 1px 20px;'>{_ins}</div>",
+                            unsafe_allow_html=True,
+                        )
+
     if is_pred:
         st.caption(
             "📋 **ステップ②**: 初動トリアージの次に実施する詳細診断。"
@@ -137,6 +160,11 @@ def render_analyst_report(
                 report_container = st.empty()
                 target_conf = load_config_by_id(cand['id'])
                 verification_context = cand.get("verification_log", "特になし")
+
+                # ★ 思考ログをレポートコンテキストに注入
+                _diag_log = get_thought_log_for_llm(cand["id"])
+                if _diag_log:
+                    verification_context = f"{verification_context}\n\n{_diag_log}"
 
                 t_node = topology.get(cand["id"])
                 t_node_dict = {

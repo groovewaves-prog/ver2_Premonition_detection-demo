@@ -5,6 +5,7 @@ from typing import Optional
 
 from utils.llm_helper import generate_content_with_retry
 from .helpers import build_ci_context_for_chat
+from ui.autonomous_diagnostic import get_thought_log_for_llm
 
 try:
     import google.generativeai as genai
@@ -91,12 +92,19 @@ def render_chat_panel(
                     _safe_ci = sanitize_for_llm(
                         json.dumps(ci, ensure_ascii=False, indent=2), max_length=1500
                     )
+                    # ★ 思考ログをチャットコンテキストに注入
+                    _diag_context = ""
+                    if _chat_target_id:
+                        _diag_log = get_thought_log_for_llm(_chat_target_id)
+                        if _diag_log:
+                            _diag_context = f"\n\n【AI自律診断ログ】\n{_diag_log}\n"
+
                     ci_prompt = f"""あなたはネットワーク運用（NOC/SRE）の実務者です。
 次の CI 情報と Config 抜粋を必ず参照して、具体的に回答してください。一般論だけで終わらせないでください。
 
 【CI (JSON)】
 {_safe_ci}
-
+{_diag_context}
 【ユーザーの質問】
 {_safe_prompt}
 
