@@ -42,6 +42,7 @@ from ui.components.chat_panel import render_chat_panel
 from ui.components.command_popup import show_command_popup_if_pending
 from ui.prediction_pipeline import run_prediction_pipeline
 from ui.autonomous_diagnostic import render_autonomous_diagnostic_panel
+from ui.service_tier import render_tier_section, TIER_PHM, TIER_FULL
 
 
 # =====================================================
@@ -463,9 +464,14 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         root_cause_candidates, symptom_devices, unrelated_devices,
     )
 
-    # 2. Future Radar（予兆専用表示）
+    # 2. Future Radar（予兆専用表示）[PHM tier]
     prediction_candidates = [c for c in root_cause_candidates if c.get('is_prediction')]
-    render_future_radar(prediction_candidates, topology=topology)
+    with render_tier_section(
+        TIER_PHM, "AIOps Future Radar", icon="🔮",
+        description="WARNING レベルの微弱シグナルから将来の CRITICAL インシデントを予測。予兆候補のタイムライン・信頼度スコア・推定影響範囲を可視化します。",
+    ) as _fr_ok:
+        if _fr_ok:
+            render_future_radar(prediction_candidates, topology=topology)
 
     # 3. 根本原因候補テーブル
     selected_incident_candidate, target_device_id = render_root_cause_table(
@@ -485,10 +491,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             symptom_devices=symptom_devices,
         )
 
-        # ★ エッセンス5: AI自律診断パネル
-        render_autonomous_diagnostic_panel(
-            selected_incident_candidate, topology, scenario,
-        )
+        # ★ エッセンス5: AI自律診断パネル [PHM tier]
+        with render_tier_section(
+            TIER_PHM, "AI自律診断", icon="🤖",
+            description="根本原因候補に対して自律的にコマンド計画→実行→分析のループを回し、障害の根因を深掘りします。",
+        ) as _diag_ok:
+            if _diag_ok:
+                render_autonomous_diagnostic_panel(
+                    selected_incident_candidate, topology, scenario,
+                )
 
     # 右カラム: AI Analyst Report + Remediation + Chat
     with col_chat:
@@ -497,10 +508,15 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             scenario, site_id, api_key,
         )
 
-        render_remediation(
-            selected_incident_candidate, topology,
-            scenario, site_id, api_key, dt_engine,
-        )
+        with render_tier_section(
+            TIER_PHM, "自動復旧 (Remediation)", icon="🛠️",
+            description="推奨される復旧アクション（コマンド/設定変更）を自動生成し、承認ベースで実行します。",
+        ) as _rem_ok:
+            if _rem_ok:
+                render_remediation(
+                    selected_incident_candidate, topology,
+                    scenario, site_id, api_key, dt_engine,
+                )
 
         render_chat_panel(
             selected_incident_candidate, target_device_id,
