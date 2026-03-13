@@ -524,11 +524,23 @@ class LogicalRCA:
         silent_suspects = self._detect_silent_failures(msg_map)
 
         # ★ Phase 4: GrayScope 確率的サイレント障害検出（ヒューリスティックを補完）
+        #
+        # ★ BugFix: alarmed_devices を WARNING/CRITICAL のみに限定。
+        #   予兆シミュレーションのシグナルは severity=INFO で注入されるが、
+        #   旧コードは INFO を含む全アラームデバイスを alarmed_devices に渡していた。
+        #   GrayScope は alarmed_devices を「配下に障害が波及した証拠」として使うため、
+        #   INFO デバイスを含めると親がサイレント障害と誤検出される。
+        #   実際のサイレント障害では配下は WARNING/CRITICAL（接続断等）を発報するので、
+        #   INFO のみのデバイスは「障害の被害者」ではなく除外が正しい。
+        _significantly_alarmed = {
+            dev_id for dev_id, sev in alarm_severity_map.items()
+            if sev in ('WARNING', 'CRITICAL')
+        }
         _grayscope_result = None
         if self.grayscope is not None:
             try:
                 _grayscope_result = self.grayscope.analyze(
-                    msg_map, set(msg_map.keys()),
+                    msg_map, _significantly_alarmed or set(msg_map.keys()),
                 )
                 # GrayScope候補をsilent_suspectsにマージ
                 for gc in _grayscope_result.silent_candidates:

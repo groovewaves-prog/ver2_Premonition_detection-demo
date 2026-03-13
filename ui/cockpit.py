@@ -299,19 +299,27 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         site_id, alarms, fallback_results=_fallback
     )
 
-    # ★ BugFix: シミュレーション対象の親デバイスがサイレント障害と誤検出される問題を修正。
-    #   予兆シグナルが CORE_SW_01 等に注入されると、GrayScope がその親
-    #   (FW_01_PRIMARY 等) を「配下100%アラーム → サイレント障害」と誤判定する。
-    #   シミュレーション対象の親をサイレント障害候補から除外する。
+    # ★ BugFix: シミュレーション対象デバイスの全祖先をサイレント障害候補から除外。
+    #   予兆シグナル(INFO)がデバイスに注入されると、GrayScope がその親・祖父等を
+    #   「配下アラーム → サイレント障害」と誤判定する。
+    #   根本修正は inference_engine.py で INFO デバイスを alarmed_devices から除外済み。
+    #   ここではセーフティネットとして全祖先チェーンを除外する。
     if injected and injected.get("device_id") in topology:
-        _sim_dev = injected["device_id"]
-        _sim_node = topology[_sim_dev]
-        _sim_parent = (_sim_node.get("parent_id") if isinstance(_sim_node, dict)
-                       else getattr(_sim_node, "parent_id", None))
-        if _sim_parent:
+        _sim_ancestors = set()
+        _cur = injected["device_id"]
+        while _cur:
+            _node = topology.get(_cur)
+            if not _node:
+                break
+            _pid = (_node.get("parent_id") if isinstance(_node, dict)
+                    else getattr(_node, "parent_id", None))
+            if _pid:
+                _sim_ancestors.add(_pid)
+            _cur = _pid
+        if _sim_ancestors:
             analysis_results = [
                 r for r in analysis_results
-                if not (r.get("type", "").endswith("SilentFailure") and r.get("id") == _sim_parent)
+                if not (r.get("type", "").endswith("SilentFailure") and r.get("id") in _sim_ancestors)
             ]
 
     # =====================================================
