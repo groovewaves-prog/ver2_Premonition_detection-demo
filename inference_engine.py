@@ -884,6 +884,9 @@ class LogicalRCA:
                 narrative=narrative,
             )
 
+            # ── 4. 自動承認: LLM判定を即座に「正」としてナレッジに登録 ──
+            self._ai_severity_store.record_feedback(alert_text, is_positive=True)
+
             return self._score_to_result(status_str, avg_score, narrative, source="llm")
 
         except Exception as e:

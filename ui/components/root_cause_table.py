@@ -134,10 +134,6 @@ def render_root_cause_table(
         if not _is_pred and _rc_dev != 'SYSTEM':
             _render_incident_triage_fragment(selected_incident_candidate, topology or {})
 
-        # ★ エッセンス7: フィードバック・ループ（この判定は役に立ちましたか？）
-        if _rc_dev != 'SYSTEM':
-            _render_feedback_buttons(selected_incident_candidate)
-
     # 派生アラート（Symptom）一覧
     if symptom_devices:
         with st.expander(f"🔗 派生アラート (Symptom): {len(symptom_devices)}件 - 上流復旧待ち", expanded=False):
@@ -311,37 +307,3 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
     return []
 
 
-def _render_feedback_buttons(cand: dict):
-    """★ フィードバック・ループ: 「この判定は役に立ちましたか？」ボタン。
-
-    ユーザーの評価を _AISeverityStore に記録し、
-    次回の判定スコアに補正をかける。
-    """
-    _dev_id = cand.get("id", "")
-    _label = cand.get("label", "")
-    _feedback_key = f"_feedback_{_dev_id}_{hash(_label[:200])}"
-
-    # 既にフィードバック済み
-    if st.session_state.get(_feedback_key):
-        _fb = st.session_state[_feedback_key]
-        _icon = "👍" if _fb == "positive" else "👎"
-        st.caption(f"{_icon} フィードバック記録済み — ご協力ありがとうございます")
-        return
-
-    col_q, col_up, col_down = st.columns([3, 1, 1])
-    with col_q:
-        st.caption("この判定は役に立ちましたか？")
-    with col_up:
-        if st.button("👍 はい", key=f"fb_pos_{_dev_id}", use_container_width=True):
-            _store = _get_severity_store()
-            if _store and _label:
-                _store.record_feedback(_label, is_positive=True)
-            st.session_state[_feedback_key] = "positive"
-            st.rerun()
-    with col_down:
-        if st.button("👎 いいえ", key=f"fb_neg_{_dev_id}", use_container_width=True):
-            _store = _get_severity_store()
-            if _store and _label:
-                _store.record_feedback(_label, is_positive=False)
-            st.session_state[_feedback_key] = "negative"
-            st.rerun()
