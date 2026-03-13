@@ -37,7 +37,14 @@ def render_remediation(
     st.markdown("---")
     st.subheader("🤖 Remediation & Chat")
 
-    if not selected_incident_candidate or selected_incident_candidate["prob"] <= 0.6:
+    # サイレント障害はprob値に関わらず復旧プラン生成を許可
+    _is_silent = (
+        selected_incident_candidate
+        and "silent" in selected_incident_candidate.get("label", "").lower()
+    )
+    if not selected_incident_candidate or (
+        selected_incident_candidate["prob"] <= 0.6 and not _is_silent
+    ):
         _render_low_risk_banner(selected_incident_candidate)
         return
 
@@ -46,6 +53,8 @@ def render_remediation(
     # ステータスバナー
     if is_pred_rem:
         _render_prediction_banner(selected_incident_candidate)
+    elif _is_silent:
+        _render_silent_failure_banner(selected_incident_candidate)
     else:
         _render_incident_banner(selected_incident_candidate)
 
@@ -92,6 +101,19 @@ def _render_prediction_banner(cand: dict):
         ・影響範囲: <b>{affected}台</b> のデバイスに影響の可能性<br>
         ・推奨: メンテナンスウィンドウでの予防交換/対応<br>
         (信頼度: <span style="font-size:1.2em;font-weight:bold;">{cand['prob']*100:.0f}%</span>)
+    </div>
+    """)
+
+
+def _render_silent_failure_banner(cand: dict):
+    """サイレント障害検知時のステータスバナー"""
+    st_html(f"""
+    <div style="background-color:#f3e5f5;padding:10px;border-radius:5px;border:1px solid #9c27b0;color:#6a1b9a;margin-bottom:10px;">
+        <strong>🟣 サイレント障害検知 (Silent Failure Detected)</strong><br>
+        <b>{cand['id']}</b> でサイレント障害の疑いを検出しました。<br>
+        ハードウェアは正常ですが、配下デバイスへの通信影響が発生しています。<br>
+        L2レベル（MAC/STP/VLAN）の調査と復旧対応が必要です。<br>
+        (リスクスコア: <span style="font-size:1.2em;font-weight:bold;">{cand['prob']*100:.0f}</span>)
     </div>
     """)
 
