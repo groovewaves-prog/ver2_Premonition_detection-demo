@@ -494,6 +494,29 @@ class SilentFailureScorer:
             if not alarmed_children:
                 continue
 
+            # ★ BugFix: 配下デバイスが「被害者」ではなく「障害源」の場合を除外。
+            #   サイレント障害の兆候 = 配下が接続断/到達不能（被害者型アラーム）。
+            #   配下が自発的な障害（HW異常・バッファ溢れ等）のみなら、
+            #   親のサイレント障害ではなく配下自身が障害源。
+            #   例: CORE_SW_01 に Microburst シグナルが注入された場合、
+            #       その親 FW_01_PRIMARY はサイレント障害ではない。
+            _CONNECTION_LOSS_KW = (
+                "connection lost", "link down", "port down",
+                "unreachable", "timeout", "no response",
+            )
+            _victim_children = []
+            for _ac in alarmed_children:
+                _ac_msgs = msg_map.get(_ac, [])
+                _is_victim = any(
+                    any(kw in m.lower() for kw in _CONNECTION_LOSS_KW)
+                    for m in _ac_msgs
+                )
+                if _is_victim:
+                    _victim_children.append(_ac)
+            # 被害者型の配下が0件 → 全配下が自発的障害 → 親はサイレント障害ではない
+            if not _victim_children and alarmed_children:
+                continue
+
             child_ratio = len(alarmed_children) / len(children)
 
             # 各シグナルのスコアを収集
