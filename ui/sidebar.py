@@ -238,18 +238,62 @@ def render_sidebar():
             TIER_FULL:  "Full — 全機能",
         }
         _current_tier = get_service_tier()
+
+        # ★ BugFix: on_change コールバックでティア切替を処理。
+        #   旧コード: selectbox の index パラメータとウィジェットキーが競合し、
+        #   Full→Basic 切替時に index=2(full) がユーザー選択を上書きするため
+        #   2度選択しないと Basic に切り替わらないバグがあった。
+        #   on_change はウィジェット値の確定後・rerun 前に発火するため確実。
+        def _on_tier_change():
+            _new_tier = st.session_state["_service_tier_select"]
+            _old_tier = st.session_state.get("service_tier", TIER_FULL)
+            if _new_tier == _old_tier:
+                return
+            st.session_state["service_tier"] = _new_tier
+
+            # ★ BugFix: ティア切替時もシナリオ切替と同等のステートクリアを実行。
+            #   旧コードはティア変更時にステートクリアを行わなかったため、
+            #   Basic で障害シナリオ→正常稼働に戻した後 Full に切り替えると
+            #   旧シナリオのインシデントデータが残留表示されるバグがあった。
+            for _sid in list_sites():
+                # アラームキャッシュを全クリア（シナリオ別キーを網羅）
+                _keys_to_del = [
+                    k for k in list(st.session_state.keys())
+                    if k.startswith(f"_alarm_cache_{_sid}")
+                ]
+                for k in _keys_to_del:
+                    del st.session_state[k]
+
+                # レポートキャッシュのクリア
+                _rpt_keys = [k for k in list(st.session_state.report_cache.keys()) if _sid in k]
+                for k in _rpt_keys:
+                    del st.session_state.report_cache[k]
+
+            # 予測APIキャッシュのクリア
+            if "dt_prediction_cache" in st.session_state:
+                st.session_state.dt_prediction_cache.clear()
+
+            # アクティブ画面のステートリセット
+            st.session_state.generated_report = None
+            st.session_state.remediation_plan = None
+            st.session_state.messages = []
+            st.session_state.chat_session = None
+            st.session_state.live_result = None
+            st.session_state.verification_result = None
+
+        # ★ ウィジェットキーの初期化（index パラメータを使わない）
+        if "_service_tier_select" not in st.session_state:
+            st.session_state["_service_tier_select"] = _current_tier
+
         with st.expander("🔑 サービスティア", expanded=False):
-            _selected_tier = st.selectbox(
+            st.selectbox(
                 "SERVICE_TIER",
                 options=list(_tier_options.keys()),
                 format_func=lambda t: _tier_options[t],
-                index=list(_tier_options.keys()).index(_current_tier),
                 key="_service_tier_select",
+                on_change=_on_tier_change,
                 label_visibility="collapsed",
             )
-            if _selected_tier != _current_tier:
-                st.session_state["service_tier"] = _selected_tier
-                st.rerun()
 
             # 現在のティアの含まれる機能一覧
             st.caption(f"**{_tier_options[_current_tier].split(' — ')[0]}** プラン:")
