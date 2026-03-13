@@ -24,7 +24,7 @@ from utils.helpers import get_status_from_alarms
 from digital_twin_pkg.common import build_children_map, get_downstream_devices
 from ui.engine_cache import (
     compute_topo_hash, get_cached_dt_engine, get_cached_logical_rca,
-    get_topo_hash_cached, cached_rca_analyze,
+    get_topo_hash_cached,
 )
 from ui.async_inference import (
     submit_rca_task, get_rca_result, is_any_analyzing,
@@ -160,6 +160,62 @@ def _resolve_maint_windows(site_id: str, topology: dict):
         st.success(f"✅ **メンテナンス終了**: {_labels_str} — アラーム抑制を解除しました")
 
 
+def _build_alarm_based_fallback(alarms: list) -> list:
+    """アラーム情報のみで即席のanalysis_resultsを生成する（LLM呼び出しなし）。
+
+    非同期RCA推論が完了するまでの間、UIが空（SYSTEM/正常稼働）にならないよう
+    アラームのseverityとis_root_causeフラグから即座に分類結果を構築する。
+    """
+    if not alarms:
+        return []
+
+    _sev_order = {'CRITICAL': 3, 'WARNING': 2, 'INFO': 1}
+    device_map: dict = {}
+    for a in alarms:
+        dev_id = a.device_id
+        if dev_id not in device_map:
+            device_map[dev_id] = {
+                'messages': [], 'severity': 'INFO', 'is_root_cause': False,
+            }
+        device_map[dev_id]['messages'].append(a.message)
+        if _sev_order.get(a.severity, 0) > _sev_order.get(device_map[dev_id]['severity'], 0):
+            device_map[dev_id]['severity'] = a.severity
+        if getattr(a, 'is_root_cause', False):
+            device_map[dev_id]['is_root_cause'] = True
+
+    results = []
+    for dev_id, info in device_map.items():
+        sev = info['severity']
+        if sev == 'INFO' and not info['is_root_cause']:
+            continue  # INFOのみのデバイスはスキップ
+
+        if sev == 'CRITICAL' or info['is_root_cause']:
+            cls = 'root_cause'
+            prob = 0.95
+            status = 'RED'
+        elif sev == 'WARNING':
+            cls = 'symptom'
+            prob = 0.5
+            status = 'YELLOW'
+        else:
+            cls = 'unrelated'
+            prob = 0.2
+            status = 'GREEN'
+
+        results.append({
+            'id': dev_id,
+            'label': ' / '.join(info['messages'][:3]),
+            'prob': prob,
+            'type': 'AlarmBased',
+            'tier': 1 if cls == 'root_cause' else (2 if cls == 'symptom' else 3),
+            'reason': f"アラーム severity={sev} に基づく即席分類",
+            'status': status,
+            'is_prediction': False,
+            'classification': cls,
+        })
+    return results
+
+
 # =====================================================
 # メインエントリポイント
 # =====================================================
@@ -229,23 +285,16 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
     # ★ エッセンス4: 非同期推論（ゼロ・ウェイティング）
     #   バックグラウンドで RCA 分析をキックし、結果はキャッシュから即座に取得。
-    #   計算中は前回結果をフォールバック表示し、完了後に最新結果に切り替わる。
+    #   計算中はアラーム情報から即席分類を生成し、完了後に最新結果に切り替わる。
     submit_rca_task(site_id, current_topo_hash, alarms)
 
-    # フォールバック: @st.cache_data にキャッシュ済みの結果があればそれを使う
-    _fallback = None
-    try:
-        _fallback = cached_rca_analyze(site_id, current_topo_hash, alarms)
-    except Exception:
-        pass
+    # 軽量フォールバック: アラーム情報のみで即席分類を生成（LLM呼び出しなし）
+    # 非同期タスク完了までの間、UIが空にならないようにする。
+    _fallback = _build_alarm_based_fallback(alarms)
 
     analysis_results, _is_analyzing = get_rca_result(
         site_id, alarms, fallback_results=_fallback
     )
-
-    # デフォルト結果（初回で何もない場合）
-    if not analysis_results:
-        analysis_results = cached_rca_analyze(site_id, current_topo_hash, alarms)
 
     # =====================================================
     # DigitalTwinEngine 初期化
