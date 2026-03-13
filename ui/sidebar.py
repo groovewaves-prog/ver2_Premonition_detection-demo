@@ -237,24 +237,25 @@ def render_sidebar():
             TIER_PHM:   "PHM — + 予兆検知 / RUL予測",
             TIER_FULL:  "Full — 全機能",
         }
-        _current_tier = get_service_tier()
+        # ★ BugFix: selectbox のウィジェットキーを "service_tier" に統一。
+        #   旧コードでは "_service_tier_select"（ウィジェット用）と
+        #   "service_tier"（アプリロジック用）の2つのキーを同期していたが、
+        #   Streamlit の rerun サイクル中に index パラメータがユーザー選択を
+        #   上書きし、Full→Basic 切替に2-3回の選択が必要なバグがあった。
+        #   ウィジェットキー = アプリキーとすることで同期問題を根本排除。
 
-        # ★ BugFix: on_change コールバックでティア切替を処理。
-        #   旧コード: selectbox の index パラメータとウィジェットキーが競合し、
-        #   Full→Basic 切替時に index=2(full) がユーザー選択を上書きするため
-        #   2度選択しないと Basic に切り替わらないバグがあった。
-        #   on_change はウィジェット値の確定後・rerun 前に発火するため確実。
+        # service_tier を session_state に確実に初期化（selectbox が読む前に）
+        if "service_tier" not in st.session_state:
+            _env_tier = os.environ.get("SERVICE_TIER", "full").lower().strip()
+            st.session_state["service_tier"] = (
+                _env_tier if _env_tier in {TIER_BASIC, TIER_PHM, TIER_FULL}
+                else TIER_FULL
+            )
+
         def _on_tier_change():
-            _new_tier = st.session_state["_service_tier_select"]
-            _old_tier = st.session_state.get("service_tier", TIER_FULL)
-            if _new_tier == _old_tier:
-                return
-            st.session_state["service_tier"] = _new_tier
-
-            # ★ BugFix: ティア切替時もシナリオ切替と同等のステートクリアを実行。
-            #   旧コードはティア変更時にステートクリアを行わなかったため、
-            #   Basic で障害シナリオ→正常稼働に戻した後 Full に切り替えると
-            #   旧シナリオのインシデントデータが残留表示されるバグがあった。
+            """ティア切替時のステートクリア。on_change は値確定後・rerun 前に発火。
+            ウィジェットキーが "service_tier" なので、コールバック時点で
+            st.session_state["service_tier"] は既に新しい値になっている。"""
             for _sid in list_sites():
                 # アラームキャッシュを全クリア（シナリオ別キーを網羅）
                 _keys_to_del = [
@@ -281,21 +282,20 @@ def render_sidebar():
             st.session_state.live_result = None
             st.session_state.verification_result = None
 
-        # ★ ウィジェットキーの初期化（index パラメータを使わない）
-        if "_service_tier_select" not in st.session_state:
-            st.session_state["_service_tier_select"] = _current_tier
+        _current_tier = get_service_tier()
 
         with st.expander("🔑 サービスティア", expanded=False):
             st.selectbox(
                 "SERVICE_TIER",
                 options=list(_tier_options.keys()),
                 format_func=lambda t: _tier_options[t],
-                key="_service_tier_select",
+                key="service_tier",
                 on_change=_on_tier_change,
                 label_visibility="collapsed",
             )
 
             # 現在のティアの含まれる機能一覧
+            _current_tier = get_service_tier()
             st.caption(f"**{_tier_options[_current_tier].split(' — ')[0]}** プラン:")
             st.caption(TIER_DESCRIPTIONS.get(_current_tier, ""))
             if _current_tier != TIER_FULL:
