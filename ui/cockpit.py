@@ -189,14 +189,16 @@ def _build_alarm_based_fallback(alarms: list) -> list:
         if sev == 'INFO' and not info['is_root_cause']:
             continue  # INFOのみのデバイスはスキップ
 
-        if sev == 'CRITICAL' or info['is_root_cause']:
+        if info['is_root_cause']:
+            # is_root_causeフラグが明示的にTrueの場合のみ根本原因
             cls = 'root_cause'
             prob = 0.95
             status = 'RED'
-        elif sev == 'WARNING':
+        elif sev == 'CRITICAL' or sev == 'WARNING':
+            # CRITICALでもis_root_cause=Falseなら派生アラート（巻き添え）
             cls = 'symptom'
             prob = 0.5
-            status = 'YELLOW'
+            status = 'YELLOW' if sev == 'WARNING' else 'RED'
         else:
             cls = 'unrelated'
             prob = 0.2
