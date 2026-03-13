@@ -135,12 +135,41 @@ _DIAGNOSTIC_COMMAND_MAP = {
         ("show interfaces counters errors", "CRC/入力エラーなどエラーカウンタの蓄積を確認"),
         ("show vlan brief", "VLAN設定の不整合や欠落を確認"),
     ],
-    # フォールバック（汎用）
+    # フォールバック（汎用 — デバイスタイプ別フォールバックにも一致しない場合の最終手段）
     "_default": [
         ("show ip interface brief", "全インターフェースの状態を一覧確認"),
         ("show environment", "ハードウェア（電源・ファン・温度）の状態を確認"),
         ("show logging", "直近のシステムログを確認"),
         ("show processes cpu", "CPU使用率を確認"),
+    ],
+}
+
+# デバイスタイプ → デフォルト診断コマンド（キーワード不一致時のフォールバック）
+# Google SRE "Four Golden Signals" に基づき、デバイス種別ごとに
+# Latency/Traffic/Errors/Saturation の観点で標準コマンドを定義
+_DEVICE_TYPE_DIAGNOSTIC_MAP = {
+    "ROUTER": [
+        ("show ip route summary", "ルーティングテーブルの全体概要を確認"),
+        ("show ip interface brief", "全インターフェースのup/down状態を一覧確認"),
+        ("show logging", "直近のシステムログからエラーイベントを確認"),
+        ("show processes cpu", "CPU使用率を確認"),
+    ],
+    "FIREWALL": [
+        ("show interfaces", "インターフェースの状態とカウンタを確認"),
+        ("show high-availability", "HA状態（Active/Standby）を確認"),
+        ("show logging", "直近のシステムログからエラーイベントを確認"),
+        ("show processes cpu", "CPU使用率を確認"),
+    ],
+    "SWITCH": [
+        ("show mac address-table", "MACアドレステーブルの状態を確認"),
+        ("show spanning-tree", "STPトポロジーとポート状態を確認"),
+        ("show interfaces counters errors", "全ポートのエラーカウンタを確認"),
+        ("show vlan brief", "VLAN設定とポート割当を確認"),
+    ],
+    "ACCESS_POINT": [
+        ("show ip interface brief", "管理インターフェースの状態を確認"),
+        ("show logging", "直近のシステムログを確認"),
+        ("ping 8.8.8.8 repeat 5", "上位ネットワークへの疎通を確認"),
     ],
 }
 
@@ -151,6 +180,7 @@ def plan_diagnostic_commands(
     analysis_result: dict,
     round_num: int = 1,
     previous_insights: List[str] = None,
+    device_type: str = "",
 ) -> List[Dict[str, str]]:
     """アラーム内容とRCA結果に基づき、次に実行すべき診断コマンドを計画する。
 
@@ -160,6 +190,7 @@ def plan_diagnostic_commands(
         analysis_result: RCA分析結果の辞書
         round_num: 現在のラウンド番号
         previous_insights: 前ラウンドまでの洞察リスト
+        device_type: デバイスタイプ（ROUTER/SWITCH/FIREWALL/ACCESS_POINT等）
 
     Returns:
         [{"command": str, "reason": str}, ...]
@@ -186,11 +217,21 @@ def plan_diagnostic_commands(
                 cmd = cmd_template.replace("{intf}", "GigabitEthernet0/0/0")
                 commands.append({"command": cmd, "reason": reason})
 
-    # マッチなし → デフォルト
+    # キーワード不一致 → デバイスタイプ別フォールバック → 最終デフォルト
     if not commands:
-        for cmd_template, reason in _DIAGNOSTIC_COMMAND_MAP["_default"]:
-            cmd = cmd_template.replace("{intf}", "GigabitEthernet0/0/0")
-            commands.append({"command": cmd, "reason": reason})
+        _dt_upper = device_type.upper()
+        _dt_cmds = _DEVICE_TYPE_DIAGNOSTIC_MAP.get(_dt_upper)
+        if _dt_cmds:
+            logger.info(
+                f"キーワード不一致 → デバイスタイプ '{_dt_upper}' のデフォルトコマンドを使用: {device_id}"
+            )
+            for cmd_template, reason in _dt_cmds:
+                cmd = cmd_template.replace("{intf}", "GigabitEthernet0/0/0")
+                commands.append({"command": cmd, "reason": reason})
+        else:
+            for cmd_template, reason in _DIAGNOSTIC_COMMAND_MAP["_default"]:
+                cmd = cmd_template.replace("{intf}", "GigabitEthernet0/0/0")
+                commands.append({"command": cmd, "reason": reason})
 
     # ラウンド2以降: 前ラウンドの洞察に基づく追加コマンド
     if round_num >= 2 and previous_insights:
@@ -351,6 +392,7 @@ def run_autonomous_diagnostic(
     alarm_label: str,
     scenario: str,
     analysis_result: dict,
+    device_type: str = "",
 ) -> DiagnosticSession:
     """自律診断を実行する。
 
@@ -362,6 +404,7 @@ def run_autonomous_diagnostic(
         alarm_label: アラームラベル
         scenario: シナリオ名
         analysis_result: RCA分析結果
+        device_type: デバイスタイプ（ROUTER/SWITCH/FIREWALL/ACCESS_POINT等）
 
     Returns:
         DiagnosticSession: 完了した診断セッション
@@ -385,6 +428,7 @@ def run_autonomous_diagnostic(
             analysis_result=analysis_result,
             round_num=round_num,
             previous_insights=all_insights,
+            device_type=device_type,
         )
 
         plan_step = DiagnosticStep(
@@ -538,12 +582,20 @@ def render_autonomous_diagnostic_panel(
                 key=_diag_btn_key,
                 type="primary",
             ):
+                # トポロジーからデバイスタイプを取得（メモリ参照のみ、コスト0）
+                _node = topology.get(device_id)
+                _dev_type = ""
+                if _node:
+                    _dev_type = getattr(_node, "type", "") or (
+                        _node.get("type", "") if isinstance(_node, dict) else ""
+                    )
                 with st.spinner("🤖 AI自律診断を実行中..."):
                     session = run_autonomous_diagnostic(
                         device_id=device_id,
                         alarm_label=alarm_label,
                         scenario=scenario,
                         analysis_result=selected_candidate,
+                        device_type=_dev_type,
                     )
 
                 st.rerun()
