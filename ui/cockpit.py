@@ -21,7 +21,10 @@ from registry import get_paths, load_topology, get_display_name
 from alarm_generator import generate_alarms_for_scenario, Alarm
 from inference_engine import LogicalRCA
 from utils.helpers import get_status_from_alarms
-from ui.engine_cache import compute_topo_hash, get_cached_dt_engine
+from ui.engine_cache import (
+    compute_topo_hash, get_cached_dt_engine, get_cached_logical_rca,
+    get_topo_hash_cached, cached_rca_analyze,
+)
 
 # コンポーネントインポート
 from ui.components.helpers import build_ci_context_for_chat
@@ -45,14 +48,15 @@ def _compute_topo_hash(topology: dict) -> str:
 
 
 # =====================================================
-# キャッシュ済みエンジン取得
+# キャッシュ済みエンジン取得（★ エッセンス1: 軽量キーのみ）
 # =====================================================
-@st.cache_resource(show_spinner="🧠 LogicalRCA エンジン (GrayScope/Granger) をロード中...")
-def _get_cached_logical_rca(_topology):
-    return LogicalRCA(_topology)
+def _get_cached_logical_rca_by_site(site_id: str, topo_hash: str):
+    """engine_cache の軽量キー版に委譲"""
+    return get_cached_logical_rca(site_id, topo_hash)
 
-def _get_cached_dt_engine(site_id: str, topo_hash: str, _topology):
-    return get_cached_dt_engine(site_id, topo_hash, _topology)
+def _get_cached_dt_engine_by_site(site_id: str, topo_hash: str):
+    """engine_cache の軽量キー版に委譲"""
+    return get_cached_dt_engine(site_id, topo_hash)
 
 
 # =====================================================
@@ -76,18 +80,16 @@ def prewarm_engines():
         return  # 既にウォームアップ済み
 
     try:
-        from registry import list_sites, get_paths, load_topology
+        from registry import list_sites
         with st.spinner("🧠 AI分析エンジンを事前ロード中...（初回のみ）"):
             for site_id in list_sites():
-                paths = get_paths(site_id)
-                topology = load_topology(paths.topology_path)
-                if not topology:
+                # ★ エッセンス1: 軽量な文字列キーのみでウォームアップ
+                #   トポロジーの読み込みはキャッシュ関数内部で実行される
+                topo_hash = get_topo_hash_cached(site_id)
+                if not topo_hash:
                     continue
-                # LogicalRCA をウォームアップ（@st.cache_resource）
-                _get_cached_logical_rca(topology)
-                # DigitalTwinEngine をウォームアップ（@st.cache_resource）
-                topo_hash = compute_topo_hash(topology)
-                get_cached_dt_engine(site_id, topo_hash, topology)
+                get_cached_logical_rca(site_id, topo_hash)
+                get_cached_dt_engine(site_id, topo_hash)
     except Exception as e:
         logger.warning(f"Engine prewarm failed: {e}")
 
@@ -216,33 +218,12 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                     is_root_cause=False
                 ))
 
-    # LogicalRCA エンジン
-    engine = _get_cached_logical_rca(topology)
+    # ★ エッセンス1+3: 軽量キーでエンジン取得 & 推論結果キャッシュ
+    current_topo_hash = get_topo_hash_cached(site_id)
+    engine = _get_cached_logical_rca_by_site(site_id, current_topo_hash)
 
-    # 分析結果キャッシュ
-    # ★ 高速化: RCA分析のハッシュはINFO以外のアラームのみで計算
-    #   シミュレーション注入（INFO）はRCA結果に影響しないためスキップ
-    _analysis_cache_key = f"_analysis_cache_{site_id}_{scenario}"
-    _alarm_hash = hash(tuple(
-        (a.device_id, a.message, a.severity) for a in alarms
-        if a.severity != "INFO"
-    )) if alarms else 0
-    _cached_analysis = st.session_state.get(_analysis_cache_key)
-    if _cached_analysis and _cached_analysis.get("hash") == _alarm_hash:
-        analysis_results = _cached_analysis["results"]
-    elif alarms:
-        analysis_results = engine.analyze(alarms)
-        st.session_state[_analysis_cache_key] = {"hash": _alarm_hash, "results": analysis_results}
-    else:
-        analysis_results = [{
-            "id": "SYSTEM",
-            "label": "正常稼働",
-            "prob": 0.0,
-            "type": "Normal",
-            "tier": 3,
-            "reason": "アラームなし"
-        }]
-        st.session_state[_analysis_cache_key] = {"hash": _alarm_hash, "results": analysis_results}
+    # ★ エッセンス3: RCA分析結果をキャッシュ層経由で取得
+    analysis_results = cached_rca_analyze(site_id, current_topo_hash, alarms)
 
     # =====================================================
     # DigitalTwinEngine 初期化
@@ -252,13 +233,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
     if not st.session_state.get(dt_err_key):
         try:
-            # ★ 高速化: topo_hash を session_state にキャッシュ（毎回の再計算を回避）
-            _topo_hash_key = f"_topo_hash_{site_id}"
-            current_topo_hash = st.session_state.get(_topo_hash_key)
-            if not current_topo_hash:
-                current_topo_hash = _compute_topo_hash(topology)
-                st.session_state[_topo_hash_key] = current_topo_hash
-            dt_engine = _get_cached_dt_engine(site_id, current_topo_hash, topology)
+            # ★ エッセンス1: 軽量キーのみでエンジン取得（トポロジーはキャッシュ関数内部で読み込み）
+            dt_engine = _get_cached_dt_engine_by_site(site_id, current_topo_hash)
         except Exception as _dte_err:
             import traceback as _tb
             st.session_state[dt_err_key] = f"{type(_dte_err).__name__}: {_dte_err}\n{_tb.format_exc()}"

@@ -185,13 +185,14 @@ def _run_predict_loop(
     site_id: str,
     api_key: Optional[str],
 ) -> List[dict]:
-    """デバイスごとに predict_api を呼び出し、予測結果を返す。"""
-    dt_predictions: List[dict] = []
+    """デバイスごとに predict_api を呼び出し、予測結果を返す。
 
-    # 予測キャッシュ
-    _ck_pred_cache = "dt_prediction_cache"
-    if _ck_pred_cache not in st.session_state:
-        st.session_state[_ck_pred_cache] = {}
+    ★ エッセンス3: predict_api の結果を engine_cache.cached_predict_api 経由で
+    キャッシュし、同一状態への再推論を排除。
+    """
+    from ui.engine_cache import cached_predict_api
+
+    dt_predictions: List[dict] = []
 
     # GenAI モデル初期化（session_state にキャッシュ）
     if api_key and GENAI_AVAILABLE:
@@ -207,30 +208,13 @@ def _run_predict_loop(
     for _dev_id, (_msgs_list, _src) in _grouped.items():
         try:
             _combined_msg = "\n".join(_msgs_list)
-            _cache_key = f"v4_{_dev_id}|{_sim_level}|{hash(_combined_msg[:200])}"
 
-            _cached = st.session_state[_ck_pred_cache].get(_cache_key)
-            if _cached is not None:
-                for _p in _cached:
-                    _p["is_prediction"] = True
-                    if not any(d.get("id") == _dev_id for d in dt_predictions):
-                        dt_predictions.append(_p)
-                continue
-
-            _resp = dt_engine.predict_api({
-                "tenant_id":       site_id,
-                "device_id":       _dev_id,
-                "msg":             _combined_msg,
-                "timestamp":       time.time(),
-                "record_forecast": True,
-                "attrs":           {
-                    "source":            _src,
-                    "degradation_level": _sim_level if _src == "simulation" else 1,
-                    "signal_count":      len(_msgs_list),
-                }
-            })
-
-            _preds_returned = _resp.get("predictions", []) if _resp.get("ok") else []
+            # ★ エッセンス3: キャッシュ層経由で predict_api を呼び出し
+            _preds_returned = cached_predict_api(
+                dt_engine, _dev_id, _combined_msg,
+                site_id, _src, _sim_level,
+                len(_msgs_list), api_key,
+            )
 
             if not _preds_returned and _src == "simulation":
                 _sim_scenario = _injected.get("scenario", "異常")
@@ -249,22 +233,14 @@ def _run_predict_loop(
                 }]
 
             # トリアージ生成は future_radar.py で遅延実行
-            _preds_to_cache = []
             for _p in _preds_returned:
                 _p["id"]     = _dev_id
                 _p["source"] = _src
                 _p["prediction_signal_count"] = _signal_count
                 _p["is_prediction"] = True
-                _preds_to_cache.append(_p)
 
                 if not any(d.get("id") == _dev_id for d in dt_predictions):
                     dt_predictions.append(_p)
-
-            st.session_state[_ck_pred_cache][_cache_key] = _preds_to_cache
-            if len(st.session_state[_ck_pred_cache]) > 20:
-                _keys = list(st.session_state[_ck_pred_cache].keys())
-                for _old_k in _keys[:10]:
-                    st.session_state[_ck_pred_cache].pop(_old_k, None)
 
         except Exception as _pred_err:
             logger.warning(f"predict_api failed for {_dev_id}: {_pred_err}")
