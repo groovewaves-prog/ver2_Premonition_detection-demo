@@ -361,20 +361,14 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     _rc_device_ids = {a.device_id for a in alarms if a.is_root_cause}
     _non_rc_device_ids = {a.device_id for a in alarms if not a.is_root_cause}
 
-    # ★ CRITICALアラームのデバイスIDセットを事前計算
-    _critical_device_ids = {a.device_id for a in alarms if a.severity == 'CRITICAL'}
-
     for cand in analysis_results:
         device_id = cand.get('id', '')
         cls = cand.get('classification', '')
 
-        # ★ そのデバイスのアラームの最大Severityを取得
-        a_sev = next((a.severity for a in alarms if a.device_id == device_id), 'INFO')
-
         if cand.get('is_prediction'):
             root_cause_candidates.append(cand)
-        elif cls == 'root_cause' or a_sev == 'CRITICAL':
-            # ★ CRITICALアラームは強制的に根本原因へ昇格
+        elif cls == 'root_cause' or device_id in _rc_device_ids:
+            # ★ is_root_cause=Trueのデバイスは強制的に根本原因へ昇格
             cand['classification'] = 'root_cause'
             root_cause_candidates.append(cand)
         elif cls == 'symptom':
@@ -393,8 +387,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # ★ トポロジーマップを用いた機械的RCA（ノイズ除去）
     # 根本原因候補の中に、他の候補の「下流（downstream）」ノードが含まれている場合、
     # 上流の障害による波及（ノイズ）と判断し「派生アラート（Symptom）」へ強制降格する。
-    # ただし、自身がCRITICALアラームを出しているデバイスは独立した障害源と
-    # 見なし、降格対象から除外する。
+    # ただし、自身がis_root_cause=Trueのアラームを持つデバイスは独立した
+    # 障害源と見なし、降格対象から除外する。
     # =====================================================
     _rc_ids = [c['id'] for c in root_cause_candidates
                if not c.get('is_prediction') and c.get('id') != 'SYSTEM']
@@ -412,8 +406,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             cid = cand['id']
             is_downstream = cid in _downstream_set
             is_prediction = cand.get('is_prediction')
-            has_own_critical = cid in _critical_device_ids
-            if is_downstream and not is_prediction and not has_own_critical:
+            has_own_root_cause = cid in _rc_device_ids
+            if is_downstream and not is_prediction and not has_own_root_cause:
                 cand['classification'] = 'symptom'
                 symptom_devices.append(cand)
             else:
