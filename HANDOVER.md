@@ -6,6 +6,36 @@
 
 ## 完了したタスク（今回セッション）
 
+### 0. セーフティガード付き自動修復機能の実装
+
+#### 概要
+AIが提示した復旧アクションをボタン一つで実行し、その成否をデジタルツインと連携してリアルタイムに判定する機能を追加。
+
+#### 新規モジュール
+- `ui/components/verifier.py`: 修復後自動検証（Verifier）+ セーフティガード
+  - `CheckResult`, `ConfigSnapshot`, `VerificationSession` データモデル
+  - `run_pre_checks()`: 修復前の状態確認（ping・インターフェース・ハードウェア）
+  - `take_config_snapshot()`: 設定スナップショット保存（ロールバック用）
+  - `run_post_checks()`: 修復後の自動検証（アラーム消失・疎通回復）
+  - `evaluate_post_checks()`: Post-Check 結果の総合判定
+  - `execute_rollback()`: スナップショットからのロールバック実行
+  - `run_safeguarded_remediation()`: 統合フロー（Pre→Snap→Exec→Post→判定）
+  - `render_verification_panel()`: 検証ステータスパネルUI
+  - `render_rollback_button()`: ロールバックボタンUI
+
+#### 既存モジュール改修
+- `ui/components/remediation.py`:
+  - `_render_execute_section()`: 検証ステータスパネルの統合表示、ロールバックボタンの追加
+  - `_execute_remediation()`: 4ステップフロー（Pre-Check→Snapshot→Execute→Post-Check）に拡張
+  - `_execute_rollback_flow()`: ロールバック実行フロー（新規追加）
+
+#### 修復フロー
+1. **Pre-Check**: 修復前にping疎通・インターフェース状態・ハードウェア状態を確認
+2. **Snapshot**: 現在の設定状態を保存（ロールバック用）
+3. **Execute**: 修復アクションを実行（既存の並列実行ロジック）
+4. **Post-Check**: 修復後にアラーム消失・疎通回復を自動検証
+5. **判定**: verified → Recovery Confirmed / rollback_needed → ロールバック推奨 / warning → 手動確認推奨
+
 ### AIエージェント自動自律診断フェーズ
 
 「推論 → 実行（コマンド） → 再推論 → 最終報告」のループを回すAIエージェントを実装。
@@ -108,9 +138,9 @@
 - 自律診断のコマンド結果はデモ環境用のシミュレーション出力（`simulate_command_execution()`）
 
 ## 次セッションへの推奨アクション
-1. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認
-2. **自律診断テスト**: 障害シナリオ選択 → 根本原因候補を選択 → 「▶ 自律診断を開始」→ 思考ログ確認
-3. **フィードバック機能テスト**: 根本原因候補選択後の「👍/👎」ボタン → `config/ai_severity_cache.json` に記録されることを確認
-4. **思考ログ連携テスト**: 自律診断完了後にAnalyst Report / Chat Panel で診断ログが参照されることを確認
-5. **LLM駆動計画への拡張**: `plan_diagnostic_commands()` のLLM化検討
-6. **推奨アクション L2**: SSH executor の接続設計（autonomous_diagnostic.py 含む）
+1. **セーフティガード付き修復の動作確認**: 修復実行時にPre-Check→Snapshot→Execute→Post-Checkの4ステップが表示されることを確認
+2. **ロールバック動作確認**: Post-Checkで異常が検出された場合にロールバックボタンが表示され、正常に復元されることを確認
+3. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認
+4. **自律診断テスト**: 障害シナリオ選択 → 根本原因候補を選択 → 「▶ 自律診断を開始」→ 思考ログ確認
+5. **推奨アクション L2**: SSH executor の接続設計（verifier.py / autonomous_diagnostic.py 含む）
+6. **メンテナンスモード永続化**: DB保存の設計・実装
