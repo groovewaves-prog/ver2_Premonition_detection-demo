@@ -309,13 +309,21 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     _rc_device_ids = {a.device_id for a in alarms if a.is_root_cause}
     _non_rc_device_ids = {a.device_id for a in alarms if not a.is_root_cause}
 
+    # ★ CRITICALアラームのデバイスIDセットを事前計算
+    _critical_device_ids = {a.device_id for a in alarms if a.severity == 'CRITICAL'}
+
     for cand in analysis_results:
         device_id = cand.get('id', '')
         cls = cand.get('classification', '')
 
+        # ★ そのデバイスのアラームの最大Severityを取得
+        a_sev = next((a.severity for a in alarms if a.device_id == device_id), 'INFO')
+
         if cand.get('is_prediction'):
             root_cause_candidates.append(cand)
-        elif cls == 'root_cause':
+        elif cls == 'root_cause' or a_sev == 'CRITICAL':
+            # ★ CRITICALアラームは強制的に根本原因へ昇格
+            cand['classification'] = 'root_cause'
             root_cause_candidates.append(cand)
         elif cls == 'symptom':
             symptom_devices.append(cand)

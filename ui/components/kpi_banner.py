@@ -29,7 +29,10 @@ def render_kpi_banner(
         r.get('classification') == 'root_cause'
         for r in analysis_results if not r.get('is_prediction')
     )
-    if _has_critical_status or _has_root_cause:
+    # ★ 生のアラームにCRITICALがあるかチェック
+    _has_raw_critical = any(getattr(a, 'severity', '') == 'CRITICAL' for a in alarms)
+
+    if _has_critical_status or _has_root_cause or _has_raw_critical or root_cause_count > 0:
         _banner_color = "#D32F2F"
         _banner_bg = "#FFEBEE"
         _banner_icon = "&#9888;"
