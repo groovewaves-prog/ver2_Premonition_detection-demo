@@ -342,6 +342,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # ★ トポロジーマップを用いた機械的RCA（ノイズ除去）
     # 根本原因候補の中に、他の候補の「下流（downstream）」ノードが含まれている場合、
     # 上流の障害による波及（ノイズ）と判断し「派生アラート（Symptom）」へ強制降格する。
+    # ただし、自身がCRITICALアラームを出しているデバイスは独立した障害源と
+    # 見なし、降格対象から除外する。
     # =====================================================
     _rc_ids = [c['id'] for c in root_cause_candidates
                if not c.get('is_prediction') and c.get('id') != 'SYSTEM']
@@ -356,7 +358,11 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
         _filtered_rc = []
         for cand in root_cause_candidates:
-            if cand['id'] in _downstream_set and not cand.get('is_prediction'):
+            cid = cand['id']
+            is_downstream = cid in _downstream_set
+            is_prediction = cand.get('is_prediction')
+            has_own_critical = cid in _critical_device_ids
+            if is_downstream and not is_prediction and not has_own_critical:
                 cand['classification'] = 'symptom'
                 symptom_devices.append(cand)
             else:
