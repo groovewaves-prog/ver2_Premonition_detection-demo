@@ -39,12 +39,27 @@
 - `cached_predict_api(dt_engine, device_id, ...)` — predict_api の結果をキャッシュ
 - `prediction_pipeline.py` をキャッシュ層経由に書き換え、重複キャッシュロジックを削除
 
+#### エッセンス4: 非同期推論ゼロ・ウェイティング（async_inference.py）
+
+**問題**: RCA分析・predict_api の推論が同期実行のため、UI描画がブロックされていた。
+
+**修正内容**:
+- `ui/async_inference.py` — 新規作成。`ThreadPoolExecutor(max_workers=2)` でバックグラウンド推論
+- `_BackgroundStore` — スレッドセーフな結果ストア（`threading.Lock` で排他制御）
+- `submit_rca_task()` / `get_rca_result()` — 非同期 submit + 即座取得パターン
+- `submit_predict_task()` / `get_predict_result()` — predict_api の非同期版
+- `proactive_warm_cache()` — ストリームデータ到着時のプロアクティブ型キャッシュウォーミング
+- `cockpit.py` に `🧠 AI分析中...` インジケーター追加
+- `stream_dashboard.py` に `_warm_stream_cache()` 追加。ストリームデータ到着時にバックグラウンド推論をキック
+
 ### 修正ファイル一覧
 | ファイル | 変更内容 |
 |----------|----------|
 | `ui/engine_cache.py` | 3つのエッセンスの中核実装 |
-| `ui/cockpit.py` | 軽量キーAPI への移行 + RCA分析キャッシュ層利用 |
+| `ui/cockpit.py` | 軽量キーAPI + RCA非同期化 + 分析中インジケーター |
+| `ui/async_inference.py` | 非同期推論ワーカー（新規） |
 | `ui/prediction_pipeline.py` | cached_predict_api 経由に書き換え |
+| `ui/stream_dashboard.py` | プロアクティブ・キャッシュウォーミング統合 |
 | `app.py` | タブ遅延読み込み制御 |
 | `streamlit_cache.py` | レガシー互換の軽量キー化 |
 

@@ -330,6 +330,9 @@ def inject_stream_alarms_to_session(sim: AlarmStreamSimulator):
     """
     ストリームの最新アラームを session_state["injected_weak_signal"] に注入。
     cockpit.py が既存のフローで処理できるようにする。
+
+    ★ エッセンス4: 同時にバックグラウンドでキャッシュウォーミングを実行し、
+      ユーザーが Cockpit タブを開く前に推論結果を準備しておく。
     """
     if sim is None or not sim.is_started:
         return
@@ -352,3 +355,57 @@ def inject_stream_alarms_to_session(sim: AlarmStreamSimulator):
         "scenario": scenario_display,
         "source": "stream",
     }
+
+    # ★ プロアクティブ・キャッシュウォーミング:
+    #   ストリームデータ到着時にバックグラウンドで推論をキックし、
+    #   Cockpit タブを開く前にキャッシュを温めておく。
+    _warm_stream_cache(sim, latest_msgs, current_level)
+
+
+def _warm_stream_cache(sim: AlarmStreamSimulator, latest_msgs: list, current_level: int):
+    """ストリームデータ到着時にバックグラウンドで推論キャッシュを温める。
+
+    Cockpit タブを開く前に推論結果を準備しておくプロアクティブ型。
+    """
+    try:
+        from ui.async_inference import proactive_warm_cache
+        from ui.engine_cache import get_topo_hash_cached
+
+        active_site = st.session_state.get("active_site")
+        if not active_site:
+            return
+
+        topo_hash = get_topo_hash_cached(active_site)
+
+        # ストリームのアラームから Alarm オブジェクトを構築
+        from alarm_generator import generate_alarms_for_scenario, Alarm
+        scenario = st.session_state.get("site_scenarios", {}).get(active_site, "正常稼働")
+        from registry import get_paths, load_topology
+        paths = get_paths(active_site)
+        topology = load_topology(paths.topology_path)
+        alarms = generate_alarms_for_scenario(topology, scenario) if topology else []
+
+        # ストリームの INFO アラームを追加
+        for msg in latest_msgs:
+            if msg:
+                alarms.append(Alarm(
+                    device_id=sim.device_id,
+                    message=msg,
+                    severity="INFO",
+                    is_root_cause=False,
+                ))
+
+        # predict_api 用のソース情報
+        combined_msg = " | ".join(latest_msgs[:5])
+        predict_sources = [
+            (sim.device_id, combined_msg, "stream", current_level, len(latest_msgs)),
+        ]
+
+        proactive_warm_cache(
+            site_id=active_site,
+            topo_hash=topo_hash,
+            alarms=alarms,
+            predict_sources=predict_sources,
+        )
+    except Exception as e:
+        logger.debug("Stream cache warming skipped: %s", e)
