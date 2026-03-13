@@ -484,10 +484,10 @@ class LogicalRCA:
     # ==========================================================
     # Public API
     # ==========================================================
-    # ★ 高速化: analyze() 内部キャッシュ（同一アラームセットなら GrayScope/Granger をスキップ）
-    _analyze_cache_hash: Optional[int] = None
-    _analyze_cache_grayscope = None
-    _analyze_cache_granger_applied: bool = False
+    # ★ Singleton安全化: 内部キャッシュを廃止（レースコンディション防止）
+    #   LogicalRCA は @st.cache_resource で全ユーザー共有Singletonのため、
+    #   インスタンス変数での状態保持は競合リスクがある。
+    #   キャッシュは呼び出し元の cockpit.py (st.session_state) で管理する。
 
     def analyze(self, alarms: List) -> List[Dict[str, Any]]:
         if not alarms:
@@ -502,16 +502,8 @@ class LogicalRCA:
                 "classification": "unrelated"
             }]
 
-        # ★ 高速化: アラームセットのハッシュを計算（GrayScope/Granger キャッシュ判定用）
-        # ★ BugFix: INFOアラーム（シミュレーション注入）を除外してハッシュ計算。
-        #   cockpit.py 側もINFO除外ハッシュを使用しており、
-        #   シミュレーション level 変更時にGrayScope/Granger/LLMが
-        #   不必要に再実行されるのを防止（数秒の遅延を解消）。
-        _alarm_hash = hash(tuple(sorted(
-            (a.device_id, a.message, a.severity) for a in alarms
-            if a.severity != "INFO"
-        )))
-        _use_cached_analysis = (_alarm_hash == self._analyze_cache_hash)
+        # NOTE: 内部キャッシュは廃止済み（Singleton競合防止）。
+        # 呼び出し元の cockpit.py (st.session_state) でキャッシュを管理。
 
         msg_map: Dict[str, List[str]] = {}
         for a in alarms:
@@ -532,12 +524,8 @@ class LogicalRCA:
         silent_suspects = self._detect_silent_failures(msg_map)
 
         # ★ Phase 4: GrayScope 確率的サイレント障害検出（ヒューリスティックを補完）
-        # ★ 高速化: 同一アラームセットならキャッシュ済み結果を再利用
         _grayscope_result = None
-        if _use_cached_analysis and self._analyze_cache_grayscope is not None:
-            _grayscope_result = self._analyze_cache_grayscope
-            _logger.debug("GrayScope cache hit — skipping reanalysis")
-        elif self.grayscope is not None:
+        if self.grayscope is not None:
             try:
                 _grayscope_result = self.grayscope.analyze(
                     msg_map, set(msg_map.keys()),
@@ -566,10 +554,6 @@ class LogicalRCA:
                 )
             except Exception as e:
                 _logger.warning(f"GrayScope analysis skipped: {e}")
-
-        # ★ 高速化: GrayScope結果をキャッシュに保存
-        if _grayscope_result is not None:
-            self._analyze_cache_grayscope = _grayscope_result
 
         for parent_id, info in silent_suspects.items():
             msg_map.setdefault(parent_id, []).append("Silent Failure Suspected")
@@ -643,9 +627,8 @@ class LogicalRCA:
 
         # ==========================================================
         # ★ Phase 2: アラームイベント記録 + Granger因果分析
-        # ★ 高速化: 同一アラームセットならペアワイズテスト + 補正をスキップ
         # ==========================================================
-        if self.granger is not None and not (_use_cached_analysis and self._analyze_cache_granger_applied):
+        if self.granger is not None:
             try:
                 _now = time.time()
                 _sev_scores = {'CRITICAL': 1.0, 'WARNING': 0.5, 'INFO': 0.2}
@@ -692,8 +675,6 @@ class LogicalRCA:
                             f"({_summary['topology_consistent']} topology-consistent), "
                             f"avg weight={_summary['avg_weight']:.3f}"
                         )
-
-                self._analyze_cache_granger_applied = True
 
             except Exception as e:
                 _logger.warning(f"Granger analysis skipped: {e}")
@@ -760,9 +741,6 @@ class LogicalRCA:
             2,                                                                 # Others
             -x.get("prob", 0)                                                  # Prob Descending
         ))
-
-        # ★ 高速化: キャッシュハッシュを更新（次回同一アラームセットで再利用）
-        self._analyze_cache_hash = _alarm_hash
 
         return results
 
