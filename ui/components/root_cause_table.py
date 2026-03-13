@@ -8,20 +8,6 @@ from .command_popup import render_triage_cards
 logger = logging.getLogger(__name__)
 
 
-def _get_severity_store():
-    """LogicalRCA エンジンから _AISeverityStore を取得する。"""
-    try:
-        from ui.engine_cache import get_dt_engine_for_site, get_topo_hash_cached, get_cached_logical_rca
-        site_id = st.session_state.get("active_site")
-        if not site_id:
-            return None
-        topo_hash = get_topo_hash_cached(site_id)
-        engine = get_cached_logical_rca(site_id, topo_hash)
-        return getattr(engine, "_ai_severity_store", None)
-    except Exception:
-        return None
-
-
 def render_root_cause_table(
     root_cause_candidates: List[dict],
     symptom_devices: List[dict],
