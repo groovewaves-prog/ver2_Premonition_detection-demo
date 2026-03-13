@@ -40,6 +40,7 @@ from ui.components.remediation import render_remediation
 from ui.components.chat_panel import render_chat_panel
 from ui.components.command_popup import show_command_popup_if_pending
 from ui.prediction_pipeline import run_prediction_pipeline
+from ui.autonomous_diagnostic import render_autonomous_diagnostic_panel
 
 
 # =====================================================
@@ -396,6 +397,11 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             topology, alarms, analysis_results,
             selected_incident_candidate, target_device_id,
             dt_engine, engine, scenario, api_key,
+        )
+
+        # ★ エッセンス5: AI自律診断パネル
+        render_autonomous_diagnostic_panel(
+            selected_incident_candidate, topology, scenario,
         )
 
     # 右カラム: AI Analyst Report + Remediation + Chat

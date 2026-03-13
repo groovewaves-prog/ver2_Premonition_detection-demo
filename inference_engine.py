@@ -161,9 +161,74 @@ class _AISeverityStore:
                     "is_promoted": v.get("is_promoted", False),
                     "first_seen": v.get("first_seen", ""),
                     "last_seen": v.get("last_seen", ""),
+                    "feedback_positive": v.get("feedback_positive", 0),
+                    "feedback_negative": v.get("feedback_negative", 0),
                 }
                 for v in self._store.values()
             ]
+
+    def record_feedback(self, alert_text: str, is_positive: bool):
+        """ユーザーフィードバックを記録し、判定スコアに補正をかける。
+
+        正のフィードバック: スコアを微増（確信度向上）
+        負のフィードバック: スコアを微減 + 昇格フラグを取り消す可能性
+
+        Args:
+            alert_text: アラームテキスト
+            is_positive: True=役に立った / False=役に立たなかった
+        """
+        key = self._pattern_key(alert_text)
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return  # 未知のパターンにはフィードバック不可
+
+            if is_positive:
+                entry["feedback_positive"] = entry.get("feedback_positive", 0) + 1
+                # 正のフィードバックでスコアを微増（上限1.0）
+                entry["avg_score"] = min(1.0, entry.get("avg_score", 0.5) + 0.05)
+            else:
+                entry["feedback_negative"] = entry.get("feedback_negative", 0) + 1
+                # 負のフィードバックでスコアを微減（下限0.0）
+                entry["avg_score"] = max(0.0, entry.get("avg_score", 0.5) - 0.1)
+                # 負が正を大幅に上回る場合、昇格を取り消し
+                neg = entry.get("feedback_negative", 0)
+                pos = entry.get("feedback_positive", 0)
+                if neg > pos + 2:
+                    entry["is_promoted"] = False
+
+            entry["last_feedback"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            self._store[key] = entry
+            self._save()
+
+        _logger.info(
+            "Feedback recorded for pattern %s: %s (pos=%d, neg=%d)",
+            key[:8], "positive" if is_positive else "negative",
+            entry.get("feedback_positive", 0),
+            entry.get("feedback_negative", 0),
+        )
+
+    def get_feedback_adjusted_score(self, alert_text: str) -> Optional[float]:
+        """フィードバック補正済みスコアを返す。
+
+        lookup() で得られるスコアにフィードバック補正を加味した値。
+        フィードバックが無い場合は None を返す。
+        """
+        key = self._pattern_key(alert_text)
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            pos = entry.get("feedback_positive", 0)
+            neg = entry.get("feedback_negative", 0)
+            if pos + neg == 0:
+                return None
+            base_score = entry.get("avg_score", 0.5)
+            # フィードバック比率による補正 (-0.2 〜 +0.1)
+            total = pos + neg
+            ratio = (pos - neg) / total  # -1.0 〜 +1.0
+            adjustment = ratio * 0.1
+            return max(0.0, min(1.0, base_score + adjustment))
 
 # 新SDK優先、旧SDKにフォールバック
 try:
