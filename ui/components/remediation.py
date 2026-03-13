@@ -219,11 +219,27 @@ def _render_generate_fix_button(cand, topology, scenario, site_id, api_key, is_p
 
 
 def _render_execute_section(cand, topology, scenario, api_key, dt_engine, is_pred_rem):
-    """復旧手順表示 + Execute / Cancel ボタン"""
+    """復旧手順表示 + Execute / Cancel ボタン（セーフティガード付き）"""
     with st.container(height=400, border=True):
         st.info("AI Generated Recovery Procedure（復旧手順）")
         st.markdown(st.session_state.remediation_plan)
 
+    # ── 既存の検証セッションがあれば表示 ──
+    existing_session = get_verification_session(cand["id"])
+    if existing_session and existing_session.status not in ("pending",):
+        st.markdown("#### 🛡️ 実行ログと検証ステータス")
+        render_verification_panel(existing_session)
+
+        # ロールバックボタン（異常検知時のみ表示）
+        if render_rollback_button(existing_session):
+            _execute_rollback_flow(existing_session, cand, scenario, dt_engine, is_pred_rem)
+            return
+
+        # 復旧確認済みなら追加ボタンは不要
+        if existing_session.status == "verified":
+            return
+
+    # ── Execute / Cancel ボタン ──
     col_exec1, col_exec2 = st.columns(2)
     exec_clicked   = col_exec1.button("🚀 修復実行 (Execute)", type="primary")
     cancel_clicked = col_exec2.button("キャンセル")
@@ -245,14 +261,33 @@ def _render_execute_section(cand, topology, scenario, api_key, dt_engine, is_pre
 
 
 def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
-    """修復実行ロジック — 結果をポップアップで表示（拡張A/C）"""
-    with st.status("🔧 修復処理実行中...", expanded=True) as status_widget:
+    """セーフティガード付き修復実行ロジック
+
+    Pre-Check → Snapshot → Execute → Post-Check → Recovery Confirmed / Rollback
+    """
+    with st.status("🔧 セーフティガード付き修復処理を実行中...", expanded=True) as status_widget:
+
+        # ── Step 1: Pre-Check ──
+        st.write("🔍 **Step 1/4: Pre-Check** — 現在の状態を確認中...")
+        from .verifier import run_pre_checks, take_config_snapshot, run_post_checks, evaluate_post_checks
+        pre_checks = run_pre_checks(cand["id"])
+
+        pre_fails = sum(1 for c in pre_checks if c.status == "fail")
+        pre_passes = sum(1 for c in pre_checks if c.status == "pass")
+        st.write(f"  Pre-Check完了: {len(pre_checks)}項目 (Pass: {pre_passes}, Fail: {pre_fails})")
+
+        # ── Step 2: Snapshot ──
+        st.write("📸 **Step 2/4: Snapshot** — 現在の設定を保存中...")
+        snapshot = take_config_snapshot(cand["id"])
+        st.write(f"  スナップショット取得完了 (ID: {snapshot.snapshot_id})")
+
+        # ── Step 3: Execute ──
+        st.write("⚡ **Step 3/4: Execute** — 修復アクションを実行中...")
         target_node_obj = topology.get(cand["id"])
         device_info = (target_node_obj.metadata
                        if target_node_obj and hasattr(target_node_obj, 'metadata')
                        else {})
 
-        st.write("🔄 Executing remediation steps in parallel...")
         results_rem = run_remediation_parallel_v2(
             device_id=cand["id"],
             device_info=device_info,
@@ -261,11 +296,8 @@ def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
             timeout_per_step=30
         )
 
-        st.write("📋 Remediation steps result:")
         all_success = True
         remediation_summary = []
-
-        # ★ 拡張A/C: 実行結果をポップアップ用データとして収集
         _popup_results = []
         for step_name in ["Backup", "Apply", "Verify"]:
             result = results_rem.get(step_name)
@@ -282,11 +314,11 @@ def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
                 if result.status != "success":
                     all_success = False
 
-        # ★ 拡張A/C: 修復後検証コマンドも実行してポップアップに含める
+        # 修復後の検証コマンド
         _verify_commands = [
-            f"show interfaces status",
-            f"show logging | last 10",
-            f"ping 8.8.8.8 repeat 5",
+            "show interfaces status",
+            "show logging | last 10",
+            "ping 8.8.8.8 repeat 5",
         ]
         for _vcmd in _verify_commands:
             _vresult = simulate_command_execution(_vcmd, cand["id"])
@@ -296,9 +328,32 @@ def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
         verification_log = "\n".join(remediation_summary)
         st.session_state.verification_log = verification_log
 
-        if all_success:
+        # ── Step 4: Post-Check ──
+        st.write("🔍 **Step 4/4: Post-Check** — 修復結果を自動検証中...")
+        post_checks = run_post_checks(cand["id"])
+        verdict = evaluate_post_checks(post_checks)
+
+        post_passes = sum(1 for c in post_checks if c.status == "pass")
+        post_fails = sum(1 for c in post_checks if c.status == "fail")
+        st.write(f"  Post-Check完了: {len(post_checks)}項目 (Pass: {post_passes}, Fail: {post_fails})")
+
+        # ── 検証セッションを構築・保存 ──
+        from .verifier import VerificationSession, _get_sessions
+        session = VerificationSession(
+            device_id=cand["id"],
+            scenario=scenario,
+            pre_checks=pre_checks,
+            post_checks=post_checks,
+            snapshot=snapshot,
+            execution_log=_popup_results,
+        )
+
+        if verdict == "verified" and all_success:
+            session.status = "verified"
+            session.conclusion = "Recovery Confirmed: 全検証項目がパスしました。修復は正常に完了しています。"
+
             st.write("✅ All remediation steps completed successfully.")
-            status_widget.update(label="Process Finished", state="complete", expanded=False)
+            status_widget.update(label="Recovery Confirmed", state="complete", expanded=False)
             st.session_state.recovered_devices[cand["id"]] = True
             st.session_state.recovered_scenario_map[cand["id"]] = scenario
 
@@ -310,7 +365,7 @@ def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
                     dt_engine.forecast_auto_resolve(
                         cand["id"],
                         "mitigated",
-                        note="予防措置(Execute)の実行により自動解消"
+                        note="セーフティガード付き修復の検証完了により自動解消"
                     )
 
                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -332,21 +387,69 @@ def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
                 st.session_state.balloons_shown = True
             st.success("✅ System Recovered Successfully!")
 
-            # ★ 拡張A/C: 実行結果をポップアップで表示
             _popup_title = "🔮 予防措置 実行結果" if is_pred_rem else "🚀 修復実行 結果"
             from .command_popup import render_command_result_popup
             render_command_result_popup(_popup_title, _popup_results)
 
             if is_pred_rem:
                 time.sleep(0.5)
-                st.rerun()
-        else:
-            st.write("⚠️ Some remediation steps failed. Please review.")
-            status_widget.update(label="Process Finished - With Errors", state="error", expanded=True)
 
-            # ★ エラー時もポップアップで詳細表示
+        elif verdict == "rollback_needed":
+            session.status = "rollback_needed"
+            session.conclusion = "異常検出: 修復後の検証で異常が検出されました。ロールバックを推奨します。"
+
+            st.write("🔴 Post-Check で異常を検出しました。ロールバックを推奨します。")
+            status_widget.update(label="異常検出 — ロールバック推奨", state="error", expanded=True)
+
             from .command_popup import render_command_result_popup
-            render_command_result_popup("⚠️ 修復実行 結果（エラーあり）", _popup_results)
+            render_command_result_popup("🔴 修復実行 結果 — ロールバック推奨", _popup_results)
+
+        else:
+            session.status = "warning"
+            session.conclusion = "警告: 一部の検証項目で警告があります。手動確認を推奨します。"
+
+            if all_success:
+                st.write("🟡 修復は完了しましたが、一部の検証項目で警告があります。")
+                status_widget.update(label="Process Finished — 要確認", state="complete", expanded=True)
+                st.session_state.recovered_devices[cand["id"]] = True
+                st.session_state.recovered_scenario_map[cand["id"]] = scenario
+            else:
+                st.write("⚠️ Some remediation steps failed. Please review.")
+                status_widget.update(label="Process Finished - With Errors", state="error", expanded=True)
+
+            from .command_popup import render_command_result_popup
+            render_command_result_popup("⚠️ 修復実行 結果（要確認）", _popup_results)
+
+        # セッション保存
+        _get_sessions()[cand["id"]] = session
+
+    # ステータスパネルを即表示
+    st.rerun()
+
+
+def _execute_rollback_flow(session, cand, scenario, dt_engine, is_pred_rem):
+    """ロールバックを実行し、セッションを更新する。"""
+    with st.status("🔄 ロールバック実行中...", expanded=True) as rollback_status:
+        st.write(f"📸 スナップショット {session.snapshot.snapshot_id} から復元中...")
+
+        rollback_results = execute_rollback(cand["id"], session.snapshot)
+
+        for r in rollback_results:
+            st.write(f"  {r.get('command', 'unknown')}: {r.get('status', '')}")
+
+        session.status = "rolled_back"
+        session.conclusion = (
+            f"ロールバック完了: スナップショット {session.snapshot.snapshot_id} から"
+            f"設定を復元しました。"
+        )
+
+        from .verifier import _get_sessions
+        _get_sessions()[cand["id"]] = session
+
+        rollback_status.update(label="ロールバック完了", state="complete", expanded=False)
+        st.success("🔄 ロールバックが正常に完了しました。")
+
+    st.rerun()
 
 
 def _render_prediction_history(cand, dt_engine, api_key):
