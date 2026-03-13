@@ -231,6 +231,7 @@ def render_sidebar():
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ★ サービスティア切替（デモ用）
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        from ui.service_tier import TIER_DESCRIPTIONS
         _tier_options = {
             TIER_BASIC: "Basic — トポロジー + アラート分析",
             TIER_PHM:   "PHM — + 予兆検知 / RUL予測",
@@ -250,28 +251,41 @@ def render_sidebar():
                 st.session_state["service_tier"] = _selected_tier
                 st.rerun()
 
+            # 現在のティアの含まれる機能一覧
+            st.caption(f"**{_tier_options[_current_tier].split(' — ')[0]}** プラン:")
+            st.caption(TIER_DESCRIPTIONS.get(_current_tier, ""))
+            if _current_tier != TIER_FULL:
+                _next_tier = TIER_PHM if _current_tier == TIER_BASIC else TIER_FULL
+                _next_label = _tier_options[_next_tier].split(" — ")[0]
+                st.caption(f"⬆️ **{_next_label}** にアップグレードすると: {TIER_DESCRIPTIONS.get(_next_tier, '')}")
+
         st.divider()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ★ 共通シミュレーション設定（デバイス・シナリオ一元管理）[PHM tier]
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if tier_has_access(TIER_PHM):
-            with st.expander("🎯 シミュレーション対象設定", expanded=True):
-                target_device, scenario_key = render_shared_config()
+        from ui.service_tier import render_tier_section
+        with render_tier_section(
+            TIER_PHM, "シミュレーション設定", icon="🎯",
+            description="予兆シミュレーション・連続劣化ストリームなどの高度なシミュレーション機能。対象デバイスとシナリオを設定して予兆検知のデモを実行できます。",
+        ) as _sim_ok:
+            if _sim_ok:
+                with st.expander("🎯 シミュレーション対象設定", expanded=True):
+                    target_device, scenario_key = render_shared_config()
 
-            st.divider()
+                st.divider()
 
-            # --- 予兆シミュレーション (共通設定を参照) ---
-            _render_weak_signal_injection(target_device, scenario_key)
+                # --- 予兆シミュレーション (共通設定を参照) ---
+                _render_weak_signal_injection(target_device, scenario_key)
 
-            st.divider()
+                st.divider()
 
-            # --- 連続劣化ストリーム (共通設定を参照) ---
-            _render_stream_section(target_device, scenario_key)
-        else:
-            # PHM未満: デフォルト値を設定（バックエンド側の動作に影響しない）
-            target_device = "不明"
-            scenario_key = "optical"
+                # --- 連続劣化ストリーム (共通設定を参照) ---
+                _render_stream_section(target_device, scenario_key)
+            else:
+                # PHM未満: デフォルト値を設定（バックエンド側の動作に影響しない）
+                target_device = "不明"
+                scenario_key = "optical"
 
         return _render_api_key_input()
 

@@ -7,8 +7,9 @@
 #
 # 現在のデモ環境では全機能がON（FULL）。
 # 環境変数 SERVICE_TIER で切り替え可能。
-# UIはグレーアウト表示のみ（バックエンド停止なし）。
+# ティア不足時は折りたたみ表示 + ロックアイコンで段階的解放を演出。
 import os
+from contextlib import contextmanager
 import streamlit as st
 
 # サービスティア定義
@@ -18,6 +19,20 @@ TIER_FULL  = "full"
 
 # ティアの階層順（低→高）
 _TIER_ORDER = {TIER_BASIC: 1, TIER_PHM: 2, TIER_FULL: 3}
+
+# ティアの表示名
+_TIER_LABELS = {
+    TIER_BASIC: "Basic",
+    TIER_PHM:   "PHM",
+    TIER_FULL:  "Full",
+}
+
+# ティア別の概要説明（サイドバー用）
+TIER_DESCRIPTIONS = {
+    TIER_BASIC: "トポロジー可視化 / アラート分析 / ノイズ削減 / ベイズ推論",
+    TIER_PHM:   "↑ Basic + 予兆検知 / RUL予測 / Future Radar",
+    TIER_FULL:  "↑ PHM + Granger因果 / GDN偏差 / GrayScope / GNN",
+}
 
 
 def get_service_tier() -> str:
@@ -56,12 +71,6 @@ def render_tier_gated(required_tier: str, label: str = ""):
 class _TierGateContext:
     """ティアゲートのコンテキストマネージャ"""
 
-    _TIER_LABELS = {
-        TIER_BASIC: "Basic",
-        TIER_PHM:   "PHM (Predictive Health Management)",
-        TIER_FULL:  "Full",
-    }
-
     def __init__(self, required_tier: str, label: str):
         self.required_tier = required_tier
         self.label = label
@@ -73,7 +82,7 @@ class _TierGateContext:
             # グレーアウトコンテナ
             self._container = st.container()
             with self._container:
-                tier_label = self._TIER_LABELS.get(self.required_tier, self.required_tier)
+                tier_label = _TIER_LABELS.get(self.required_tier, self.required_tier)
                 feature_label = f" ({self.label})" if self.label else ""
                 st.markdown(
                     f'<div style="position:relative;">'
@@ -92,3 +101,66 @@ class _TierGateContext:
 
     def __exit__(self, *args):
         pass
+
+
+@contextmanager
+def render_tier_section(
+    required_tier: str,
+    label: str,
+    icon: str = "",
+    description: str = "",
+):
+    """ティア不足時に折りたたみ表示する段階的解放UIコンポーネント。
+
+    - アクセス可能   → 通常表示（コンテンツをそのまま描画）
+    - アクセス不可   → 折りたたみ expander + ロックアイコン + アップグレード案内
+                       中身は描画されない（パフォーマンス節約）
+
+    使い方:
+        with render_tier_section(TIER_PHM, "予兆検知", icon="🔮") as accessible:
+            if accessible:
+                render_future_radar(...)
+
+    Args:
+        required_tier: 必要なティア (TIER_BASIC / TIER_PHM / TIER_FULL)
+        label: 機能名（表示用）
+        icon: アイコン（省略可）
+        description: 機能概要（ロック時に表示。省略時はデフォルト）
+    """
+    has_access = tier_has_access(required_tier)
+
+    if has_access:
+        # アクセスOK → そのまま描画
+        yield True
+    else:
+        # アクセス不可 → 折りたたみ expander で「プレビュー」
+        tier_label = _TIER_LABELS.get(required_tier, required_tier)
+        expander_title = f"🔒 {icon} {label}  —  {tier_label} プランで解放" if icon else f"🔒 {label}  —  {tier_label} プランで解放"
+
+        with st.expander(expander_title, expanded=False):
+            # アップグレード案内
+            _desc = description or f"この機能は **{tier_label}** プラン以上でご利用いただけます。"
+            st.info(f"""
+**{icon} {label}**
+
+{_desc}
+
+サイドバーの「🔑 サービスティア」から **{tier_label}** 以上を選択すると、この機能が解放されます。
+""")
+
+            # 各ティアの機能一覧をコンパクトに表示
+            current = get_service_tier()
+            current_order = _TIER_ORDER.get(current, 0)
+            required_order = _TIER_ORDER.get(required_tier, 0)
+
+            upgrade_path = []
+            for t_key in [TIER_BASIC, TIER_PHM, TIER_FULL]:
+                t_order = _TIER_ORDER[t_key]
+                if current_order < t_order <= required_order:
+                    t_desc = TIER_DESCRIPTIONS.get(t_key, "")
+                    upgrade_path.append(f"**{_TIER_LABELS[t_key]}**: {t_desc}")
+
+            if upgrade_path:
+                st.caption("📋 アップグレードパス:\n" + "\n".join(f"- {p}" for p in upgrade_path))
+
+        yield False

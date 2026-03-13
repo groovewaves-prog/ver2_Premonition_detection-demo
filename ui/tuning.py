@@ -297,10 +297,13 @@ def render_tuning_dashboard(site_id: str):
 
 def _render_gnn_training_tab(site_id: str, dt_engine):
     """GNN事前学習UIタブ"""
-    from ui.service_tier import tier_has_access, TIER_FULL
-    if not tier_has_access(TIER_FULL):
-        st.info("🔒 GNN Training は **Full プラン** で利用可能です。")
-        return
+    from ui.service_tier import render_tier_section, TIER_FULL
+    with render_tier_section(
+        TIER_FULL, "GNN Training", icon="🧠",
+        description="ChiGADウェーブレットGNNの事前学習を実行。EscalationRuleから合成データを生成し、グラフニューラルネットワークモデルを学習させます。",
+    ) as _gnn_ok:
+        if not _gnn_ok:
+            return
     st.caption(
         "ChiGADウェーブレットGNNの事前学習を実行します。"
         "EscalationRuleから合成データを生成し、モデルを学習させます。"
