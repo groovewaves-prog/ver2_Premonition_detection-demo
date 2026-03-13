@@ -299,6 +299,21 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         site_id, alarms, fallback_results=_fallback
     )
 
+    # ★ BugFix: シミュレーション対象の親デバイスがサイレント障害と誤検出される問題を修正。
+    #   予兆シグナルが CORE_SW_01 等に注入されると、GrayScope がその親
+    #   (FW_01_PRIMARY 等) を「配下100%アラーム → サイレント障害」と誤判定する。
+    #   シミュレーション対象の親をサイレント障害候補から除外する。
+    if injected and injected.get("device_id") in topology:
+        _sim_dev = injected["device_id"]
+        _sim_node = topology[_sim_dev]
+        _sim_parent = (_sim_node.get("parent_id") if isinstance(_sim_node, dict)
+                       else getattr(_sim_node, "parent_id", None))
+        if _sim_parent:
+            analysis_results = [
+                r for r in analysis_results
+                if not (r.get("type", "").endswith("SilentFailure") and r.get("id") == _sim_parent)
+            ]
+
     # =====================================================
     # DigitalTwinEngine 初期化
     # =====================================================
