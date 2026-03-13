@@ -21,6 +21,7 @@ from registry import get_paths, load_topology, get_display_name
 from alarm_generator import generate_alarms_for_scenario, Alarm
 from inference_engine import LogicalRCA
 from utils.helpers import get_status_from_alarms
+from digital_twin_pkg.common import build_children_map, get_downstream_devices
 from ui.engine_cache import (
     compute_topo_hash, get_cached_dt_engine, get_cached_logical_rca,
     get_topo_hash_cached, cached_rca_analyze,
@@ -336,6 +337,31 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 symptom_devices.append(cand)
             elif cand.get('prob', 0) > 0.5:
                 root_cause_candidates.append(cand)
+
+    # =====================================================
+    # ★ トポロジーマップを用いた機械的RCA（ノイズ除去）
+    # 根本原因候補の中に、他の候補の「下流（downstream）」ノードが含まれている場合、
+    # 上流の障害による波及（ノイズ）と判断し「派生アラート（Symptom）」へ強制降格する。
+    # =====================================================
+    _rc_ids = [c['id'] for c in root_cause_candidates
+               if not c.get('is_prediction') and c.get('id') != 'SYSTEM']
+
+    if _rc_ids and topology:
+        _children_map = build_children_map(topology)
+        _downstream_set: set = set()
+        for rid in _rc_ids:
+            _ds = get_downstream_devices(topology, rid, max_hops=0,
+                                         children_map=_children_map)
+            _downstream_set.update(_ds)
+
+        _filtered_rc = []
+        for cand in root_cause_candidates:
+            if cand['id'] in _downstream_set and not cand.get('is_prediction'):
+                cand['classification'] = 'symptom'
+                symptom_devices.append(cand)
+            else:
+                _filtered_rc.append(cand)
+        root_cause_candidates = _filtered_rc
 
     if not root_cause_candidates:
         root_cause_candidates = [{
