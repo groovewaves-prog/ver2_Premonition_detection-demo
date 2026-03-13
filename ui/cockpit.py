@@ -482,6 +482,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             topology, alarms, analysis_results,
             selected_incident_candidate, target_device_id,
             dt_engine, engine, scenario, api_key,
+            symptom_devices=symptom_devices,
         )
 
         # ★ エッセンス5: AI自律診断パネル
