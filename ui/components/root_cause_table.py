@@ -144,6 +144,23 @@ def render_root_cause_table(
             ])
             st.dataframe(ur_df, use_container_width=True, hide_index=True)
 
+    # 生アラーム一覧（全アラームの詳細）
+    if alarms:
+        _sev_icon = {'CRITICAL': '🔴', 'WARNING': '🟡', 'INFO': '🔵'}
+        with st.expander(f"📋 生アラーム一覧: {len(alarms)}件", expanded=False):
+            alarm_df = pd.DataFrame([
+                {
+                    "No": i + 1,
+                    "Severity": f"{_sev_icon.get(a.severity, '⚪')} {a.severity}",
+                    "デバイス": a.device_id,
+                    "メッセージ": a.message,
+                    "Root Cause": "✅" if getattr(a, 'is_root_cause', False) else "",
+                    "Silent疑い": "🟣" if getattr(a, 'is_silent_suspect', False) else "",
+                }
+                for i, a in enumerate(alarms)
+            ])
+            st.dataframe(alarm_df, use_container_width=True, hide_index=True)
+
     return selected_incident_candidate, target_device_id
 
 
