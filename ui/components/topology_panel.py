@@ -11,7 +11,7 @@ from verifier import verify_log_content
 logger = logging.getLogger(__name__)
 
 
-def _compute_downstream_fallback(topology: dict, root_id: str, max_hops: int = 3):
+def _compute_downstream_fallback(topology: dict, root_id: str, max_hops: int = 20):
     return get_downstream_with_hops(topology, root_id, max_hops=max_hops)
 
 
