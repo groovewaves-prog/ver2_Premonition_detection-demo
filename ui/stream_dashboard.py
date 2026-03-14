@@ -144,9 +144,12 @@ def render_stream_dashboard():
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
         relative_level = max(0, display_level - start_lvl + 1) if display_level >= start_lvl else 0
-        # 探索モードではプログレスをレベル比率に合わせる
-        if _explore_last_t is not None:
-            _explore_progress = (_explore_last_t / max(sim.total_duration_sec, 0.1)) * 100
+        # 探索モードではプログレスバーをステージ円の中心にスナップ
+        # 円の位置: (i + 0.5) / num_stages（render_timeline_svg L145 と同一計算）
+        _num_stages = len(stages_info)
+        if _explore_last_t is not None and _num_stages > 0:
+            _level_index = explore_level - start_lvl  # 0-based index
+            _explore_progress = (_level_index + 0.5) / _num_stages * 100
         else:
             _explore_progress = progress
         _tl_cache_key = f"{relative_level}|{int(_explore_progress // 5 * 5)}|{explore_level}"
