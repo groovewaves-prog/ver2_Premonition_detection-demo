@@ -99,9 +99,10 @@ def render_stream_dashboard():
     is_complete = sim.is_complete
     start_lvl = getattr(sim, 'start_level', 1)
 
-    # ── レベル探索の値を先に取得 ──
+    # ── レベル探索の値を先に取得（Single Source of Truth: サイドバースライダー） ──
     # explore_level の意味: 「このレベルまで確認済み」
     #   例: explore_level=3 → L1,L2,L3 実線（確認済み）、L4,L5 点線（予測）
+    # ソース: サイドバーの pred_level スライダー → on_change → stream_explore_level
     _all_levels = list(range(start_lvl, 6))
     explore_level = current_level
     if is_complete and len(_all_levels) > 1:
@@ -249,23 +250,34 @@ def render_stream_dashboard():
         )
         _components.html(_scroll_html, height=380, scrolling=True)
 
-        # ── 3.5 レベル探索（コンパクト横並びラジオ） ──
+        # ── 3.5 レベルインジケーター（表示専用・操作不可） ──
+        # 原則1: 操作はサイドバーに集約。右側は読み取り専用の状態表示のみ。
         if is_complete and len(_all_levels) > 1:
-            _explore_short = {s.level: f"L{s.level} {s.label}" for s in seq.stages}
-
-            def _on_radio_change():
-                """ラジオ操作時のコールバック: サイドバースライダーに同期"""
-                st.session_state["pred_level"] = st.session_state["stream_explore_level"]
-
-            explore_level = st.radio(
-                "レベル探索",
-                options=_all_levels,
-                format_func=lambda x: _explore_short.get(x, f"L{x}"),
-                key="stream_explore_level",
-                horizontal=True,
-                label_visibility="collapsed",
-                on_change=_on_radio_change,
+            _indicator_items = []
+            for lvl in _all_levels:
+                _label = next((s.label for s in seq.stages if s.level == lvl), f"L{lvl}")
+                _is_active = (lvl == explore_level)
+                if _is_active:
+                    _indicator_items.append(
+                        f'<span style="display:inline-block;padding:4px 12px;margin:0 3px;'
+                        f'border-radius:16px;font-size:13px;font-weight:bold;'
+                        f'background:#D32F2F;color:#fff;">'
+                        f'L{lvl} {_label}</span>'
+                    )
+                else:
+                    _indicator_items.append(
+                        f'<span style="display:inline-block;padding:4px 12px;margin:0 3px;'
+                        f'border-radius:16px;font-size:13px;'
+                        f'background:#F5F5F5;color:#999;border:1px solid #E0E0E0;">'
+                        f'L{lvl} {_label}</span>'
+                    )
+            _indicator_html = (
+                '<div style="text-align:center;padding:6px 0;">'
+                + ''.join(_indicator_items)
+                + '</div>'
             )
+            st_html(_indicator_html, height=45)
+
             # injected_weak_signal を更新して cockpit の分析を連動
             _explore_events = [e for e in all_events if e.level == explore_level]
             if _explore_events:

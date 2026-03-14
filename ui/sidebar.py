@@ -360,9 +360,9 @@ def _render_weak_signal_injection():
             st.session_state["pred_level"] = 0
             st.session_state["reset_pred_level"] = False
 
-        # ★ 双方向同期: シミュレーション完了時のスライダー操作を探索レベルに反映
-        #   on_change コールバック方式で「操作されたウィジェットのみが同期元」となる
-        #   （毎rerunの無条件代入は State Lock を引き起こすため使わない）
+        # ★ Single Source of Truth: スライダーが唯一の操作コンポーネント
+        #   シミュレーション完了時、スライダー変更を探索レベル（表示専用）に反映
+        #   右側ダッシュボードには操作可能なコンポーネントを配置しない
         _sim_for_sync = _get_simulator()
         _sim_complete = (_sim_for_sync is not None
                          and _sim_for_sync.is_started
