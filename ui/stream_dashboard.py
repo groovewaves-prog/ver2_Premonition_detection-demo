@@ -114,19 +114,22 @@ def render_stream_dashboard():
     _all_levels = list(range(start_lvl, 6))
     # 完了時のみ探索可能（実行中は current_level をそのまま使用）
     explore_level = current_level
-    if is_complete and _all_levels:
-        _default = st.session_state.get("stream_explore_level", current_level)
+    if is_complete and len(_all_levels) > 1:
+        _default = st.session_state.get("stream_explore_level", start_lvl)
         if _default not in _all_levels:
-            _default = _all_levels[-1]
+            _default = start_lvl
         explore_level = _default  # 描画前にデフォルト設定
 
     # ── 探索レベルに基づいてイベントをフィルタ（表示用） ──
     if is_complete and explore_level < current_level:
         display_events = [e for e in all_events if e.level <= explore_level]
         display_level = explore_level
+        # 探索レベルの最後のイベント時刻を基準に elapsed/remaining を算出
+        _explore_last_t = display_events[-1].elapsed_sec if display_events else 0
     else:
         display_events = live_events
         display_level = current_level
+        _explore_last_t = None  # 探索モードではない
 
     # ── ヘッダー ──
     status_text = "完了" if is_complete else f"Level {display_level}/5"
@@ -143,9 +146,14 @@ def render_stream_dashboard():
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
         relative_level = max(0, display_level - start_lvl + 1) if display_level >= start_lvl else 0
-        _tl_cache_key = f"{relative_level}|{int(progress // 5 * 5)}|{explore_level}"
+        # 探索モードではプログレスをレベル比率に合わせる
+        if _explore_last_t is not None:
+            _explore_progress = (_explore_last_t / max(sim.total_duration_sec, 0.1)) * 100
+        else:
+            _explore_progress = progress
+        _tl_cache_key = f"{relative_level}|{int(_explore_progress // 5 * 5)}|{explore_level}"
         timeline_svg = _svg_cached("timeline", _tl_cache_key,
-                                   render_timeline_svg, relative_level, progress, stages_info)
+                                   render_timeline_svg, relative_level, _explore_progress, stages_info)
         st_html(timeline_svg, height=100)
 
         st.markdown("---")
@@ -167,7 +175,11 @@ def render_stream_dashboard():
 
         with col_kpi1:
             severity = display_events[-1].severity if display_events else "NORMAL"
-            elapsed = sim.current_elapsed_sec
+            # 探索モードでは探索レベルの最終イベント時刻を使用
+            if _explore_last_t is not None:
+                elapsed = _explore_last_t
+            else:
+                elapsed = sim.current_elapsed_sec
             remaining = max(0, sim.total_duration_sec - elapsed)
             latest_stage = display_events[-1].stage_label if display_events else "-"
 
