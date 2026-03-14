@@ -99,31 +99,26 @@ def render_stream_dashboard():
     is_complete = sim.is_complete
     start_lvl = getattr(sim, 'start_level', 1)
 
-    # ── レベル探索スライダーの値を先に取得 ──
-    _EXPLORE_LABELS = {
-        1: "L1: 初期劣化", 2: "L2: 劣化進行", 3: "L3: 警戒域",
-        4: "L4: 危険域", 5: "L5: 障害直前",
-    }
+    # ── レベル探索の値を先に取得 ──
+    # explore_level の意味: 「このレベルまで確認済み」
+    #   例: explore_level=3 → L1,L2,L3 実線（確認済み）、L4,L5 点線（予測）
     _all_levels = list(range(start_lvl, 6))
-    # 完了時のみ探索可能（実行中は current_level をそのまま使用）
     explore_level = current_level
     if is_complete and len(_all_levels) > 1:
         _default = st.session_state.get("stream_explore_level", start_lvl)
         if _default not in _all_levels:
             _default = start_lvl
-        explore_level = _default  # 描画前にデフォルト設定
+        explore_level = _default
 
     # ── 探索レベルに基づいてイベントをフィルタ（表示用） ──
-    # explore_level=3 → L2までを確認済み表示、L3以降は予測（点線）
-    if is_complete and explore_level <= current_level:
-        display_events = [e for e in all_events if e.level < explore_level]
-        display_level = max(explore_level - 1, start_lvl)
-        # 探索レベルの最後のイベント時刻を基準に elapsed/remaining を算出
+    if is_complete and explore_level < current_level:
+        display_events = [e for e in all_events if e.level <= explore_level]
+        display_level = explore_level
         _explore_last_t = display_events[-1].elapsed_sec if display_events else 0
     else:
         display_events = live_events
         display_level = current_level
-        _explore_last_t = None  # 探索モードではない
+        _explore_last_t = None
 
     # ── ヘッダー ──
     status_text = "完了" if is_complete else f"Level {display_level}/5"
@@ -190,17 +185,16 @@ def render_stream_dashboard():
 
         st.markdown("---")
 
-        # ── 3. 劣化曲線チャート（レベル対応版・キャッシュなし直接生成） ──
-        # chart_points: [(elapsed_sec, metric_value, level)] を構築
+        # ── 3. 劣化曲線チャート（レベル対応版・毎回直接生成） ──
         _initial_v = seq.normal_value
         if start_lvl > 1 and start_lvl - 2 < len(seq.stages):
             _initial_v = seq.stages[start_lvl - 2].metric_value
         chart_points = [(0.0, _initial_v, 0)]  # 初期点 (level 0)
         for ev in all_events:
             chart_points.append((ev.elapsed_sec, ev.metric_value, ev.level))
-        # 障害点を total_duration に追加（グラフを障害線まで延長）
         chart_points.append((sim.total_duration_sec, seq.failure_value, 6))
 
+        _el = explore_level if is_complete else 0
         chart_svg = render_degradation_chart_svg(
             chart_points=chart_points,
             normal_value=seq.normal_value,
@@ -208,25 +202,30 @@ def render_stream_dashboard():
             metric_name=seq.metric_name,
             metric_unit=seq.metric_unit,
             total_duration=sim.total_duration_sec,
-            explore_level=explore_level if is_complete else 0,
+            explore_level=_el,
         )
+        # data-el 属性で iframe キャッシュバスト（explore_level 変更時に確実に再描画）
         import streamlit.components.v1 as _components
         _scroll_html = (
-            f'<div style="overflow-x:auto;overflow-y:hidden;'
+            f'<div data-el="{_el}" style="overflow-x:auto;overflow-y:hidden;'
             f'border:1px solid #eee;border-radius:4px;padding:4px;">'
             f'{chart_svg}</div>'
         )
         _components.html(_scroll_html, height=380, scrolling=True)
 
-        # ── 3.5 レベル探索スライダー（グラフ直下） ──
+        # ── 3.5 レベル探索（コンパクト横並びラジオ） ──
         if is_complete and len(_all_levels) > 1:
-            explore_level = st.select_slider(
-                "🔍 レベル探索",
+            _EXPLORE_SHORT = {
+                1: "L1 初期劣化", 2: "L2 劣化進行", 3: "L3 警戒域",
+                4: "L4 危険域", 5: "L5 障害直前",
+            }
+            explore_level = st.radio(
+                "レベル探索",
                 options=_all_levels,
-                value=_default,
-                format_func=lambda x: _EXPLORE_LABELS.get(x, f"L{x}"),
-                help="選択レベルまでを実線、以降を点線で表示。ゲージ・KPI・タイムラインも連動します。",
+                format_func=lambda x: _EXPLORE_SHORT.get(x, f"L{x}"),
                 key="stream_explore_level",
+                horizontal=True,
+                label_visibility="collapsed",
             )
             # injected_weak_signal を更新して cockpit の分析を連動
             _explore_events = [e for e in all_events if e.level == explore_level]

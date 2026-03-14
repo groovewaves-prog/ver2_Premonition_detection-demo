@@ -329,6 +329,7 @@ def render_degradation_chart_svg(
     # ── データライン + ポイント（レベルベースの実線/点線分割） ──
     if len(chart_points) > 1:
         # 分割判定: explore_level > 0 の場合、level <= explore_level を実線
+        # 例: explore_level=3 → level 0,1,2,3 = 実線、level 4,5,6 = 点線
         splitting = explore_level > 0
 
         # セグメントごとに実線/点線を描画
@@ -341,7 +342,7 @@ def render_degradation_chart_svg(
             sy = to_y(v)
             pt = f"{sx},{sy}"
 
-            if not splitting or lvl < explore_level:
+            if not splitting or lvl <= explore_level:
                 # 実線側: dashed→solidの切替時に接続点を追加
                 if dashed_pts and not solid_pts:
                     solid_pts.append(dashed_pts[-1])
@@ -368,7 +369,7 @@ def render_degradation_chart_svg(
         for i, (t, v, lvl) in enumerate(chart_points):
             sx = to_x(t)
             sy = to_y(v)
-            is_future = splitting and lvl >= explore_level
+            is_future = splitting and lvl > explore_level
             is_last = (i == len(chart_points) - 1)
             r = 5 if is_last else 3
 
