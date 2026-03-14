@@ -360,26 +360,18 @@ def _render_weak_signal_injection():
             st.session_state["pred_level"] = 0
             st.session_state["reset_pred_level"] = False
 
-        # ★ Single Source of Truth: スライダーが唯一の操作コンポーネント
-        #   シミュレーション完了時、スライダー変更を探索レベル（表示専用）に反映
-        #   右側ダッシュボードには操作可能なコンポーネントを配置しない
+        # ★ システム状態: スライダーはシミュレーションの「現実」を制御する
+        #   ビュー状態（whatif_phase）とは完全に独立。互いに書き合わない。
         _sim_for_sync = _get_simulator()
         _sim_complete = (_sim_for_sync is not None
                          and _sim_for_sync.is_started
                          and _sim_for_sync.is_complete)
-
-        def _on_slider_change():
-            """スライダー操作時のコールバック: 完了済みなら探索レベルを同期"""
-            sim = _get_simulator()
-            if sim and sim.is_started and sim.is_complete:
-                st.session_state["stream_explore_level"] = st.session_state["pred_level"]
 
         degradation_level = st.slider(
             "劣化進行度",
             min_value=0, max_value=5, value=0,
             help="0:正常 → 5:障害発生直前。レベルが上がると相関シグナルが増加し、予測精度が向上します。",
             key="pred_level",
-            on_change=_on_slider_change,
         )
 
         # --- リアルなログメッセージ生成 ---

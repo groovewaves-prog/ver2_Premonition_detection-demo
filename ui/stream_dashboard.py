@@ -99,14 +99,14 @@ def render_stream_dashboard():
     is_complete = sim.is_complete
     start_lvl = getattr(sim, 'start_level', 1)
 
-    # ── レベル探索の値を先に取得（Single Source of Truth: サイドバースライダー） ──
-    # explore_level の意味: 「このレベルまで確認済み」
+    # ── レベル探索の値を先に取得（ビュー状態: whatif_phase） ──
+    # explore_level の意味: 「このレベルまで確認済み」として表示を切り出す
     #   例: explore_level=3 → L1,L2,L3 実線（確認済み）、L4,L5 点線（予測）
-    # ソース: サイドバーの pred_level スライダー → on_change → stream_explore_level
+    # ソース: メイン画面の What-If セレクター（システム状態 pred_level とは完全独立）
     _all_levels = list(range(start_lvl, 6))
     explore_level = current_level
     if is_complete and len(_all_levels) > 1:
-        _default = st.session_state.get("stream_explore_level", start_lvl)
+        _default = st.session_state.get("whatif_phase", start_lvl)
         if _default not in _all_levels:
             _default = start_lvl
         explore_level = _default
@@ -250,33 +250,19 @@ def render_stream_dashboard():
         )
         _components.html(_scroll_html, height=380, scrolling=True)
 
-        # ── 3.5 レベルインジケーター（表示専用・操作不可） ──
-        # 原則1: 操作はサイドバーに集約。右側は読み取り専用の状態表示のみ。
+        # ── 3.5 What-If フェーズセレクター（ビュー操作・システム状態に影響しない） ──
+        # 原則1改訂: ビュー操作（視点の変更）はメイン画面に配置。
+        #   システム状態（pred_level）とは独立したキー（whatif_phase）を使用。
         if is_complete and len(_all_levels) > 1:
-            _indicator_items = []
-            for lvl in _all_levels:
-                _label = next((s.label for s in seq.stages if s.level == lvl), f"L{lvl}")
-                _is_active = (lvl == explore_level)
-                if _is_active:
-                    _indicator_items.append(
-                        f'<span style="display:inline-block;padding:4px 12px;margin:0 3px;'
-                        f'border-radius:16px;font-size:13px;font-weight:bold;'
-                        f'background:#D32F2F;color:#fff;">'
-                        f'L{lvl} {_label}</span>'
-                    )
-                else:
-                    _indicator_items.append(
-                        f'<span style="display:inline-block;padding:4px 12px;margin:0 3px;'
-                        f'border-radius:16px;font-size:13px;'
-                        f'background:#F5F5F5;color:#999;border:1px solid #E0E0E0;">'
-                        f'L{lvl} {_label}</span>'
-                    )
-            _indicator_html = (
-                '<div style="text-align:center;padding:6px 0;">'
-                + ''.join(_indicator_items)
-                + '</div>'
+            _whatif_labels = {s.level: f"L{s.level} {s.label}" for s in seq.stages}
+            explore_level = st.radio(
+                "What-If フェーズ",
+                options=_all_levels,
+                format_func=lambda x: _whatif_labels.get(x, f"L{x}"),
+                key="whatif_phase",
+                horizontal=True,
+                label_visibility="collapsed",
             )
-            st_html(_indicator_html, height=45)
 
             # injected_weak_signal を更新して cockpit の分析を連動
             _explore_events = [e for e in all_events if e.level == explore_level]

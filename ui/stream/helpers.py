@@ -46,7 +46,8 @@ def clear_simulator():
     st.session_state.pop(_STREAM_EVENTS_KEY, None)
     # SVGキャッシュもクリア（古いストリームの描画結果を破棄）
     st.session_state.pop(SVG_CACHE_KEY, None)
-    st.session_state.pop("stream_explore_level", None)
+    st.session_state.pop("stream_explore_level", None)  # レガシーキー
+    st.session_state.pop("whatif_phase", None)  # ビュー状態キー
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
