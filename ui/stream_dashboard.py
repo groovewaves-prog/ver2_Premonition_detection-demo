@@ -99,22 +99,32 @@ def render_stream_dashboard():
     is_complete = sim.is_complete
     start_lvl = getattr(sim, 'start_level', 1)
 
-    # ── グラフ表示はシステム状態（current_level）に固定 ──
-    # グラフ・ゲージ・タイムラインは常にシミュレーションの「現実」を反映。
-    # What-If セレクター（whatif_phase）は付随情報パネルのみに影響する。
+    # ── ビュー状態（whatif_phase）による全コンポーネント同期 ──
+    # 原則1追記: whatif_phase が変わると、ステップメーター・ゲージ・KPI・グラフの
+    # 実線/点線境界すべてが連動して切り替わる。
+    # ただし裏のシステム状態（pred_level）は絶対に上書きしない。
     _all_levels = list(range(start_lvl, 6))
-    display_events = live_events
-    display_level = current_level
+    explore_level = current_level
+    if is_complete and len(_all_levels) > 1:
+        _default = st.session_state.get("whatif_phase", start_lvl)
+        if _default not in _all_levels:
+            _default = start_lvl
+        explore_level = _default
 
-    # 完了時: 全イベントを表示（グラフはシステム状態の最終レベルまで実線）
-    if is_complete:
-        display_events = all_events
+    # ── 探索レベルに基づいてイベントをフィルタ（表示用） ──
+    if is_complete and explore_level <= current_level:
+        display_events = [e for e in all_events if e.level <= explore_level]
+        display_level = explore_level
+        _explore_last_t = display_events[-1].elapsed_sec if display_events else 0
+    else:
+        display_events = live_events
         display_level = current_level
+        _explore_last_t = None
 
-    # ── ゲージ用メトリクス: 最終レベルの代表値にスナップ（ジッター排除） ──
+    # ── ゲージ用メトリクス: ステージ代表値にスナップ（ジッター排除） ──
     _snap_metric = None
-    if is_complete and current_level >= 1:
-        _stage_idx = current_level - 1
+    if is_complete and explore_level <= current_level and explore_level >= 1:
+        _stage_idx = explore_level - 1
         if _stage_idx < len(seq.stages):
             _snap_metric = seq.stages[_stage_idx].metric_value
 
@@ -136,9 +146,16 @@ def render_stream_dashboard():
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
         relative_level = max(0, display_level - start_lvl + 1) if display_level >= start_lvl else 0
-        _tl_cache_key = f"{relative_level}|{int(progress // 5 * 5)}"
+        # 探索モードではプログレスバーをステージ円の中心にスナップ
+        _num_stages = len(stages_info)
+        if _explore_last_t is not None and _num_stages > 0:
+            _level_index = explore_level - start_lvl
+            _explore_progress = (_level_index + 0.5) / _num_stages * 100
+        else:
+            _explore_progress = progress
+        _tl_cache_key = f"{relative_level}|{int(_explore_progress // 5 * 5)}|{explore_level}"
         timeline_svg = _svg_cached("timeline", _tl_cache_key,
-                                   render_timeline_svg, relative_level, progress, stages_info)
+                                   render_timeline_svg, relative_level, _explore_progress, stages_info)
         st_html(timeline_svg, height=100)
 
         st.markdown("---")
@@ -164,7 +181,11 @@ def render_stream_dashboard():
 
         with col_kpi1:
             severity = display_events[-1].severity if display_events else "NORMAL"
-            elapsed = sim.current_elapsed_sec
+            # 探索モードでは探索レベルの最終イベント時刻を使用
+            if _explore_last_t is not None:
+                elapsed = _explore_last_t
+            else:
+                elapsed = sim.current_elapsed_sec
             remaining = max(0, sim.total_duration_sec - elapsed)
             latest_stage = display_events[-1].stage_label if display_events else "-"
 
@@ -190,9 +211,9 @@ def render_stream_dashboard():
             chart_points.append((ev.elapsed_sec, ev.metric_value, ev.level))
         chart_points.append((sim.total_duration_sec, seq.failure_value, 6))
 
-        # グラフはシステム状態で描画（What-If に非連動）
-        # 完了時: current_level まで実線、それ以降を点線
-        _el = current_level if is_complete else 0
+        # 探索モード時: 各レベルの最終点をステージ代表値にスナップ
+        # → 実線の端点がマーカーの Y 値（閾値）とピタリと一致する
+        _el = explore_level if is_complete else 0
         if _el > 0:
             for lvl_snap in range(1, 6):
                 _si = lvl_snap - 1
@@ -227,7 +248,9 @@ def render_stream_dashboard():
         _components.html(_scroll_html, height=380, scrolling=True)
 
         # ── 3.5 What-If フェーズセレクター（ビュー操作・システム状態に影響しない） ──
-        # 原則1改訂: ビュー操作はメイン画面に配置。グラフは変えず付随情報のみ切替。
+        # 原則1追記: ビュー操作はメイン画面に配置。全視覚コンポーネントが連動して切替。
+        #   ステップメーター・ゲージ・KPI・グラフ実線/点線すべてが whatif_phase に同期。
+        #   ただし裏のシステム状態（pred_level）は絶対に書き換えない。
         if is_complete and len(_all_levels) > 1:
             _whatif_labels = {s.level: f"L{s.level} {s.label}" for s in seq.stages}
             whatif_level = st.radio(
