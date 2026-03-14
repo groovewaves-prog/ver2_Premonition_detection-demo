@@ -643,3 +643,35 @@ def _render_prediction_history(cand, dt_engine, api_key):
                 st.info(f"🚫 {_cnt}件を静観としてクローズしました")
                 time.sleep(0.3)
                 st.rerun()
+
+        # ── 詳細フォーカスボタン（History モードへの遷移） ──
+        if st.button(
+            f"🔍 この予兆にフォーカス（ダッシュボード全体を切替）",
+            key=f"focus_context_{_rule_pattern}",
+            use_container_width=True,
+        ):
+            # 代表的な予兆アイテムからコンテキスト情報を構築
+            _representative = _pred_group[0]
+            _all_messages = []
+            for p in _pred_group:
+                _m = p.get("message", "")
+                if _m and _m not in _all_messages:
+                    _all_messages.append(_m)
+            st.session_state["active_context_item"] = {
+                "device_id": _oc_device,
+                "messages": _all_messages,
+                "message": _all_messages[0] if _all_messages else "",
+                "level": cand.get("level", 0),
+                "scenario": _representative.get("rule_pattern", ""),
+                "forecast_id": _representative.get("forecast_id", ""),
+                "rule_pattern": _rule_pattern,
+                "confidence": _display_conf,
+                "created_at": max(_timestamps) if _timestamps else 0,
+                "source": "history_focus",
+                "incident_name": _incident_name,
+            }
+            # キャッシュクリアで全コンポーネントを再描画させる
+            st.session_state.pop("dt_prediction_cache", None)
+            st.session_state.pop("generated_report", None)
+            st.session_state.pop("report_cache", None)
+            st.rerun()

@@ -25,6 +25,12 @@ def init_session_state():
         "report_cache": {},
         "injected_weak_signal": None,
         "tuning_report": None, # v45.0
+        # グローバル・コンテキスト状態:
+        #   None = Liveモード（スライダー連動）
+        #   dict = Historyモード（履歴アイテムにフォーカス中）
+        #     keys: device_id, messages, message, level, scenario, forecast_id,
+        #           rule_pattern, confidence, created_at, source
+        "active_context_item": None,
     }
     
     for key, default in defaults.items():

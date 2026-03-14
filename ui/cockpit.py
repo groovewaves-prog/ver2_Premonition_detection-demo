@@ -240,6 +240,56 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             st.session_state.active_site = None
             st.rerun()
 
+    # ── グローバル・コンテキスト: History モード判定 ──
+    _ctx = st.session_state.get("active_context_item")
+    _is_history_mode = _ctx is not None
+    if _is_history_mode:
+        from datetime import datetime as _dt_cls
+        _ctx_device = _ctx.get("device_id", "不明")
+        _ctx_incident = _ctx.get("incident_name", _ctx.get("rule_pattern", "不明"))
+        _ctx_conf = _ctx.get("confidence", 0)
+        _ctx_ts = _ctx.get("created_at", 0)
+        try:
+            _ctx_time_str = _dt_cls.fromtimestamp(_ctx_ts).strftime("%Y/%m/%d %H:%M") if _ctx_ts else "不明"
+        except Exception:
+            _ctx_time_str = "不明"
+
+        # History バナー
+        _banner_html = (
+            '<div style="background:linear-gradient(135deg,#1a237e,#283593);color:white;'
+            'padding:12px 20px;border-radius:8px;margin-bottom:12px;'
+            'display:flex;align-items:center;gap:12px;">'
+            '<span style="font-size:1.5em;">📋</span>'
+            '<div>'
+            f'<div style="font-weight:bold;font-size:1.05em;">'
+            f'History モード — {_ctx_incident}</div>'
+            f'<div style="font-size:0.85em;opacity:0.85;">'
+            f'デバイス: {_ctx_device} ｜ 信頼度: {_ctx_conf*100:.0f}% ｜ 検知: {_ctx_time_str}'
+            f'</div></div></div>'
+        )
+        from ui.components.helpers import st_html
+        st_html(_banner_html, height=70)
+
+        _dismiss_col, _ = st.columns([1, 3])
+        with _dismiss_col:
+            if st.button("✖ 選択解除（ライブ監視に戻る）", key="dismiss_history_ctx",
+                         type="secondary", use_container_width=True):
+                st.session_state["active_context_item"] = None
+                st.session_state.pop("dt_prediction_cache", None)
+                st.session_state.pop("generated_report", None)
+                st.session_state.pop("report_cache", None)
+                st.rerun()
+
+        # History モード: injected_weak_signal をコンテキストでオーバーライド
+        st.session_state["injected_weak_signal"] = {
+            "device_id": _ctx.get("device_id", ""),
+            "messages": _ctx.get("messages", []),
+            "message": _ctx.get("message", ""),
+            "level": _ctx.get("level", 0),
+            "scenario": _ctx.get("scenario", ""),
+            "source": "history_focus",
+        }
+
     # トポロジー読み込み
     paths = get_paths(site_id)
     topology = load_topology(paths.topology_path)

@@ -123,10 +123,13 @@ def render_stream_dashboard():
     status_icon = "✅" if is_complete else "🔴" if display_level >= 4 else "🟠" if display_level >= 2 else "🟢"
     start_info = f" (開始L{start_lvl})" if start_lvl > 1 else ""
 
+    # History モード表示
+    _ctx = st.session_state.get("active_context_item")
+    _history_tag = "  📋 [History]" if _ctx is not None else ""
     _expander_label = (
         f"📡 連続劣化モニタリング  "
         f"{status_icon} {status_text} — "
-        f"{seq.pattern.upper()} | {sim.device_id}{start_info}"
+        f"{seq.pattern.upper()} | {sim.device_id}{start_info}{_history_tag}"
     )
     with st.expander(_expander_label, expanded=True):
         # ── 1. ステージタイムライン ──
