@@ -220,6 +220,147 @@ def _build_alarm_based_fallback(alarms: list) -> list:
 
 
 # =====================================================
+# 予兆ステータス履歴 (Inbox) パネル — 統合版
+# =====================================================
+def _record_ai_feedback(alert_text: str, is_positive: bool):
+    """AIナレッジベースにフィードバックを自律記録（原則4準拠）。"""
+    try:
+        from inference_engine import _AISeverityStore
+        store = _AISeverityStore()
+        store.record_feedback(alert_text, is_positive=is_positive)
+    except Exception as e:
+        logger.debug("AI feedback recording skipped: %s", e)
+
+
+def _render_inbox_panel(dt_engine):
+    """予兆ステータス履歴 (Inbox) を描画する。
+
+    remediation.py の _render_prediction_history を統合し、
+    証拠ログ表示・DT forecast store連携・AI学習フィードバックを
+    1つのパネルで完結させる。
+    """
+    import time as _time
+    from datetime import datetime as _dt_cls
+
+    st.markdown("### 📥 予兆ステータス履歴 (Inbox)")
+
+    history = st.session_state.get("alert_history", [])
+
+    if not history:
+        st.info("現在、対応待ちの予兆はありません。")
+        return
+
+    with st.container(height=400):
+        for idx, item in enumerate(history):
+            _dev = item.get("device_id", "不明")
+            _lvl = item.get("level", 0)
+            _scenario = item.get("scenario", "")
+            _created_at = item.get("created_at", 0)
+
+            # 経過時間の計算
+            try:
+                _elapsed_sec = _time.time() - float(_created_at)
+                if _elapsed_sec < 3600:
+                    _relative = f"{int(_elapsed_sec / 60)}分前"
+                elif _elapsed_sec < 86400:
+                    _relative = f"{int(_elapsed_sec / 3600)}時間前"
+                else:
+                    _relative = f"{int(_elapsed_sec / 86400)}日前"
+            except Exception:
+                _relative = "不明"
+
+            # DT engine から証拠シグナルを取得
+            _evidence_entries = []
+            _open_preds = []
+            _display_conf = 0.0
+            if dt_engine:
+                try:
+                    _open_preds = dt_engine.forecast_list_open(device_id=_dev) or []
+                    if _open_preds:
+                        _confidences = [float(p.get("confidence", 0.0)) for p in _open_preds]
+                        _is_sim = any(p.get("source") == "simulation" for p in _open_preds)
+                        _display_conf = max(_confidences) if _is_sim else (
+                            sum(_confidences) / len(_confidences) if _confidences else 0.0
+                        )
+                        for _fp in _open_preds:
+                            try:
+                                _ts = float(_fp.get("created_at", 0))
+                                _dt_str = _dt_cls.fromtimestamp(_ts).strftime("%m/%d %H:%M:%S")
+                            except Exception:
+                                _dt_str = "不明"
+                            _raw_msg = _fp.get("message", "")
+                            for _line in [l.strip() for l in _raw_msg.split('\n') if l.strip()]:
+                                _entry = f"[{_dt_str}] {_line}"
+                                if _entry not in _evidence_entries:
+                                    _evidence_entries.append(_entry)
+                except Exception as _e:
+                    logger.debug("Inbox: forecast lookup failed for %s: %s", _dev, _e)
+
+            # ヘッダー構築
+            _signal_count = len(_evidence_entries) or len(item.get("messages", []))
+            _conf_str = f" ｜ 信頼度: {_display_conf*100:.0f}%" if _display_conf > 0 else ""
+            _expander_label = (
+                f"🚨 {_dev} (Level {_lvl}) — 検知: {_relative}"
+                f"{_conf_str} ｜ シグナル: {_signal_count}件"
+            )
+
+            with st.expander(_expander_label, expanded=False):
+                # 証拠シグナル一覧
+                if _evidence_entries:
+                    st.markdown("**🔍 証拠シグナル一覧**")
+                    _box_h = 200 if len(_evidence_entries) > 4 else None
+                    _scroll = st.container(height=_box_h, border=True) if _box_h else st.container(border=True)
+                    with _scroll:
+                        for _entry in _evidence_entries:
+                            st.code(_entry, language="text")
+                elif item.get("messages"):
+                    st.markdown("**🔍 証拠シグナル一覧**")
+                    with st.container(border=True):
+                        for _msg in item["messages"]:
+                            st.code(_msg, language="text")
+
+                # アクションボタン
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("🔍 詳細", key=f"hist_view_{idx}", use_container_width=True):
+                        st.session_state["active_context_item"] = item
+                        st.session_state.pop("dt_prediction_cache", None)
+                        st.session_state.pop("generated_report", None)
+                        st.session_state.pop("report_cache", None)
+                        st.rerun()
+                with col2:
+                    if st.button("✅ 対応", key=f"hist_resolve_{idx}", use_container_width=True):
+                        # DT forecast store を更新 + AI学習フィードバック
+                        if dt_engine and _open_preds:
+                            for p in _open_preds:
+                                r = dt_engine.forecast_register_outcome(
+                                    p.get("forecast_id", ""), "mitigated",
+                                    note="Inboxから対応済み",
+                                )
+                                if r.get("ok"):
+                                    _msg = p.get("message", "")
+                                    if _msg:
+                                        _record_ai_feedback(_msg, is_positive=True)
+                        st.session_state["alert_history"].pop(idx)
+                        st.rerun()
+                with col3:
+                    if st.button("🚫 静観", key=f"hist_ignore_{idx}", use_container_width=True):
+                        # DT forecast store を更新 + AI学習フィードバック（負）
+                        if dt_engine and _open_preds:
+                            for p in _open_preds:
+                                r = dt_engine.forecast_register_outcome(
+                                    p.get("forecast_id", ""), "mitigated",
+                                    note="Inboxから静観・却下",
+                                )
+                                if r.get("ok"):
+                                    _msg = p.get("message", "")
+                                    if _msg:
+                                        _record_ai_feedback(_msg, is_positive=False)
+                        st.session_state["alert_history"].pop(idx)
+                        st.rerun()
+
+
+# =====================================================
 # メインエントリポイント
 # =====================================================
 def render_incident_cockpit(site_id: str, api_key: Optional[str]):
@@ -597,33 +738,6 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         )
 
         # =====================================================
-        # ★ 予兆ステータス履歴 (Inbox) パネル
+        # ★ 予兆ステータス履歴 (Inbox) パネル — 統合版
         # =====================================================
-        st.markdown("### 📥 予兆ステータス履歴 (Inbox)")
-
-        history = st.session_state.get("alert_history", [])
-
-        if not history:
-            st.info("現在、対応待ちの予兆はありません。")
-        else:
-            with st.container(height=400):
-                for idx, item in enumerate(history):
-                    _dev = item.get("device_id")
-                    _lvl = item.get("level")
-
-                    with st.container(border=True):
-                        st.markdown(f"**{_dev}** (Level {_lvl})")
-
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            if st.button("🔍 詳細", key=f"hist_view_{idx}", use_container_width=True):
-                                st.session_state["active_context_item"] = item
-                                st.rerun()
-                        with col2:
-                            if st.button("✅ 対応", key=f"hist_resolve_{idx}", use_container_width=True):
-                                st.session_state["alert_history"].pop(idx)
-                                st.rerun()
-                        with col3:
-                            if st.button("🚫 静観", key=f"hist_ignore_{idx}", use_container_width=True):
-                                st.session_state["alert_history"].pop(idx)
-                                st.rerun()
+        _render_inbox_panel(dt_engine)
