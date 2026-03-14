@@ -39,84 +39,30 @@ logger = logging.getLogger(__name__)
 # メイン描画関数
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def render_stream_controls(target_device: str, scenario_key: str, site_id: str):
+def auto_start_stream(target_device: str, scenario_key: str, start_level: int):
     """
-    サイドバーにストリーム制御UIを描画。
+    劣化進行度が 0→>=1 に変化した時に自動でストリームを開始する。
 
-    対象デバイスとシナリオは共通設定から受け取る。
-    開始レベルは予兆シミュレーションの劣化進行度 (pred_level) と統一。
-    速度は内部で 5.0x 固定（約2-3秒で全レベル描画）。
+    サイドバーの _render_weak_signal_injection から呼ばれる。
+    既にストリームが実行中/完了済みの場合は何もしない。
     """
-    from ui.shared_sim_config import scenario_key_to_display
-
     sim = _get_simulator()
-    is_running = sim is not None and sim.is_started and not sim.is_complete
+    # 既に同一設定で実行中 or 完了済みなら何もしない
+    if sim is not None and sim.is_started:
+        return
 
-    with st.expander("📡 連続劣化ストリーム", expanded=True):
-        st.caption(
-            "時間経過に伴う段階的な劣化進行をシミュレートします。"
-            "RULトレンド予測とGNN学習データの蓄積に活用されます。"
-        )
-
-        if is_running:
-            start_lvl = getattr(sim, 'start_level', 1)
-            st.warning(
-                f"🔄 ストリーム実行中: {sim.sequence.pattern} on {sim.device_id}"
-                f" (開始L{start_lvl})"
-            )
-            col_stop, col_info = st.columns([1, 2])
-            with col_stop:
-                if st.button("⏹ 停止", key="stream_stop", type="primary"):
-                    _clear_simulator()
-                    st.rerun()
-            with col_info:
-                elapsed = sim.current_elapsed_sec
-                st.caption(f"経過: {elapsed:.0f}s / {sim.total_duration_sec:.0f}s")
-            return
-
-        # --- 共通設定の参照表示 ---
-        scenario_display = scenario_key_to_display(scenario_key)
-        st.info(f"🎯 **{target_device}** | {scenario_display}")
-
-        # --- 開始レベル: 予兆シミュレーションの劣化進行度と統一 ---
-        pred_level = st.session_state.get("pred_level", 0)
-        start_level = max(pred_level, 1)  # pred_level=0 の場合は L1 から開始
-
-        # 速度は 5.0x 固定（約2-3秒で全レベル描画）
-        speed = 5.0
-
-        # プレビュー情報
-        seq = DEGRADATION_SEQUENCES[scenario_key]
-        active_stages = [s for s in seq.stages if s.level >= start_level]
-        total_sec = sum(s.duration_sec / speed for s in active_stages)
-        if pred_level == 0:
-            st.caption("💡 劣化進行度を 1 以上に設定するとストリームを開始できます。")
-        else:
-            st.info(
-                f"📊 **{seq.metric_name}**: {seq.normal_value} → {seq.failure_value} {seq.metric_unit}  \n"
-                f"⏱ L{start_level}→L5: **{total_sec:.1f}秒**（{len(active_stages)}ステージ）"
-            )
-
-        if st.button(
-            "▶ ストリーム開始",
-            key="stream_start",
-            type="primary",
-            disabled=(pred_level == 0),
-        ):
-            interfaces = get_default_interfaces(target_device, scenario_key)
-            sim = AlarmStreamSimulator(
-                scenario_key=scenario_key,
-                device_id=target_device,
-                interfaces=interfaces,
-                speed_multiplier=speed,
-                start_level=start_level,
-            )
-            sim.start()
-            _save_simulator(sim)
-            # 既存のワンショットシミュレーションをクリア
-            st.session_state["injected_weak_signal"] = None
-            st.session_state.pop("dt_prediction_cache", None)
-            st.rerun()
+    speed = 5.0  # 固定速度
+    interfaces = get_default_interfaces(target_device, scenario_key)
+    sim = AlarmStreamSimulator(
+        scenario_key=scenario_key,
+        device_id=target_device,
+        interfaces=interfaces,
+        speed_multiplier=speed,
+        start_level=start_level,
+    )
+    sim.start()
+    _save_simulator(sim)
+    logger.info("Auto-started stream: %s on %s (L%d)", scenario_key, target_device, start_level)
 
 
 def render_stream_dashboard():
@@ -247,14 +193,15 @@ def render_stream_dashboard():
                     key="stream_explore_level",
                 )
                 # 探索レベルに対応するイベントから状態を復元し、
-                # 予兆シミュレーションの劣化進行度に反映
+                # injected_weak_signal を更新して cockpit の分析を連動
+                # ※ pred_level はウィジェットキーなので直接代入不可。
+                #   代わりに reset_pred_level フラグで次回描画時にリセットを要求。
                 _explore_events = [e for e in events if e.level == explore_level]
                 if _explore_events:
                     _latest_explore = _explore_events[-1]
-                    # pred_level を更新して cockpit 側のコンテキストを連動
-                    if st.session_state.get("pred_level") != explore_level:
-                        st.session_state["pred_level"] = explore_level
-                        # injected_weak_signal も更新して cockpit の分析を連動
+                    _prev_explore = st.session_state.get("_last_explore_level")
+                    if _prev_explore != explore_level:
+                        st.session_state["_last_explore_level"] = explore_level
                         st.session_state["injected_weak_signal"] = {
                             "device_id": sim.device_id,
                             "messages": _latest_explore.messages,
