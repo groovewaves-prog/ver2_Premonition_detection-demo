@@ -44,7 +44,8 @@ def render_stream_controls(target_device: str, scenario_key: str, site_id: str):
     サイドバーにストリーム制御UIを描画。
 
     対象デバイスとシナリオは共通設定から受け取る。
-    開始レベルと速度はストリーム固有の設定。
+    開始レベルは予兆シミュレーションの劣化進行度 (pred_level) と統一。
+    速度は内部で 5.0x 固定（約2-3秒で全レベル描画）。
     """
     from ui.shared_sim_config import scenario_key_to_display
 
@@ -77,44 +78,31 @@ def render_stream_controls(target_device: str, scenario_key: str, site_id: str):
         scenario_display = scenario_key_to_display(scenario_key)
         st.info(f"🎯 **{target_device}** | {scenario_display}")
 
-        # --- 開始レベルスライダー ---
-        _LEVEL_OPTIONS = [1, 2, 3, 4, 5]
-        _LEVEL_LABELS = {
-            1: "L1: 初期劣化",
-            2: "L2: 劣化進行",
-            3: "L3: 警戒域",
-            4: "L4: 危険域",
-            5: "L5: 障害直前",
-        }
-        start_level = st.select_slider(
-            "開始レベル",
-            options=_LEVEL_OPTIONS,
-            value=1,
-            format_func=lambda x: _LEVEL_LABELS.get(x, f"L{x}"),
-            help="どのレベルからストリームを開始するかを指定します。"
-                 "予兆シミュレーションで確認したレベルから開始すると効果的です。",
-            key="stream_start_level",
-        )
+        # --- 開始レベル: 予兆シミュレーションの劣化進行度と統一 ---
+        pred_level = st.session_state.get("pred_level", 0)
+        start_level = max(pred_level, 1)  # pred_level=0 の場合は L1 から開始
 
-        speed = st.select_slider(
-            "速度",
-            options=[0.5, 1.0, 2.0, 3.0, 5.0],
-            value=2.0,
-            format_func=lambda x: f"{x}x",
-            key="stream_speed",
-            help="シミュレーション速度。2x = 実時間の2倍速"
-        )
+        # 速度は 5.0x 固定（約2-3秒で全レベル描画）
+        speed = 5.0
 
         # プレビュー情報
         seq = DEGRADATION_SEQUENCES[scenario_key]
         active_stages = [s for s in seq.stages if s.level >= start_level]
         total_sec = sum(s.duration_sec / speed for s in active_stages)
-        st.info(
-            f"📊 **{seq.metric_name}**: {seq.normal_value} → {seq.failure_value} {seq.metric_unit}  \n"
-            f"⏱ L{start_level}→L5: **{total_sec:.0f}秒**（{len(active_stages)}ステージ）"
-        )
+        if pred_level == 0:
+            st.caption("💡 劣化進行度を 1 以上に設定するとストリームを開始できます。")
+        else:
+            st.info(
+                f"📊 **{seq.metric_name}**: {seq.normal_value} → {seq.failure_value} {seq.metric_unit}  \n"
+                f"⏱ L{start_level}→L5: **{total_sec:.1f}秒**（{len(active_stages)}ステージ）"
+            )
 
-        if st.button("▶ ストリーム開始", key="stream_start", type="primary"):
+        if st.button(
+            "▶ ストリーム開始",
+            key="stream_start",
+            type="primary",
+            disabled=(pred_level == 0),
+        ):
             interfaces = get_default_interfaces(target_device, scenario_key)
             sim = AlarmStreamSimulator(
                 scenario_key=scenario_key,
@@ -143,6 +131,7 @@ def render_stream_dashboard():
     """
     sim = _get_simulator()
     if sim is None or not sim.is_started:
+        st.session_state["_stream_needs_refresh"] = False
         return False  # ストリーム非実行
 
     seq = sim.sequence
@@ -158,16 +147,13 @@ def render_stream_dashboard():
     status_icon = "✅" if is_complete else "🔴" if current_level >= 4 else "🟠" if current_level >= 2 else "🟢"
     start_info = f" (開始L{start_lvl})" if start_lvl > 1 else ""
 
-    st_html(
-        f"<h3 style='margin:0 0 8px 0;'>📡 連続劣化モニタリング</h3>"
-        f"<span style='background:{status_color};color:white;padding:2px 10px;"
-        f"border-radius:10px;font-size:13px;'>"
-        f"{status_icon} {status_text}</span>"
-        f"<span style='color:#666;font-size:13px;margin-left:12px;'>"
-        f"{seq.pattern.upper()} | {sim.device_id}{start_info}</span>"
+    # 折りたたみ可能な expander（試験終了ボタン不要 → 折りたたむだけで済む）
+    _expander_label = (
+        f"📡 連続劣化モニタリング  "
+        f"{status_icon} {status_text} — "
+        f"{seq.pattern.upper()} | {sim.device_id}{start_info}"
     )
-
-    with st.container(border=True):
+    with st.expander(_expander_label, expanded=not is_complete):
         # ── 1. ステージタイムライン ──
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
@@ -242,6 +228,44 @@ def render_stream_dashboard():
         )
         _components.html(_scroll_html, height=350, scrolling=True)
 
+        # ── 3.5 レベル探索スライダー（グラフ直下） ──
+        #   完了後に運用者が任意のレベルの状態を振り返るためのコントロール。
+        #   スライダーを動かすと、そのレベルの劣化状態がコックピット上で再現される。
+        if is_complete and events:
+            _EXPLORE_LABELS = {
+                1: "L1: 初期劣化", 2: "L2: 劣化進行", 3: "L3: 警戒域",
+                4: "L4: 危険域", 5: "L5: 障害直前",
+            }
+            _available_levels = sorted(set(e.level for e in events))
+            if _available_levels:
+                explore_level = st.select_slider(
+                    "🔍 レベル探索",
+                    options=_available_levels,
+                    value=_available_levels[-1],
+                    format_func=lambda x: _EXPLORE_LABELS.get(x, f"L{x}"),
+                    help="グラフ上のレベルを選択して、その時点の劣化状態を振り返ります。",
+                    key="stream_explore_level",
+                )
+                # 探索レベルに対応するイベントから状態を復元し、
+                # 予兆シミュレーションの劣化進行度に反映
+                _explore_events = [e for e in events if e.level == explore_level]
+                if _explore_events:
+                    _latest_explore = _explore_events[-1]
+                    # pred_level を更新して cockpit 側のコンテキストを連動
+                    if st.session_state.get("pred_level") != explore_level:
+                        st.session_state["pred_level"] = explore_level
+                        # injected_weak_signal も更新して cockpit の分析を連動
+                        st.session_state["injected_weak_signal"] = {
+                            "device_id": sim.device_id,
+                            "messages": _latest_explore.messages,
+                            "message": _latest_explore.messages[0] if _latest_explore.messages else "",
+                            "level": explore_level,
+                            "scenario": sim.sequence.pattern,
+                            "source": "stream_explore",
+                        }
+                        # 分析キャッシュをクリアして再分析をトリガー
+                        st.session_state.pop("dt_prediction_cache", None)
+
         st.markdown("---")
 
         # ── 4. イベントログ ──
@@ -253,41 +277,36 @@ def render_stream_dashboard():
         else:
             st.caption("イベント待機中...")
 
+        # ── 完了時: DB同期結果 ──
+        if is_complete:
+            _completion_key = "stream_completion_result"
+            if _completion_key not in st.session_state:
+                _sync_result = _run_completion_sync(sim)
+                st.session_state[_completion_key] = _sync_result
+            else:
+                _sync_result = st.session_state[_completion_key]
+
+            _chromadb_n = _sync_result.get("chromadb_added", 0)
+            _gnn_path = _sync_result.get("gnn_session_path")
+            _sync_errors = _sync_result.get("errors", [])
+
+            _summary_parts = ["forecast_ledgerに記録済み"]
+            if _chromadb_n > 0:
+                _summary_parts.append(f"ChromaDB +{_chromadb_n}件")
+            if _gnn_path:
+                _summary_parts.append("GNN学習データ保存済み")
+
+            st.success(f"✅ 劣化シミュレーション完了。{' / '.join(_summary_parts)}")
+
+            if _sync_errors:
+                st.caption(f"⚠ 一部エラー: {', '.join(_sync_errors)}")
+
     # ── 自動リフレッシュ ──
     if not is_complete:
-        return True  # "需要リフレッシュ"
+        st.session_state["_stream_needs_refresh"] = True
+        return True
 
-    # 完了時: DB同期（ChromaDB + GNN学習データエクスポート）
-    _completion_key = "stream_completion_result"
-    if _completion_key not in st.session_state:
-        _sync_result = _run_completion_sync(sim)
-        st.session_state[_completion_key] = _sync_result
-    else:
-        _sync_result = st.session_state[_completion_key]
-
-    # 結果表示
-    _chromadb_n = _sync_result.get("chromadb_added", 0)
-    _gnn_path = _sync_result.get("gnn_session_path")
-    _sync_errors = _sync_result.get("errors", [])
-
-    _summary_parts = ["forecast_ledgerに記録済み"]
-    if _chromadb_n > 0:
-        _summary_parts.append(f"ChromaDB +{_chromadb_n}件")
-    if _gnn_path:
-        _summary_parts.append("GNN学習データ保存済み")
-
-    st.success(f"✅ 劣化シミュレーション完了。{' / '.join(_summary_parts)}")
-
-    if _sync_errors:
-        st.caption(f"⚠ 一部エラー: {', '.join(_sync_errors)}")
-
-    col_end, col_spacer = st.columns([1, 3])
-    with col_end:
-        if st.button("🏁 試験終了", key="stream_end", type="primary"):
-            st.session_state.pop(_completion_key, None)
-            _clear_simulator()
-            st.rerun()
-
+    st.session_state["_stream_needs_refresh"] = False
     return False
 
 
