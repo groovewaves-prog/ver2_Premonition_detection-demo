@@ -216,11 +216,13 @@ def render_degradation_chart_svg(
     scenario_key: str = "",
     start_level: int = 1,
     sim_start_dt: Optional[datetime] = None,
+    explore_level: int = 0,
+    level_elapsed_map: Optional[dict] = None,
 ) -> str:
     """劣化曲線チャートをSVGで描画。
 
-    realtime_history が指定された場合、X軸を実時間（日時）で描画する。
-    X軸の範囲は realtime_x_start ～ realtime_x_end (時間) に限定される。
+    explore_level > 0 の場合、そのレベルまでを実線、以降を点線で描画する。
+    level_elapsed_map: {level: elapsed_sec} — 各レベルの開始時刻（X軸マーカー用）。
     """
     # 実時間モードかどうか
     x_range_hours = realtime_x_end - realtime_x_start
@@ -230,7 +232,7 @@ def render_degradation_chart_svg(
     margin_left = 60
     margin_right = 80 if use_realtime else 30
     margin_top = 25
-    margin_bottom = 50 if use_realtime else 35
+    margin_bottom = 50
     chart_w = width - margin_left - margin_right
     chart_h = height - margin_top - margin_bottom
 
@@ -350,6 +352,43 @@ def render_degradation_chart_svg(
                 f'stroke="#1565C0" stroke-width="1" stroke-dasharray="2,2"/>'
             )
 
+    # --- X軸: リニアモードではレベル到達位置を表示 ---
+    _LEVEL_LABELS = {1: "初期劣化", 2: "劣化進行", 3: "警戒域", 4: "危険域", 5: "障害直前"}
+    if not use_realtime and level_elapsed_map:
+        for lvl in sorted(level_elapsed_map.keys()):
+            t_sec = level_elapsed_map[lvl]
+            sx = to_svg_x(t_sec)
+            # レベル到達の縦点線
+            is_explore = explore_level > 0 and lvl == explore_level
+            line_color = "#D32F2F" if is_explore else "#BDBDBD"
+            line_width = "2" if is_explore else "1"
+            svg_parts.append(
+                f'<line x1="{sx}" y1="{margin_top}" x2="{sx}" y2="{margin_top + chart_h}" '
+                f'stroke="{line_color}" stroke-width="{line_width}" stroke-dasharray="4,3"/>'
+            )
+            # ラベル
+            label_color = "#D32F2F" if is_explore else "#666"
+            svg_parts.append(
+                f'<text x="{sx}" y="{margin_top + chart_h + 14}" text-anchor="middle" '
+                f'font-size="10" font-weight="bold" fill="{label_color}">L{lvl}</text>'
+            )
+            svg_parts.append(
+                f'<text x="{sx}" y="{margin_top + chart_h + 27}" text-anchor="middle" '
+                f'font-size="9" fill="{label_color}">{_LEVEL_LABELS.get(lvl, "")}</text>'
+            )
+
+        # 障害発生の赤縦線（最終地点）
+        if total_duration > 0:
+            fx = to_svg_x(total_duration)
+            svg_parts.append(
+                f'<line x1="{fx}" y1="{margin_top}" x2="{fx}" y2="{margin_top + chart_h}" '
+                f'stroke="#D32F2F" stroke-width="2" stroke-dasharray="5,3"/>'
+            )
+            svg_parts.append(
+                f'<text x="{fx}" y="{margin_top + chart_h + 14}" text-anchor="middle" '
+                f'font-size="10" font-weight="bold" fill="#D32F2F">障害</text>'
+            )
+
     # 正常ライン
     ny = to_svg_y(normal_value)
     svg_parts.append(
@@ -386,24 +425,66 @@ def render_degradation_chart_svg(
         f'fill="#FFCDD2" opacity="0.3"/>'
     )
 
-    # データポイント + ライン
-    if len(history) > 1:
-        points_line = []
-        for t, v in history:
-            sx = to_svg_x(t)
-            sy = to_svg_y(v)
-            points_line.append(f"{sx},{sy}")
+    # データポイント + ライン（explore_level で実線/点線を分割）
+    # explore_level の境界時刻を特定
+    _explore_split_t = None
+    if explore_level > 0 and level_elapsed_map and not use_realtime:
+        # explore_level の次のレベルの開始時刻を分割点にする
+        next_lvl = explore_level + 1
+        if next_lvl in level_elapsed_map:
+            _explore_split_t = level_elapsed_map[next_lvl]
+        elif explore_level == 5:
+            _explore_split_t = total_duration  # L5 なら全部実線
 
-        svg_parts.append(
-            f'<polyline points="{" ".join(points_line)}" '
-            f'fill="none" stroke="#1565C0" stroke-width="2.5" stroke-linejoin="round"/>'
-        )
+    if len(history) > 1:
+        if _explore_split_t is not None:
+            # 実線部分と点線部分に分割
+            solid_pts = []
+            dashed_pts = []
+            for t, v in history:
+                sx = to_svg_x(t)
+                sy = to_svg_y(v)
+                pt = f"{sx},{sy}"
+                if t <= _explore_split_t:
+                    solid_pts.append(pt)
+                else:
+                    if not dashed_pts and solid_pts:
+                        dashed_pts.append(solid_pts[-1])  # 接続点
+                    dashed_pts.append(pt)
+            if solid_pts:
+                svg_parts.append(
+                    f'<polyline points="{" ".join(solid_pts)}" '
+                    f'fill="none" stroke="#1565C0" stroke-width="2.5" stroke-linejoin="round"/>'
+                )
+            if dashed_pts:
+                svg_parts.append(
+                    f'<polyline points="{" ".join(dashed_pts)}" '
+                    f'fill="none" stroke="#90CAF9" stroke-width="2" '
+                    f'stroke-dasharray="6,4" stroke-linejoin="round"/>'
+                )
+        else:
+            # 分割なし: 全部実線
+            points_line = []
+            for t, v in history:
+                sx = to_svg_x(t)
+                sy = to_svg_y(v)
+                points_line.append(f"{sx},{sy}")
+            svg_parts.append(
+                f'<polyline points="{" ".join(points_line)}" '
+                f'fill="none" stroke="#1565C0" stroke-width="2.5" stroke-linejoin="round"/>'
+            )
 
         for i, (t, v) in enumerate(history):
             sx = to_svg_x(t)
             sy = to_svg_y(v)
+            is_future = _explore_split_t is not None and t > _explore_split_t
             r = 5 if i == len(history) - 1 else 3
-            color = "#D32F2F" if i == len(history) - 1 else "#1565C0"
+            if is_future:
+                color = "#90CAF9"
+            elif i == len(history) - 1:
+                color = "#D32F2F"
+            else:
+                color = "#1565C0"
             svg_parts.append(
                 f'<circle cx="{sx}" cy="{sy}" r="{r}" fill="{color}" '
                 f'stroke="white" stroke-width="1.5"/>'
