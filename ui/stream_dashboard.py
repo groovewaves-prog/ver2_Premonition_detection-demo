@@ -111,6 +111,7 @@ def render_stream_dashboard():
         explore_level = _default
 
     # ── 探索レベルに基づいてイベントをフィルタ（表示用） ──
+    # explore_level 選択時: そのレベルの最終イベントを境界としてスナップ
     if is_complete and explore_level < current_level:
         display_events = [e for e in all_events if e.level <= explore_level]
         display_level = explore_level
@@ -119,6 +120,14 @@ def render_stream_dashboard():
         display_events = live_events
         display_level = current_level
         _explore_last_t = None
+
+    # ── ゲージ用メトリクス: ステージ代表値にスナップ（ジッター排除） ──
+    # 探索モード時はステージ定義の metric_value を使い、閾値境界にピタリと合わせる
+    _snap_metric = None
+    if is_complete and explore_level < current_level and explore_level >= 1:
+        _stage_idx = explore_level - 1
+        if _stage_idx < len(seq.stages):
+            _snap_metric = seq.stages[_stage_idx].metric_value
 
     # ── ヘッダー ──
     status_text = "完了" if is_complete else f"Level {display_level}/5"
@@ -150,7 +159,11 @@ def render_stream_dashboard():
         # ── 2. メトリクスゲージ + KPI ──
         col_gauge, col_kpi1 = st.columns([1, 2])
 
-        display_metric = display_events[-1].metric_value if display_events else seq.normal_value
+        # ゲージ値: 探索モードではステージ代表値にスナップ
+        if _snap_metric is not None:
+            display_metric = _snap_metric
+        else:
+            display_metric = display_events[-1].metric_value if display_events else seq.normal_value
         with col_gauge:
             _gauge_cache_key = f"{round(display_metric)}|{seq.normal_value}|{seq.failure_value}"
             gauge_svg = _svg_cached("gauge", _gauge_cache_key,
@@ -194,7 +207,24 @@ def render_stream_dashboard():
             chart_points.append((ev.elapsed_sec, ev.metric_value, ev.level))
         chart_points.append((sim.total_duration_sec, seq.failure_value, 6))
 
+        # 探索モード時: 各レベルの最終点をステージ代表値にスナップ
+        # → 実線の端点がマーカーの Y 値（閾値）とピタリと一致する
         _el = explore_level if is_complete else 0
+        if _el > 0:
+            for lvl_snap in range(1, 6):
+                _si = lvl_snap - 1
+                if _si >= len(seq.stages):
+                    break
+                _snap_v = seq.stages[_si].metric_value
+                # 各レベルの最終点のインデックスを探す
+                _last_idx = None
+                for _ci in range(len(chart_points) - 1, -1, -1):
+                    if chart_points[_ci][2] == lvl_snap:
+                        _last_idx = _ci
+                        break
+                if _last_idx is not None:
+                    _old = chart_points[_last_idx]
+                    chart_points[_last_idx] = (_old[0], _snap_v, _old[2])
         chart_svg = render_degradation_chart_svg(
             chart_points=chart_points,
             normal_value=seq.normal_value,

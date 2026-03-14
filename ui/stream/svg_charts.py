@@ -255,13 +255,13 @@ def render_degradation_chart_svg(
             f'font-size="11" fill="#999">{gv:.1f}</text>'
         )
 
-    # ── X軸: レベルマーカー（各レベルの最初の点から導出） ──
-    level_first_t: dict = {}
+    # ── X軸: レベルマーカー（各レベルの最後の点から導出 = 境界位置） ──
+    level_last_t: dict = {}
     for t, v, lvl in chart_points:
-        if 1 <= lvl <= 5 and lvl not in level_first_t:
-            level_first_t[lvl] = t
-    for lvl in sorted(level_first_t.keys()):
-        sx = to_x(level_first_t[lvl])
+        if 1 <= lvl <= 5:
+            level_last_t[lvl] = t  # 上書きで最終値が残る
+    for lvl in sorted(level_last_t.keys()):
+        sx = to_x(level_last_t[lvl])
         is_explore_boundary = (explore_level > 0 and lvl == explore_level)
         line_color = "#D32F2F" if is_explore_boundary else "#BDBDBD"
         line_w = "2" if is_explore_boundary else "1"
