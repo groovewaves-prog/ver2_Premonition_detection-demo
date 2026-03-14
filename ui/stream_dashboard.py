@@ -8,7 +8,6 @@
 
 import streamlit as st
 import logging
-from datetime import datetime
 from typing import Optional
 from digital_twin_pkg.alarm_stream import (
     AlarmStreamSimulator,
@@ -145,11 +144,9 @@ def render_stream_dashboard():
 
         st.markdown("---")
 
-        # ── 3. 劣化曲線チャート（実時間軸） ──
+        # ── 3. 劣化曲線チャート（リニアスケール） ──
         _chart_cache_key = f"{len(events)}|{current_level}|{start_lvl}|{seq.pattern}"
         metric_history = sim.get_metric_history(events=events)
-        realtime_history, rt_x_start, rt_x_end = sim.get_realtime_metric_history(events=events)
-        _sim_start_dt = datetime.fromtimestamp(sim._start_time) if sim._start_time else datetime.now()
         chart_svg = _svg_cached("degradation", _chart_cache_key,
             render_degradation_chart_svg,
             metric_history=metric_history,
@@ -158,12 +155,8 @@ def render_stream_dashboard():
             metric_name=seq.metric_name,
             metric_unit=seq.metric_unit,
             total_duration=sim.total_duration_sec,
-            realtime_history=realtime_history,
-            realtime_x_start=rt_x_start,
-            realtime_x_end=rt_x_end,
             scenario_key=seq.pattern,
             start_level=start_lvl,
-            sim_start_dt=_sim_start_dt,
         )
         # 横スクロール対応ラッパー
         import streamlit.components.v1 as _components
@@ -176,7 +169,6 @@ def render_stream_dashboard():
 
         # ── 3.5 レベル探索スライダー（グラフ直下） ──
         #   完了後に運用者が任意のレベルの状態を振り返るためのコントロール。
-        #   スライダーを動かすと、そのレベルの劣化状態がコックピット上で再現される。
         if is_complete and events:
             _EXPLORE_LABELS = {
                 1: "L1: 初期劣化", 2: "L2: 劣化進行", 3: "L3: 警戒域",
@@ -184,34 +176,31 @@ def render_stream_dashboard():
             }
             _available_levels = sorted(set(e.level for e in events))
             if _available_levels:
+                # デフォルト値: 前回選択値があればそれ、なければ最大レベル
+                _default = st.session_state.get("stream_explore_level", _available_levels[-1])
+                if _default not in _available_levels:
+                    _default = _available_levels[-1]
+
                 explore_level = st.select_slider(
                     "🔍 レベル探索",
                     options=_available_levels,
-                    value=_available_levels[-1],
+                    value=_default,
                     format_func=lambda x: _EXPLORE_LABELS.get(x, f"L{x}"),
-                    help="グラフ上のレベルを選択して、その時点の劣化状態を振り返ります。",
+                    help="レベルを選択すると、その時点の劣化状態でコックピットの分析が更新されます。",
                     key="stream_explore_level",
                 )
-                # 探索レベルに対応するイベントから状態を復元し、
-                # injected_weak_signal を更新して cockpit の分析を連動
-                # ※ pred_level はウィジェットキーなので直接代入不可。
-                #   代わりに reset_pred_level フラグで次回描画時にリセットを要求。
+                # 選択レベルに対応するイベントから injected_weak_signal を常に更新
                 _explore_events = [e for e in events if e.level == explore_level]
                 if _explore_events:
                     _latest_explore = _explore_events[-1]
-                    _prev_explore = st.session_state.get("_last_explore_level")
-                    if _prev_explore != explore_level:
-                        st.session_state["_last_explore_level"] = explore_level
-                        st.session_state["injected_weak_signal"] = {
-                            "device_id": sim.device_id,
-                            "messages": _latest_explore.messages,
-                            "message": _latest_explore.messages[0] if _latest_explore.messages else "",
-                            "level": explore_level,
-                            "scenario": sim.sequence.pattern,
-                            "source": "stream_explore",
-                        }
-                        # 分析キャッシュをクリアして再分析をトリガー
-                        st.session_state.pop("dt_prediction_cache", None)
+                    st.session_state["injected_weak_signal"] = {
+                        "device_id": sim.device_id,
+                        "messages": _latest_explore.messages,
+                        "message": _latest_explore.messages[0] if _latest_explore.messages else "",
+                        "level": explore_level,
+                        "scenario": sim.sequence.pattern,
+                        "source": "stream_explore",
+                    }
 
         st.markdown("---")
 

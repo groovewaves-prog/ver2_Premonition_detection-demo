@@ -496,14 +496,6 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         if _fr_ok:
             render_future_radar(prediction_candidates, topology=topology)
 
-    # 2.5 連続劣化モニタリング（Future Radar のドリルダウン）
-    #   ストリーム実行中/完了後に劣化の詳細を表示。
-    #   完了後はレベル探索スライダーで任意の劣化状態を振り返れる。
-    from ui.stream_dashboard import render_stream_dashboard, _get_simulator as _get_stream_sim
-    _stream_sim = _get_stream_sim()
-    if _stream_sim is not None and _stream_sim.is_started:
-        render_stream_dashboard()
-
     # 3. 根本原因候補テーブル
     selected_incident_candidate, target_device_id = render_root_cause_table(
         root_cause_candidates, symptom_devices, unrelated_devices, alarms,
