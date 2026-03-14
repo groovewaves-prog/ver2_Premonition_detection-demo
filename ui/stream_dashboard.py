@@ -11,7 +11,6 @@ import logging
 from typing import Optional
 from digital_twin_pkg.alarm_stream import (
     AlarmStreamSimulator,
-    DEGRADATION_SEQUENCES,
     get_available_scenarios,
     get_default_interfaces,
 )
@@ -99,12 +98,6 @@ def render_stream_dashboard():
     progress = sim.current_progress_pct
     is_complete = sim.is_complete
     start_lvl = getattr(sim, 'start_level', 1)
-
-    # ── レベル別の elapsed_sec マップ（各レベルの最初のイベント） ──
-    level_elapsed_map = {}
-    for ev in all_events:
-        if ev.level not in level_elapsed_map:
-            level_elapsed_map[ev.level] = ev.elapsed_sec
 
     # ── レベル探索スライダーの値を先に取得 ──
     _EXPLORE_LABELS = {
@@ -196,22 +189,25 @@ def render_stream_dashboard():
 
         st.markdown("---")
 
-        # ── 3. 劣化曲線チャート（リニアスケール + レベルマーカー） ──
-        # 全イベントの履歴を使用（点線部分も描画するため）
-        metric_history = sim.get_metric_history(events=all_events)
-        _chart_cache_key = f"{len(all_events)}|{explore_level}|{start_lvl}|{seq.pattern}"
-        chart_svg = _svg_cached("degradation", _chart_cache_key,
-            render_degradation_chart_svg,
-            metric_history=metric_history,
+        # ── 3. 劣化曲線チャート（レベル対応版・キャッシュなし直接生成） ──
+        # chart_points: [(elapsed_sec, metric_value, level)] を構築
+        _initial_v = seq.normal_value
+        if start_lvl > 1 and start_lvl - 2 < len(seq.stages):
+            _initial_v = seq.stages[start_lvl - 2].metric_value
+        chart_points = [(0.0, _initial_v, 0)]  # 初期点 (level 0)
+        for ev in all_events:
+            chart_points.append((ev.elapsed_sec, ev.metric_value, ev.level))
+        # 障害点を total_duration に追加（グラフを障害線まで延長）
+        chart_points.append((sim.total_duration_sec, seq.failure_value, 6))
+
+        chart_svg = render_degradation_chart_svg(
+            chart_points=chart_points,
             normal_value=seq.normal_value,
             failure_value=seq.failure_value,
             metric_name=seq.metric_name,
             metric_unit=seq.metric_unit,
             total_duration=sim.total_duration_sec,
-            scenario_key=seq.pattern,
-            start_level=start_lvl,
             explore_level=explore_level if is_complete else 0,
-            level_elapsed_map=level_elapsed_map,
         )
         import streamlit.components.v1 as _components
         _scroll_html = (

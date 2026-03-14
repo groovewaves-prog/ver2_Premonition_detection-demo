@@ -6,12 +6,7 @@
 #   - 劣化曲線チャート（時系列グラフ）
 
 import math
-from datetime import datetime, timedelta
-from typing import Optional, List, Tuple
-from digital_twin_pkg.alarm_stream import (
-    SCENARIO_BASE_TTF_HOURS,
-    _DETERMINISTIC_DECAY,
-)
+from typing import List, Tuple
 
 
 def render_metric_gauge_svg(
@@ -201,7 +196,7 @@ def render_timeline_svg(
 
 
 def render_degradation_chart_svg(
-    metric_history: list,
+    chart_points: List[Tuple[float, float, int]],
     normal_value: float,
     failure_value: float,
     metric_name: str,
@@ -210,33 +205,24 @@ def render_degradation_chart_svg(
     width: int = 900,
     height: int = 320,
     *,
-    realtime_history: Optional[List[Tuple[float, float]]] = None,
-    realtime_x_start: float = 0.0,
-    realtime_x_end: float = 0.0,
-    scenario_key: str = "",
-    start_level: int = 1,
-    sim_start_dt: Optional[datetime] = None,
     explore_level: int = 0,
-    level_elapsed_map: Optional[dict] = None,
 ) -> str:
-    """劣化曲線チャートをSVGで描画。
+    """劣化曲線チャートをSVGで描画（レベル対応版）。
 
-    explore_level > 0 の場合、そのレベルまでを実線、以降を点線で描画する。
-    level_elapsed_map: {level: elapsed_sec} — 各レベルの開始時刻（X軸マーカー用）。
+    chart_points: [(elapsed_sec, metric_value, level)] — 各点にレベル情報付き。
+      level 0 = 初期点, 1-5 = 劣化レベル, 6 = 障害点。
+    explore_level: 0 = 分割なし（全部実線）, 1-5 = そのレベルまで実線、以降点線。
     """
-    # 実時間モードかどうか
-    x_range_hours = realtime_x_end - realtime_x_start
-    use_realtime = realtime_history is not None and x_range_hours > 0
-    history = realtime_history if use_realtime else metric_history
+    _LEVEL_LABELS = {1: "初期劣化", 2: "劣化進行", 3: "警戒域", 4: "危険域", 5: "障害直前"}
 
     margin_left = 60
-    margin_right = 80 if use_realtime else 30
+    margin_right = 30
     margin_top = 25
     margin_bottom = 50
     chart_w = width - margin_left - margin_right
     chart_h = height - margin_top - margin_bottom
 
-    # Y軸レンジ: normal_value ～ failure_value を基準に 8% パディング
+    # Y軸レンジ
     base_min = min(normal_value, failure_value)
     base_max = max(normal_value, failure_value)
     base_range = base_max - base_min if abs(base_max - base_min) > 0.001 else 1.0
@@ -245,289 +231,184 @@ def render_degradation_chart_svg(
     y_max = base_max + padding
     y_range = y_max - y_min
 
-    if use_realtime:
-        # 対数スケール: RUL (残り時間) の log で初期を圧縮、後半を拡大
-        max_rul = x_range_hours
-        log_denom = math.log(max_rul + 1)
-        data_chart_w = chart_w * 0.95
+    def to_x(t: float) -> float:
+        return margin_left + (t / max(total_duration, 0.1)) * chart_w
 
-        def to_svg_x(t):
-            rul = max(realtime_x_end - t, 0)
-            pos = 1.0 - math.log(rul + 1) / log_denom
-            return margin_left + pos * data_chart_w
-    else:
-        def to_svg_x(t):
-            return margin_left + (t / max(total_duration, 0.1)) * chart_w
-
-    def to_svg_y(v):
+    def to_y(v: float) -> float:
         return margin_top + chart_h - ((v - y_min) / y_range) * chart_h
 
-    svg_parts = [
+    svg = [
         f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
         f'<rect x="0" y="0" width="{width}" height="{height}" fill="#FAFAFA" rx="4"/>',
     ]
 
-    # グリッド (Y軸)
+    # ── Y軸グリッド ──
     for i in range(5):
         gy = margin_top + (chart_h / 4) * i
         gv = y_max - (y_range / 4) * i
-        svg_parts.append(
+        svg.append(
             f'<line x1="{margin_left}" y1="{gy}" x2="{width - margin_right}" y2="{gy}" '
             f'stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,4"/>'
         )
-        svg_parts.append(
+        svg.append(
             f'<text x="{margin_left - 5}" y="{gy + 4}" text-anchor="end" '
             f'font-size="11" fill="#999">{gv:.1f}</text>'
         )
 
-    # --- X軸: 実時間モードではレベル到達位置 + 残り日数を表示 ---
-    if use_realtime and sim_start_dt:
-        base_ttf = SCENARIO_BASE_TTF_HOURS.get(scenario_key, 336)
-        tick_levels = list(range(start_level, 6))
-        # ティック位置を事前計算し、重なりを防止
-        tick_items = []
-        for lvl in tick_levels:
-            decay = _DETERMINISTIC_DECAY.get(lvl, 0.50)
-            real_h = base_ttf * (1.0 - decay)
-            if real_h < realtime_x_start - 0.01:
-                continue
-            sx = to_svg_x(real_h)
-            rul_h = max(0, int(base_ttf * decay))
-            if rul_h >= 24:
-                rul_str = f"{rul_h // 24}日後"
-            else:
-                rul_str = f"{rul_h}h後"
-            tick_items.append((lvl, sx, rul_str))
-
-        # 隣接ティック間が min_gap px 未満の場合、RULラベルを省略
-        min_gap = 40
-        for idx, (lvl, sx, rul_str) in enumerate(tick_items):
-            label = f"L{lvl}"
-            svg_parts.append(
-                f'<line x1="{sx}" y1="{margin_top}" x2="{sx}" y2="{margin_top + chart_h}" '
-                f'stroke="#E0E0E0" stroke-width="1" stroke-dasharray="3,3"/>'
-            )
-            anchor = "start" if abs(sx - margin_left) < 20 else "middle"
-            svg_parts.append(
-                f'<text x="{sx}" y="{margin_top + chart_h + 14}" text-anchor="{anchor}" '
-                f'font-size="10" font-weight="bold" fill="#666">{label}</text>'
-            )
-            show_rul = True
-            if idx > 0:
-                prev_sx = tick_items[idx - 1][1]
-                if abs(sx - prev_sx) < min_gap:
-                    show_rul = False
-            if idx < len(tick_items) - 1:
-                next_sx = tick_items[idx + 1][1]
-                if abs(next_sx - sx) < min_gap:
-                    show_rul = False
-            if show_rul:
-                svg_parts.append(
-                    f'<text x="{sx}" y="{margin_top + chart_h + 27}" text-anchor="{anchor}" '
-                    f'font-size="9" fill="#999">({rul_str})</text>'
-                )
-
-        # 障害発生線
-        fx = to_svg_x(base_ttf)
-        fail_dt = sim_start_dt + timedelta(hours=base_ttf)
-        fail_dt_str = fail_dt.strftime("%-m/%-d %H:%M")
-        svg_parts.append(
-            f'<line x1="{fx}" y1="{margin_top}" x2="{fx}" y2="{margin_top + chart_h}" '
-            f'stroke="#D32F2F" stroke-width="2" stroke-dasharray="5,3"/>'
+    # ── X軸: レベルマーカー（各レベルの最初の点から導出） ──
+    level_first_t: dict = {}
+    for t, v, lvl in chart_points:
+        if 1 <= lvl <= 5 and lvl not in level_first_t:
+            level_first_t[lvl] = t
+    for lvl in sorted(level_first_t.keys()):
+        sx = to_x(level_first_t[lvl])
+        is_explore_boundary = (explore_level > 0 and lvl == explore_level)
+        line_color = "#D32F2F" if is_explore_boundary else "#BDBDBD"
+        line_w = "2" if is_explore_boundary else "1"
+        label_color = "#D32F2F" if is_explore_boundary else "#666"
+        svg.append(
+            f'<line x1="{sx}" y1="{margin_top}" x2="{sx}" y2="{margin_top + chart_h}" '
+            f'stroke="{line_color}" stroke-width="{line_w}" stroke-dasharray="4,3"/>'
         )
-        svg_parts.append(
-            f'<text x="{fx + 4}" y="{margin_top + chart_h + 14}" text-anchor="start" '
-            f'font-size="10" font-weight="bold" fill="#D32F2F">障害</text>'
+        svg.append(
+            f'<text x="{sx}" y="{margin_top + chart_h + 14}" text-anchor="middle" '
+            f'font-size="10" font-weight="bold" fill="{label_color}">L{lvl}</text>'
         )
-        svg_parts.append(
-            f'<text x="{fx + 4}" y="{margin_top + chart_h + 27}" text-anchor="start" '
-            f'font-size="9" fill="#D32F2F">{fail_dt_str}</text>'
+        svg.append(
+            f'<text x="{sx}" y="{margin_top + chart_h + 27}" text-anchor="middle" '
+            f'font-size="9" fill="{label_color}">{_LEVEL_LABELS.get(lvl, "")}</text>'
         )
-        # 現在時刻マーカー
-        if history:
-            now_h = history[-1][0]
-            now_sx = to_svg_x(now_h)
-            svg_parts.append(
-                f'<line x1="{now_sx}" y1="{margin_top}" x2="{now_sx}" y2="{margin_top + chart_h}" '
-                f'stroke="#1565C0" stroke-width="1" stroke-dasharray="2,2"/>'
-            )
 
-    # --- X軸: リニアモードではレベル到達位置を表示 ---
-    _LEVEL_LABELS = {1: "初期劣化", 2: "劣化進行", 3: "警戒域", 4: "危険域", 5: "障害直前"}
-    if not use_realtime and level_elapsed_map:
-        for lvl in sorted(level_elapsed_map.keys()):
-            t_sec = level_elapsed_map[lvl]
-            sx = to_svg_x(t_sec)
-            # レベル到達の縦点線
-            is_explore = explore_level > 0 and lvl == explore_level
-            line_color = "#D32F2F" if is_explore else "#BDBDBD"
-            line_width = "2" if is_explore else "1"
-            svg_parts.append(
-                f'<line x1="{sx}" y1="{margin_top}" x2="{sx}" y2="{margin_top + chart_h}" '
-                f'stroke="{line_color}" stroke-width="{line_width}" stroke-dasharray="4,3"/>'
-            )
-            # ラベル
-            label_color = "#D32F2F" if is_explore else "#666"
-            svg_parts.append(
-                f'<text x="{sx}" y="{margin_top + chart_h + 14}" text-anchor="middle" '
-                f'font-size="10" font-weight="bold" fill="{label_color}">L{lvl}</text>'
-            )
-            svg_parts.append(
-                f'<text x="{sx}" y="{margin_top + chart_h + 27}" text-anchor="middle" '
-                f'font-size="9" fill="{label_color}">{_LEVEL_LABELS.get(lvl, "")}</text>'
-            )
+    # ── X軸: 障害マーカー（total_duration） ──
+    fx = to_x(total_duration)
+    svg.append(
+        f'<line x1="{fx}" y1="{margin_top}" x2="{fx}" y2="{margin_top + chart_h}" '
+        f'stroke="#D32F2F" stroke-width="2" stroke-dasharray="5,3"/>'
+    )
+    svg.append(
+        f'<text x="{fx}" y="{margin_top + chart_h + 14}" text-anchor="middle" '
+        f'font-size="10" font-weight="bold" fill="#D32F2F">障害</text>'
+    )
 
-        # 障害発生の赤縦線（最終地点）
-        if total_duration > 0:
-            fx = to_svg_x(total_duration)
-            svg_parts.append(
-                f'<line x1="{fx}" y1="{margin_top}" x2="{fx}" y2="{margin_top + chart_h}" '
-                f'stroke="#D32F2F" stroke-width="2" stroke-dasharray="5,3"/>'
-            )
-            svg_parts.append(
-                f'<text x="{fx}" y="{margin_top + chart_h + 14}" text-anchor="middle" '
-                f'font-size="10" font-weight="bold" fill="#D32F2F">障害</text>'
-            )
-
-    # 正常ライン
-    ny = to_svg_y(normal_value)
-    svg_parts.append(
+    # ── 正常ライン (Y) ──
+    ny = to_y(normal_value)
+    svg.append(
         f'<line x1="{margin_left}" y1="{ny}" x2="{width - margin_right}" y2="{ny}" '
         f'stroke="#4CAF50" stroke-width="1.5" stroke-dasharray="6,3"/>'
     )
-    svg_parts.append(
+    svg.append(
         f'<text x="{margin_left + 3}" y="{ny - 4}" text-anchor="start" '
         f'font-size="10" fill="#4CAF50">正常 ({normal_value:.1f})</text>'
     )
 
-    # 障害ライン (Y)
-    fy = to_svg_y(failure_value)
-    svg_parts.append(
+    # ── 障害ライン (Y) ──
+    fy = to_y(failure_value)
+    svg.append(
         f'<line x1="{margin_left}" y1="{fy}" x2="{width - margin_right}" y2="{fy}" '
         f'stroke="#D32F2F" stroke-width="1.5" stroke-dasharray="6,3"/>'
     )
-    svg_parts.append(
+    svg.append(
         f'<text x="{margin_left + 3}" y="{fy - 4}" text-anchor="start" '
         f'font-size="10" fill="#D32F2F">障害 ({failure_value:.1f})</text>'
     )
 
-    # 危険域の塗りつぶし（障害値付近の15%帯）
+    # ── 危険域の塗りつぶし ──
     danger_band = abs(failure_value - normal_value) * 0.15
     if failure_value > normal_value:
-        danger_y1 = to_svg_y(failure_value)
-        danger_y2 = to_svg_y(failure_value - danger_band)
+        dy1 = to_y(failure_value)
+        dy2 = to_y(failure_value - danger_band)
     else:
-        danger_y1 = to_svg_y(failure_value + danger_band)
-        danger_y2 = to_svg_y(failure_value)
-    svg_parts.append(
-        f'<rect x="{margin_left}" y="{min(danger_y1, danger_y2)}" '
-        f'width="{chart_w}" height="{abs(danger_y2 - danger_y1)}" '
+        dy1 = to_y(failure_value + danger_band)
+        dy2 = to_y(failure_value)
+    svg.append(
+        f'<rect x="{margin_left}" y="{min(dy1, dy2)}" '
+        f'width="{chart_w}" height="{abs(dy2 - dy1)}" '
         f'fill="#FFCDD2" opacity="0.3"/>'
     )
 
-    # データポイント + ライン（explore_level で実線/点線を分割）
-    # explore_level の境界時刻を特定
-    _explore_split_t = None
-    if explore_level > 0 and level_elapsed_map and not use_realtime:
-        # explore_level の次のレベルの開始時刻を分割点にする
-        next_lvl = explore_level + 1
-        if next_lvl in level_elapsed_map:
-            _explore_split_t = level_elapsed_map[next_lvl]
-        elif explore_level == 5:
-            _explore_split_t = total_duration  # L5 なら全部実線
+    # ── データライン + ポイント（レベルベースの実線/点線分割） ──
+    if len(chart_points) > 1:
+        # 分割判定: explore_level > 0 の場合、level <= explore_level を実線
+        splitting = explore_level > 0
 
-    if len(history) > 1:
-        if _explore_split_t is not None:
-            # 実線部分と点線部分に分割
-            solid_pts = []
-            dashed_pts = []
-            for t, v in history:
-                sx = to_svg_x(t)
-                sy = to_svg_y(v)
-                pt = f"{sx},{sy}"
-                if t <= _explore_split_t:
-                    solid_pts.append(pt)
-                else:
-                    if not dashed_pts and solid_pts:
-                        dashed_pts.append(solid_pts[-1])  # 接続点
-                    dashed_pts.append(pt)
-            if solid_pts:
-                svg_parts.append(
-                    f'<polyline points="{" ".join(solid_pts)}" '
-                    f'fill="none" stroke="#1565C0" stroke-width="2.5" stroke-linejoin="round"/>'
-                )
-            if dashed_pts:
-                svg_parts.append(
-                    f'<polyline points="{" ".join(dashed_pts)}" '
-                    f'fill="none" stroke="#90CAF9" stroke-width="2" '
-                    f'stroke-dasharray="6,4" stroke-linejoin="round"/>'
-                )
-        else:
-            # 分割なし: 全部実線
-            points_line = []
-            for t, v in history:
-                sx = to_svg_x(t)
-                sy = to_svg_y(v)
-                points_line.append(f"{sx},{sy}")
-            svg_parts.append(
-                f'<polyline points="{" ".join(points_line)}" '
+        # セグメントごとに実線/点線を描画
+        # 連続する同種（solid/dashed）の点をグループ化してpolyline描画
+        solid_pts: List[str] = []
+        dashed_pts: List[str] = []
+
+        for i, (t, v, lvl) in enumerate(chart_points):
+            sx = to_x(t)
+            sy = to_y(v)
+            pt = f"{sx},{sy}"
+
+            if not splitting or lvl <= explore_level:
+                # 実線側: dashed→solidの切替時に接続点を追加
+                if dashed_pts and not solid_pts:
+                    solid_pts.append(dashed_pts[-1])
+                solid_pts.append(pt)
+            else:
+                # 点線側: solid→dashedの切替時に接続点を追加
+                if solid_pts and not dashed_pts:
+                    dashed_pts.append(solid_pts[-1])
+                dashed_pts.append(pt)
+
+        if solid_pts:
+            svg.append(
+                f'<polyline points="{" ".join(solid_pts)}" '
                 f'fill="none" stroke="#1565C0" stroke-width="2.5" stroke-linejoin="round"/>'
             )
+        if dashed_pts:
+            svg.append(
+                f'<polyline points="{" ".join(dashed_pts)}" '
+                f'fill="none" stroke="#90CAF9" stroke-width="2" '
+                f'stroke-dasharray="6,4" stroke-linejoin="round"/>'
+            )
 
-        for i, (t, v) in enumerate(history):
-            sx = to_svg_x(t)
-            sy = to_svg_y(v)
-            is_future = _explore_split_t is not None and t > _explore_split_t
-            r = 5 if i == len(history) - 1 else 3
+        # ── ドット描画 ──
+        for i, (t, v, lvl) in enumerate(chart_points):
+            sx = to_x(t)
+            sy = to_y(v)
+            is_future = splitting and lvl > explore_level
+            is_last = (i == len(chart_points) - 1)
+            r = 5 if is_last else 3
+
             if is_future:
                 color = "#90CAF9"
-            elif i == len(history) - 1:
+            elif is_last:
                 color = "#D32F2F"
             else:
                 color = "#1565C0"
-            svg_parts.append(
+            svg.append(
                 f'<circle cx="{sx}" cy="{sy}" r="{r}" fill="{color}" '
                 f'stroke="white" stroke-width="1.5"/>'
             )
 
-        # 最新値のラベル
-        if history:
-            last_t, last_v = history[-1]
-            lx = to_svg_x(last_t)
-            ly = to_svg_y(last_v)
-            near_failure_line = False
-            if use_realtime:
-                _fail_x = to_svg_x(realtime_x_end)
-                near_failure_line = abs(lx - _fail_x) < 100
-            near_right_edge = lx > width - margin_right - 80
-            if near_failure_line or near_right_edge:
-                svg_parts.append(
-                    f'<text x="{lx - 10}" y="{ly - 16}" text-anchor="end" font-size="13" '
-                    f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
-                )
-            else:
-                svg_parts.append(
-                    f'<text x="{lx + 8}" y="{ly - 8}" font-size="13" '
-                    f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
-                )
+        # ── 最終値ラベル ──
+        last_t, last_v, _ = chart_points[-1]
+        lx = to_x(last_t)
+        ly = to_y(last_v)
+        near_right = lx > width - margin_right - 80
+        if near_right:
+            svg.append(
+                f'<text x="{lx - 10}" y="{ly - 16}" text-anchor="end" font-size="13" '
+                f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
+            )
+        else:
+            svg.append(
+                f'<text x="{lx + 8}" y="{ly - 8}" font-size="13" '
+                f'font-weight="bold" fill="#D32F2F">{last_v:.1f} {metric_unit}</text>'
+            )
 
-    # X軸ラベル
-    if use_realtime:
-        svg_parts.append(
-            f'<text x="{width / 2}" y="{height - 3}" text-anchor="middle" '
-            f'font-size="11" fill="#999">予測タイムライン（対数スケール）</text>'
-        )
-    else:
-        svg_parts.append(
-            f'<text x="{width / 2}" y="{height - 5}" text-anchor="middle" '
-            f'font-size="11" fill="#999">経過時間 (秒)</text>'
-        )
-    # Y軸ラベル
-    svg_parts.append(
+    # ── 軸ラベル ──
+    svg.append(
+        f'<text x="{width / 2}" y="{height - 5}" text-anchor="middle" '
+        f'font-size="11" fill="#999">経過時間 (秒)</text>'
+    )
+    svg.append(
         f'<text x="12" y="{height / 2}" text-anchor="middle" '
         f'font-size="11" fill="#999" transform="rotate(-90, 12, {height / 2})">'
         f'{metric_name} ({metric_unit})</text>'
     )
 
-    svg_parts.append('</svg>')
-    return '\n'.join(svg_parts)
+    svg.append('</svg>')
+    return '\n'.join(svg)
