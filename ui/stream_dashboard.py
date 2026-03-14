@@ -114,9 +114,10 @@ def render_stream_dashboard():
         explore_level = _default  # 描画前にデフォルト設定
 
     # ── 探索レベルに基づいてイベントをフィルタ（表示用） ──
-    if is_complete and explore_level < current_level:
-        display_events = [e for e in all_events if e.level <= explore_level]
-        display_level = explore_level
+    # explore_level=3 → L2までを確認済み表示、L3以降は予測（点線）
+    if is_complete and explore_level <= current_level:
+        display_events = [e for e in all_events if e.level < explore_level]
+        display_level = max(explore_level - 1, start_lvl)
         # 探索レベルの最後のイベント時刻を基準に elapsed/remaining を算出
         _explore_last_t = display_events[-1].elapsed_sec if display_events else 0
     else:
