@@ -252,6 +252,11 @@ def render_stream_dashboard():
         # ── 3.5 レベル探索（コンパクト横並びラジオ） ──
         if is_complete and len(_all_levels) > 1:
             _explore_short = {s.level: f"L{s.level} {s.label}" for s in seq.stages}
+
+            def _on_radio_change():
+                """ラジオ操作時のコールバック: サイドバースライダーに同期"""
+                st.session_state["pred_level"] = st.session_state["stream_explore_level"]
+
             explore_level = st.radio(
                 "レベル探索",
                 options=_all_levels,
@@ -259,11 +264,8 @@ def render_stream_dashboard():
                 key="stream_explore_level",
                 horizontal=True,
                 label_visibility="collapsed",
+                on_change=_on_radio_change,
             )
-            # ★ 双方向同期: ラジオ変更 → サイドバースライダーに反映
-            if st.session_state.get("pred_level") != explore_level:
-                st.session_state["pred_level"] = explore_level
-
             # injected_weak_signal を更新して cockpit の分析を連動
             _explore_events = [e for e in all_events if e.level == explore_level]
             if _explore_events:
