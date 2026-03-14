@@ -317,44 +317,6 @@ def render_sidebar():
                 target_device = "不明"
                 scenario_key = "optical"
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # ★ 予兆ステータス履歴 (Inbox)
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        st.divider()
-        st.markdown("### 📥 予兆ステータス履歴 (Inbox)")
-
-        if "alert_history" not in st.session_state:
-            st.session_state["alert_history"] = []
-
-        history = st.session_state["alert_history"]
-
-        if not history:
-            st.caption("現在、対応待ちの予兆はありません。")
-        else:
-            for idx, item in enumerate(history):
-                _dev = item.get("device_id")
-                _lvl = item.get("level")
-
-                with st.container(border=True):
-                    st.markdown(f"**{_dev}** (Level {_lvl})")
-
-                    col1, col2, col3 = st.columns(3)
-
-                    with col1:
-                        if st.button("🔍 詳細", key=f"hist_view_{idx}"):
-                            st.session_state["active_context_item"] = item
-                            st.rerun()
-
-                    with col2:
-                        if st.button("✅ 対応", key=f"hist_resolve_{idx}"):
-                            st.session_state["alert_history"].pop(idx)
-                            st.rerun()
-
-                    with col3:
-                        if st.button("🚫 静観", key=f"hist_ignore_{idx}"):
-                            st.session_state["alert_history"].pop(idx)
-                            st.rerun()
-
         return _render_api_key_input()
 
 
