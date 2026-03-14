@@ -317,6 +317,44 @@ def render_sidebar():
                 target_device = "不明"
                 scenario_key = "optical"
 
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # ★ 予兆ステータス履歴 (Inbox)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        st.divider()
+        st.markdown("### 📥 予兆ステータス履歴 (Inbox)")
+
+        if "alert_history" not in st.session_state:
+            st.session_state["alert_history"] = []
+
+        history = st.session_state["alert_history"]
+
+        if not history:
+            st.caption("現在、対応待ちの予兆はありません。")
+        else:
+            for idx, item in enumerate(history):
+                _dev = item.get("device_id")
+                _lvl = item.get("level")
+
+                with st.container(border=True):
+                    st.markdown(f"**{_dev}** (Level {_lvl})")
+
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        if st.button("🔍 詳細", key=f"hist_view_{idx}"):
+                            st.session_state["active_context_item"] = item
+                            st.rerun()
+
+                    with col2:
+                        if st.button("✅ 対応", key=f"hist_resolve_{idx}"):
+                            st.session_state["alert_history"].pop(idx)
+                            st.rerun()
+
+                    with col3:
+                        if st.button("🚫 静観", key=f"hist_ignore_{idx}"):
+                            st.session_state["alert_history"].pop(idx)
+                            st.rerun()
+
         return _render_api_key_input()
 
 
@@ -497,13 +535,20 @@ def _render_weak_signal_injection():
             # ★ 発報ボタン: 押下で初めて予兆ステータス履歴にキューイング
             if st.button("💉 予兆アラートを発報", key="sim_dispatch_btn",
                          type="primary", use_container_width=True):
-                st.session_state["injected_weak_signal"] = {
+                import time
+                signal_data = {
                     "device_id": target_device,
                     "messages": log_messages,
                     "message": log_messages[0],
                     "level": degradation_level,
                     "scenario": scenario_type,
+                    "created_at": time.time(),
                 }
+                st.session_state["injected_weak_signal"] = signal_data
+                # ★ 履歴リスト(インボックス)へのデータ追加
+                if "alert_history" not in st.session_state:
+                    st.session_state["alert_history"] = []
+                st.session_state["alert_history"].insert(0, signal_data)
                 # キャッシュクリア（新しい発報で再計算させる）
                 st.session_state.pop("dt_prediction_cache", None)
                 _keys_to_clear = [k for k in list(st.session_state.keys())
