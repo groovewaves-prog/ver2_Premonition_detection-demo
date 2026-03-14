@@ -9,12 +9,7 @@ from utils.const import SCENARIO_MAP
 from utils.llm_helper import get_rate_limiter, GENAI_AVAILABLE
 from ui.stream_dashboard import auto_start_stream, _get_simulator, _clear_simulator, inject_stream_alarms_to_session
 from ui.service_tier import tier_has_access, get_service_tier, TIER_BASIC, TIER_PHM, TIER_FULL
-from ui.shared_sim_config import (
-    render_shared_config,
-    scenario_key_to_display,
-    SIM_DEVICE_KEY,
-    SIM_SCENARIO_KEY,
-)
+from ui.shared_sim_config import scenario_key_to_display
 
 def render_sidebar():
     with st.sidebar:
@@ -306,21 +301,16 @@ def render_sidebar():
         st.divider()
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # ★ 共通シミュレーション設定（デバイス・シナリオ一元管理）[PHM tier]
+        # ★ 予兆シミュレーション（デバイス・シナリオ・劣化進行度の一元管理）[PHM tier]
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         from ui.service_tier import render_tier_section
         with render_tier_section(
-            TIER_PHM, "シミュレーション設定", icon="🎯",
-            description="予兆シミュレーション・連続劣化ストリームなどの高度なシミュレーション機能。対象デバイスとシナリオを設定して予兆検知のデモを実行できます。",
+            TIER_PHM, "予兆シミュレーション", icon="🔮",
+            description="対象デバイス・劣化シナリオを選択し、劣化進行度を制御して予兆検知のデモを実行できます。",
         ) as _sim_ok:
             if _sim_ok:
-                with st.expander("🎯 シミュレーション対象設定", expanded=True):
-                    target_device, scenario_key = render_shared_config()
-
-                st.divider()
-
-                # --- 予兆シミュレーション (共通設定を参照) ---
-                _render_weak_signal_injection(target_device, scenario_key)
+                # --- 統合: 予兆シミュレーション（デバイス + シナリオ + 劣化進行度を一体化） ---
+                _render_weak_signal_injection()
 
             else:
                 # PHM未満: デフォルト値を設定（バックエンド側の動作に影響しない）
@@ -330,20 +320,40 @@ def render_sidebar():
         return _render_api_key_input()
 
 
-def _render_weak_signal_injection(target_device: str, scenario_key: str):
+def _render_weak_signal_injection():
     """
-    予兆シミュレーションUI
-    AIエンジンが検知可能なリアルなログメッセージを生成する。
-    対象デバイスとシナリオは共通設定から受け取る。
+    予兆シミュレーションUI（統合版）
+    対象デバイス・劣化シナリオ・劣化進行度を一体化。
     """
-    # scenario_key → 旧表示名への変換（cockpit.py 互換）
-    scenario_type = scenario_key_to_display(scenario_key)
+    from ui.shared_sim_config import (
+        build_device_options, _get_short_name_map, scenario_display_to_key,
+        SIM_DEVICE_KEY, SIM_SCENARIO_KEY,
+    )
 
     with st.expander("🔮 予兆シミュレーション", expanded=True):
-        st.caption("共通設定のデバイス・シナリオで予兆検知をデモします。")
+        st.caption("対象デバイス・シナリオを選択し、劣化進行度で予兆検知をデモします。")
 
-        # 現在の共通設定を表示
-        st.info(f"🎯 **{target_device}** | {scenario_type}")
+        # --- 対象デバイス ---
+        device_options = build_device_options()
+        target_device = st.selectbox(
+            "対象デバイス",
+            [d[0] for d in device_options],
+            format_func=lambda x: next(
+                (d[1] for d in device_options if d[0] == x), x
+            ),
+            key=SIM_DEVICE_KEY,
+        )
+
+        # --- 劣化シナリオ ---
+        short_names = _get_short_name_map()
+        scenario_display_list = list(short_names.values())
+        scenario_display = st.selectbox(
+            "劣化シナリオ",
+            scenario_display_list,
+            key=SIM_SCENARIO_KEY,
+        )
+        scenario_key = scenario_display_to_key(scenario_display)
+        scenario_type = scenario_key_to_display(scenario_key)
 
         # コックピット側からのリセット要求があれば、スライダー描画前に0に戻す
         if st.session_state.get("reset_pred_level"):

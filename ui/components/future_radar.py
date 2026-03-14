@@ -275,6 +275,12 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
 
     st.markdown("### 🔮 AIOps Future Radar")
     with render_tier_gated(TIER_PHM, "予兆検知 (Future Radar)"), st.container(border=True):
+        # ★ 連続劣化モニタリング: 初動トリアージの上に配置
+        from ui.stream_dashboard import render_stream_dashboard, _get_simulator as _get_stream_sim
+        _stream_sim = _get_stream_sim()
+        if _stream_sim is not None and _stream_sim.is_started:
+            render_stream_dashboard()
+
         # ★ 高速化: フラグメント化により、トリアージボタン操作時に
         #   ページ全体を再描画せず、このセクションのみ再レンダリング
         _render_radar_fragment(prediction_candidates, topology or {})
