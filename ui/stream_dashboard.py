@@ -63,7 +63,7 @@ def auto_start_stream(target_device: str, scenario_key: str, start_level: int):
         _clear_simulator()
         st.session_state.pop("stream_completion_result", None)
 
-    speed = 5.0  # 固定速度
+    speed = 10.0  # 固定速度（倍速）
     interfaces = get_default_interfaces(target_device, scenario_key)
     sim = AlarmStreamSimulator(
         scenario_key=scenario_key,
@@ -93,19 +93,46 @@ def render_stream_dashboard():
         return False  # ストリーム非実行
 
     seq = sim.sequence
-    events = sim.get_all_events_until_now()
+    all_events = sim.get_all_events()       # 全イベント（完了まで）
+    live_events = sim.get_all_events_until_now()  # 現在までのイベント
     current_level = sim.get_current_level()
     progress = sim.current_progress_pct
     is_complete = sim.is_complete
+    start_lvl = getattr(sim, 'start_level', 1)
+
+    # ── レベル別の elapsed_sec マップ（各レベルの最初のイベント） ──
+    level_elapsed_map = {}
+    for ev in all_events:
+        if ev.level not in level_elapsed_map:
+            level_elapsed_map[ev.level] = ev.elapsed_sec
+
+    # ── レベル探索スライダーの値を先に取得 ──
+    _EXPLORE_LABELS = {
+        1: "L1: 初期劣化", 2: "L2: 劣化進行", 3: "L3: 警戒域",
+        4: "L4: 危険域", 5: "L5: 障害直前",
+    }
+    _all_levels = list(range(start_lvl, 6))
+    # 完了時のみ探索可能（実行中は current_level をそのまま使用）
+    explore_level = current_level
+    if is_complete and _all_levels:
+        _default = st.session_state.get("stream_explore_level", current_level)
+        if _default not in _all_levels:
+            _default = _all_levels[-1]
+        explore_level = _default  # 描画前にデフォルト設定
+
+    # ── 探索レベルに基づいてイベントをフィルタ（表示用） ──
+    if is_complete and explore_level < current_level:
+        display_events = [e for e in all_events if e.level <= explore_level]
+        display_level = explore_level
+    else:
+        display_events = live_events
+        display_level = current_level
 
     # ── ヘッダー ──
-    start_lvl = getattr(sim, 'start_level', 1)
-    status_color = "#D32F2F" if current_level >= 4 else "#FF9800" if current_level >= 2 else "#4CAF50"
-    status_text = "完了" if is_complete else f"Level {current_level}/5"
-    status_icon = "✅" if is_complete else "🔴" if current_level >= 4 else "🟠" if current_level >= 2 else "🟢"
+    status_text = "完了" if is_complete else f"Level {display_level}/5"
+    status_icon = "✅" if is_complete else "🔴" if display_level >= 4 else "🟠" if display_level >= 2 else "🟢"
     start_info = f" (開始L{start_lvl})" if start_lvl > 1 else ""
 
-    # 折りたたみ可能な expander（試験終了ボタン不要 → 折りたたむだけで済む）
     _expander_label = (
         f"📡 連続劣化モニタリング  "
         f"{status_icon} {status_text} — "
@@ -115,8 +142,8 @@ def render_stream_dashboard():
         # ── 1. ステージタイムライン ──
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
-        relative_level = max(0, current_level - start_lvl + 1) if current_level >= start_lvl else 0
-        _tl_cache_key = f"{relative_level}|{int(progress // 5 * 5)}"
+        relative_level = max(0, display_level - start_lvl + 1) if display_level >= start_lvl else 0
+        _tl_cache_key = f"{relative_level}|{int(progress // 5 * 5)}|{explore_level}"
         timeline_svg = _svg_cached("timeline", _tl_cache_key,
                                    render_timeline_svg, relative_level, progress, stages_info)
         st_html(timeline_svg, height=100)
@@ -126,12 +153,12 @@ def render_stream_dashboard():
         # ── 2. メトリクスゲージ + KPI ──
         col_gauge, col_kpi1 = st.columns([1, 2])
 
-        current_metric = events[-1].metric_value if events else seq.normal_value
+        display_metric = display_events[-1].metric_value if display_events else seq.normal_value
         with col_gauge:
-            _gauge_cache_key = f"{round(current_metric)}|{seq.normal_value}|{seq.failure_value}"
+            _gauge_cache_key = f"{round(display_metric)}|{seq.normal_value}|{seq.failure_value}"
             gauge_svg = _svg_cached("gauge", _gauge_cache_key,
                                     render_metric_gauge_svg,
-                                    current_value=current_metric,
+                                    current_value=display_metric,
                                     normal_value=seq.normal_value,
                                     failure_value=seq.failure_value,
                                     unit=seq.metric_unit,
@@ -139,27 +166,28 @@ def render_stream_dashboard():
             st_html(gauge_svg, height=190)
 
         with col_kpi1:
-            severity = events[-1].severity if events else "NORMAL"
+            severity = display_events[-1].severity if display_events else "NORMAL"
             elapsed = sim.current_elapsed_sec
             remaining = max(0, sim.total_duration_sec - elapsed)
-            latest_stage = events[-1].stage_label if events else "-"
+            latest_stage = display_events[-1].stage_label if display_events else "-"
 
             kpi_html = render_kpi_html(
-                current_level=current_level,
+                current_level=display_level,
                 severity=severity,
                 elapsed=elapsed,
                 remaining=remaining,
                 latest_stage=latest_stage,
-                event_count=len(events),
+                event_count=len(display_events),
                 pattern=seq.pattern,
             )
             st_html(kpi_html, height=200)
 
         st.markdown("---")
 
-        # ── 3. 劣化曲線チャート（リニアスケール） ──
-        _chart_cache_key = f"{len(events)}|{current_level}|{start_lvl}|{seq.pattern}"
-        metric_history = sim.get_metric_history(events=events)
+        # ── 3. 劣化曲線チャート（リニアスケール + レベルマーカー） ──
+        # 全イベントの履歴を使用（点線部分も描画するため）
+        metric_history = sim.get_metric_history(events=all_events)
+        _chart_cache_key = f"{len(all_events)}|{explore_level}|{start_lvl}|{seq.pattern}"
         chart_svg = _svg_cached("degradation", _chart_cache_key,
             render_degradation_chart_svg,
             metric_history=metric_history,
@@ -170,68 +198,48 @@ def render_stream_dashboard():
             total_duration=sim.total_duration_sec,
             scenario_key=seq.pattern,
             start_level=start_lvl,
+            explore_level=explore_level if is_complete else 0,
+            level_elapsed_map=level_elapsed_map,
         )
-        # 横スクロール対応ラッパー
         import streamlit.components.v1 as _components
         _scroll_html = (
             f'<div style="overflow-x:auto;overflow-y:hidden;'
             f'border:1px solid #eee;border-radius:4px;padding:4px;">'
             f'{chart_svg}</div>'
         )
-        _components.html(_scroll_html, height=350, scrolling=True)
+        _components.html(_scroll_html, height=380, scrolling=True)
 
         # ── 3.5 レベル探索スライダー（グラフ直下） ──
-        #   サイドバーの劣化進行度と連動し、選択レベルでストリームを再開始する。
-        if events:
-            _EXPLORE_LABELS = {
-                1: "L1: 初期劣化", 2: "L2: 劣化進行", 3: "L3: 警戒域",
-                4: "L4: 危険域", 5: "L5: 障害直前",
-            }
-            # 利用可能なレベル: start_level ～ 5
-            _all_levels = list(range(start_lvl, 6))
-            if _all_levels:
-                explore_level = st.select_slider(
-                    "🔍 レベル探索",
-                    options=_all_levels,
-                    value=start_lvl,
-                    format_func=lambda x: _EXPLORE_LABELS.get(x, f"L{x}"),
-                    help="レベルを選択すると、その開始レベルでストリームが再実行されます。",
-                    key="stream_explore_level",
-                )
-                # 探索レベルがストリームの start_level と異なる場合、再開始
-                if explore_level != start_lvl:
-                    _clear_simulator()
-                    st.session_state.pop("stream_completion_result", None)
-                    interfaces = get_default_interfaces(sim.device_id, seq.pattern)
-                    new_sim = AlarmStreamSimulator(
-                        scenario_key=seq.pattern,
-                        device_id=sim.device_id,
-                        interfaces=interfaces,
-                        speed_multiplier=5.0,
-                        start_level=explore_level,
-                    )
-                    new_sim.start()
-                    _save_simulator(new_sim)
-                    # injected_weak_signal も更新
-                    st.session_state["injected_weak_signal"] = {
-                        "device_id": sim.device_id,
-                        "messages": [],
-                        "message": "",
-                        "level": explore_level,
-                        "scenario": seq.pattern,
-                        "source": "stream_explore",
-                    }
-                    st.session_state.pop("dt_prediction_cache", None)
-                    st.rerun()
+        if is_complete and len(_all_levels) > 1:
+            explore_level = st.select_slider(
+                "🔍 レベル探索",
+                options=_all_levels,
+                value=_default,
+                format_func=lambda x: _EXPLORE_LABELS.get(x, f"L{x}"),
+                help="選択レベルまでを実線、以降を点線で表示。ゲージ・KPI・タイムラインも連動します。",
+                key="stream_explore_level",
+            )
+            # injected_weak_signal を更新して cockpit の分析を連動
+            _explore_events = [e for e in all_events if e.level == explore_level]
+            if _explore_events:
+                _latest_explore = _explore_events[-1]
+                st.session_state["injected_weak_signal"] = {
+                    "device_id": sim.device_id,
+                    "messages": _latest_explore.messages,
+                    "message": _latest_explore.messages[0] if _latest_explore.messages else "",
+                    "level": explore_level,
+                    "scenario": seq.pattern,
+                    "source": "stream_explore",
+                }
 
         st.markdown("---")
 
         # ── 4. イベントログ ──
         st.markdown("**📋 アラームイベントログ**")
-        if events:
-            render_event_timeline(events, sim)
-            if len(events) > 30:
-                st.caption(f"直近30件を表示中（全{len(events)}件）")
+        if display_events:
+            render_event_timeline(display_events, sim)
+            if len(display_events) > 30:
+                st.caption(f"直近30件を表示中（全{len(display_events)}件）")
         else:
             st.caption("イベント待機中...")
 
