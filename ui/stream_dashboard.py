@@ -260,6 +260,10 @@ def render_stream_dashboard():
                 horizontal=True,
                 label_visibility="collapsed",
             )
+            # ★ 双方向同期: ラジオ変更 → サイドバースライダーに反映
+            if st.session_state.get("pred_level") != explore_level:
+                st.session_state["pred_level"] = explore_level
+
             # injected_weak_signal を更新して cockpit の分析を連動
             _explore_events = [e for e in all_events if e.level == explore_level]
             if _explore_events:
