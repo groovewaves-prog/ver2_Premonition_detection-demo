@@ -7,7 +7,7 @@ import os
 from registry import list_sites, get_display_name, load_topology, get_paths
 from utils.const import SCENARIO_MAP
 from utils.llm_helper import get_rate_limiter, GENAI_AVAILABLE
-from ui.stream_dashboard import render_stream_controls, _get_simulator, inject_stream_alarms_to_session
+from ui.stream_dashboard import auto_start_stream, _get_simulator, _clear_simulator, inject_stream_alarms_to_session
 from ui.service_tier import tier_has_access, get_service_tier, TIER_BASIC, TIER_PHM, TIER_FULL
 from ui.shared_sim_config import (
     render_shared_config,
@@ -322,10 +322,6 @@ def render_sidebar():
                 # --- 予兆シミュレーション (共通設定を参照) ---
                 _render_weak_signal_injection(target_device, scenario_key)
 
-                st.divider()
-
-                # --- 連続劣化ストリーム (共通設定を参照) ---
-                _render_stream_section(target_device, scenario_key)
             else:
                 # PHM未満: デフォルト値を設定（バックエンド側の動作に影響しない）
                 target_device = "不明"
@@ -487,9 +483,21 @@ def _render_weak_signal_injection(target_device: str, scenario_key: str):
             for i, msg in enumerate(log_messages, 1):
                 disp_msg = f"{msg[:80]}..." if len(msg) > 80 else msg
                 st.caption(f"{i}. `{disp_msg}`")
+
+            # ★ 連続劣化ストリームの自動開始:
+            #   劣化進行度が >=1 になった瞬間にストリームを自動開始。
+            #   既に実行中/完了済みのシミュレータがある場合はスキップ。
+            auto_start_stream(target_device, scenario_key, start_level=degradation_level)
+
+            # ストリーム実行中: 最新アラームを session_state に注入
+            sim = _get_simulator()
+            if sim is not None and sim.is_started and not sim.is_complete:
+                inject_stream_alarms_to_session(sim)
         else:
-            # ★ level=0: 予測キャッシュ + forecast_ledger をクリアして
-            #   Future Radar / トリアージが残留表示されないようにする
+            # ★ level=0: ストリームを停止し、予測キャッシュ + forecast_ledger をクリア
+            _clear_simulator()
+            st.session_state.pop("stream_completion_result", None)
+
             _prev_injected = st.session_state.get("injected_weak_signal")
             if _prev_injected is not None:
                 # 以前シミュレーションが動いていた → クリーンアップ必要
@@ -526,19 +534,6 @@ def _render_weak_signal_injection(target_device: str, scenario_key: str):
                     st.session_state.pop(k, None)
 
             st.session_state["injected_weak_signal"] = None
-
-
-def _render_stream_section(target_device: str, scenario_key: str):
-    """連続劣化ストリームのサイドバーUI（共通設定を参照）"""
-    active = st.session_state.get("active_site")
-    site_for_list = active if active else (list_sites()[0] if list_sites() else None)
-
-    render_stream_controls(target_device, scenario_key, site_for_list or "")
-
-    # ストリーム実行中: 最新アラームを session_state に注入
-    sim = _get_simulator()
-    if sim is not None and sim.is_started and not sim.is_complete:
-        inject_stream_alarms_to_session(sim)
 
 
 def _render_api_key_input():
