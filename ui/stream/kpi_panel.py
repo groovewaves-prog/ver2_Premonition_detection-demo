@@ -53,7 +53,7 @@ def render_kpi_html(
         sev_label = "NORMAL"
 
     # ステージ色
-    _stage_critical = any(k in latest_stage for k in ["障害直前", "障害", "Critical", "Failure"])
+    _stage_critical = current_level >= 5
     if _stage_critical:
         stg_bg, stg_border, stg_text = "#FDE8E8", "#D32F2F", "#B71C1C"
     else:
