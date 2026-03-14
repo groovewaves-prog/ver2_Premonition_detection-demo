@@ -360,22 +360,26 @@ def _render_weak_signal_injection():
             st.session_state["pred_level"] = 0
             st.session_state["reset_pred_level"] = False
 
-        # ★ 双方向同期: シミュレーション完了時、探索レベルをスライダーに反映
-        #   ラジオボタン操作 → stream_explore_level 更新 → 次rerunでスライダーに同期
+        # ★ 双方向同期: シミュレーション完了時のスライダー操作を探索レベルに反映
+        #   on_change コールバック方式で「操作されたウィジェットのみが同期元」となる
+        #   （毎rerunの無条件代入は State Lock を引き起こすため使わない）
         _sim_for_sync = _get_simulator()
         _sim_complete = (_sim_for_sync is not None
                          and _sim_for_sync.is_started
                          and _sim_for_sync.is_complete)
-        if _sim_complete:
-            _explore_val = st.session_state.get("stream_explore_level")
-            if _explore_val is not None and _explore_val != st.session_state.get("pred_level"):
-                st.session_state["pred_level"] = _explore_val
+
+        def _on_slider_change():
+            """スライダー操作時のコールバック: 完了済みなら探索レベルを同期"""
+            sim = _get_simulator()
+            if sim and sim.is_started and sim.is_complete:
+                st.session_state["stream_explore_level"] = st.session_state["pred_level"]
 
         degradation_level = st.slider(
             "劣化進行度",
             min_value=0, max_value=5, value=0,
             help="0:正常 → 5:障害発生直前。レベルが上がると相関シグナルが増加し、予測精度が向上します。",
-            key="pred_level"
+            key="pred_level",
+            on_change=_on_slider_change,
         )
 
         # --- リアルなログメッセージ生成 ---
@@ -505,13 +509,11 @@ def _render_weak_signal_injection():
                 disp_msg = f"{msg[:80]}..." if len(msg) > 80 else msg
                 st.caption(f"{i}. `{disp_msg}`")
 
-            # ★ 連続劣化ストリームの自動開始 / 探索モード同期:
-            #   シミュレーション完了時: スライダー変更は探索レベル変更として扱う
-            #   （再起動せず stream_explore_level に同期するだけ）
+            # ★ 連続劣化ストリームの自動開始:
+            #   シミュレーション完了時: スライダー変更は on_change で探索レベルに同期済み
+            #   （再起動しない）
             #   未完了/未開始時: 通常通り auto_start_stream を呼ぶ
-            if _sim_complete:
-                st.session_state["stream_explore_level"] = degradation_level
-            else:
+            if not _sim_complete:
                 auto_start_stream(target_device, scenario_key, start_level=degradation_level)
 
             # ストリーム実行中: 最新アラームを session_state に注入
