@@ -360,6 +360,17 @@ def _render_weak_signal_injection():
             st.session_state["pred_level"] = 0
             st.session_state["reset_pred_level"] = False
 
+        # ★ 双方向同期: シミュレーション完了時、探索レベルをスライダーに反映
+        #   ラジオボタン操作 → stream_explore_level 更新 → 次rerunでスライダーに同期
+        _sim_for_sync = _get_simulator()
+        _sim_complete = (_sim_for_sync is not None
+                         and _sim_for_sync.is_started
+                         and _sim_for_sync.is_complete)
+        if _sim_complete:
+            _explore_val = st.session_state.get("stream_explore_level")
+            if _explore_val is not None and _explore_val != st.session_state.get("pred_level"):
+                st.session_state["pred_level"] = _explore_val
+
         degradation_level = st.slider(
             "劣化進行度",
             min_value=0, max_value=5, value=0,
@@ -494,10 +505,14 @@ def _render_weak_signal_injection():
                 disp_msg = f"{msg[:80]}..." if len(msg) > 80 else msg
                 st.caption(f"{i}. `{disp_msg}`")
 
-            # ★ 連続劣化ストリームの自動開始:
-            #   劣化進行度が >=1 になった瞬間にストリームを自動開始。
-            #   既に実行中/完了済みのシミュレータがある場合はスキップ。
-            auto_start_stream(target_device, scenario_key, start_level=degradation_level)
+            # ★ 連続劣化ストリームの自動開始 / 探索モード同期:
+            #   シミュレーション完了時: スライダー変更は探索レベル変更として扱う
+            #   （再起動せず stream_explore_level に同期するだけ）
+            #   未完了/未開始時: 通常通り auto_start_stream を呼ぶ
+            if _sim_complete:
+                st.session_state["stream_explore_level"] = degradation_level
+            else:
+                auto_start_stream(target_device, scenario_key, start_level=degradation_level)
 
             # ストリーム実行中: 最新アラームを session_state に注入
             sim = _get_simulator()
