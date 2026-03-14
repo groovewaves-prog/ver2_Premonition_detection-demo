@@ -4,6 +4,24 @@ import logging
 import streamlit as st
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
+
+def _record_ai_feedback(alert_text: str, is_positive: bool):
+    """AIナレッジベースにフィードバックを自律記録（原則4準拠）。"""
+    try:
+        from inference_engine import InferenceEngine
+        engine = InferenceEngine.__new__(InferenceEngine)
+        if hasattr(engine, '_ai_severity_store'):
+            engine._ai_severity_store.record_feedback(alert_text, is_positive=is_positive)
+        else:
+            # フォールバック: 直接ストアをインスタンス化
+            from inference_engine import _AISeverityStore
+            store = _AISeverityStore()
+            store.record_feedback(alert_text, is_positive=is_positive)
+    except Exception as e:
+        logger.debug("AI feedback recording skipped: %s", e)
+
 from network_ops import (
     generate_remediation_commands_streaming,
     run_remediation_parallel_v2,
@@ -582,12 +600,16 @@ def _render_prediction_history(cand, dt_engine, api_key):
         st_html("<div style='margin-top: 12px;'></div>")
         _btn_col1, _btn_col2 = st.columns(2)
         with _btn_col1:
-            if st.button(f"✅ このインシデントを対応済みにする", key=f"bulk_handled_{_rule_pattern}", use_container_width=True):
+            if st.button(f"✅ 対応済み", key=f"bulk_handled_{_rule_pattern}", use_container_width=True):
                 _cnt = 0
                 for p in _pred_group:
                     r = dt_engine.forecast_register_outcome(p.get("forecast_id", ""), "mitigated", note="インシデント単位で対応済み")
                     if r.get("ok"):
                         _cnt += 1
+                        # 原則4: AIナレッジに正のフィードバックを自律記録
+                        _msg = p.get("message", "")
+                        if _msg:
+                            _record_ai_feedback(_msg, is_positive=True)
 
                 st.session_state["reset_pred_level"] = True
                 st.session_state["injected_weak_signal"] = None
@@ -596,6 +618,28 @@ def _render_prediction_history(cand, dt_engine, api_key):
                 st.session_state.generated_report = None
                 st.session_state.remediation_plan = None
 
-                st.success(f"✅ {_cnt}件のシグナルをクローズし、システムを正常状態に復旧しました")
+                st.success(f"✅ {_cnt}件をクローズし、正常状態に復旧しました")
+                time.sleep(0.3)
+                st.rerun()
+        with _btn_col2:
+            if st.button(f"🚫 静観 / キャンセル", key=f"bulk_dismiss_{_rule_pattern}", use_container_width=True):
+                _cnt = 0
+                for p in _pred_group:
+                    r = dt_engine.forecast_register_outcome(p.get("forecast_id", ""), "mitigated", note="静観・ノイズとして却下")
+                    if r.get("ok"):
+                        _cnt += 1
+                        # 原則4: AIナレッジに負のフィードバックを自律記録
+                        _msg = p.get("message", "")
+                        if _msg:
+                            _record_ai_feedback(_msg, is_positive=False)
+
+                st.session_state["reset_pred_level"] = True
+                st.session_state["injected_weak_signal"] = None
+                st.session_state.live_result = None
+                st.session_state.verification_result = None
+                st.session_state.generated_report = None
+                st.session_state.remediation_plan = None
+
+                st.info(f"🚫 {_cnt}件を静観としてクローズしました")
                 time.sleep(0.3)
                 st.rerun()
