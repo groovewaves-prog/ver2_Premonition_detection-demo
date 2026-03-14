@@ -6,7 +6,7 @@ from ui.sidebar import render_sidebar
 from ui.dashboard import render_site_status_board, render_triage_center
 from ui.cockpit import render_incident_cockpit, prewarm_engines
 from ui.tuning import render_tuning_dashboard
-from ui.stream_dashboard import render_stream_dashboard, _get_simulator
+from ui.stream_dashboard import _get_simulator
 
 import logging
 import warnings
@@ -36,13 +36,9 @@ def main():
     active_site = st.session_state.get("active_site")
     
     if active_site:
-        # ストリームダッシュボード（実行中 + 完了後も「試験終了」まで表示）
+        # ストリーム状態の確認（描画は cockpit 内 Future Radar 下に移動）
         sim = _get_simulator()
-        stream_visible = sim is not None and sim.is_started
-        stream_running = stream_visible and not sim.is_complete
-        needs_refresh = False
-        if stream_visible:
-            needs_refresh = render_stream_dashboard()
+        stream_running = sim is not None and sim.is_started and not sim.is_complete
 
         # ★ エッセンス2: タブ切り替え時の「空回し」完全排除
         #   session_state でアクティブタブを追跡し、選択中のタブのみ重い計算を実行。
@@ -72,9 +68,10 @@ def main():
                     st.session_state[_tab_key] = _TAB_NAMES[1]
                     st.rerun()
 
-        # ストリーム実行中: 自動リフレッシュ（間隔を短縮して俊敏性向上）
-        if stream_running and needs_refresh:
-            time.sleep(1)
+        # ストリーム実行中: 自動リフレッシュ（0.3s間隔で約2-3秒で全描画完了）
+        _stream_needs_refresh = st.session_state.get("_stream_needs_refresh", False)
+        if stream_running and _stream_needs_refresh:
+            time.sleep(0.3)
             st.rerun()
     else:
         # ★ エンジン事前ウォームアップ: ダッシュボード表示中にバックグラウンドで
