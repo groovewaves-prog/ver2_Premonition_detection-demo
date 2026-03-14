@@ -206,14 +206,16 @@ def render_degradation_chart_svg(
     height: int = 320,
     *,
     explore_level: int = 0,
+    level_labels: dict | None = None,
 ) -> str:
     """劣化曲線チャートをSVGで描画（レベル対応版）。
 
     chart_points: [(elapsed_sec, metric_value, level)] — 各点にレベル情報付き。
       level 0 = 初期点, 1-5 = 劣化レベル, 6 = 障害点。
     explore_level: 0 = 分割なし（全部実線）, 1-5 = そのレベルまで実線、以降点線。
+    level_labels: {1: "初期劣化", ...} — シナリオ固有のレベルラベル。None時はデフォルト。
     """
-    _LEVEL_LABELS = {1: "初期劣化", 2: "劣化進行", 3: "警戒域", 4: "危険域", 5: "障害直前"}
+    _LEVEL_LABELS = level_labels or {1: "初期劣化", 2: "劣化進行", 3: "警戒域", 4: "危険域", 5: "障害直前"}
 
     margin_left = 60
     margin_right = 30

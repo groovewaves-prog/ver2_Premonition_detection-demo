@@ -112,7 +112,7 @@ def render_stream_dashboard():
 
     # ── 探索レベルに基づいてイベントをフィルタ（表示用） ──
     # explore_level 選択時: そのレベルの最終イベントを境界としてスナップ
-    if is_complete and explore_level < current_level:
+    if is_complete and explore_level <= current_level:
         display_events = [e for e in all_events if e.level <= explore_level]
         display_level = explore_level
         _explore_last_t = display_events[-1].elapsed_sec if display_events else 0
@@ -124,7 +124,7 @@ def render_stream_dashboard():
     # ── ゲージ用メトリクス: ステージ代表値にスナップ（ジッター排除） ──
     # 探索モード時はステージ定義の metric_value を使い、閾値境界にピタリと合わせる
     _snap_metric = None
-    if is_complete and explore_level < current_level and explore_level >= 1:
+    if is_complete and explore_level <= current_level and explore_level >= 1:
         _stage_idx = explore_level - 1
         if _stage_idx < len(seq.stages):
             _snap_metric = seq.stages[_stage_idx].metric_value
@@ -228,6 +228,8 @@ def render_stream_dashboard():
                 if _last_idx is not None:
                     _old = chart_points[_last_idx]
                     chart_points[_last_idx] = (_old[0], _snap_v, _old[2])
+        # シナリオ固有のレベルラベルを構築
+        _level_labels = {s.level: s.label for s in seq.stages if 1 <= s.level <= 5}
         chart_svg = render_degradation_chart_svg(
             chart_points=chart_points,
             normal_value=seq.normal_value,
@@ -236,6 +238,7 @@ def render_stream_dashboard():
             metric_unit=seq.metric_unit,
             total_duration=sim.total_duration_sec,
             explore_level=_el,
+            level_labels=_level_labels,
         )
         # data-el 属性で iframe キャッシュバスト（explore_level 変更時に確実に再描画）
         import streamlit.components.v1 as _components
@@ -248,14 +251,11 @@ def render_stream_dashboard():
 
         # ── 3.5 レベル探索（コンパクト横並びラジオ） ──
         if is_complete and len(_all_levels) > 1:
-            _EXPLORE_SHORT = {
-                1: "L1 初期劣化", 2: "L2 劣化進行", 3: "L3 警戒域",
-                4: "L4 危険域", 5: "L5 障害直前",
-            }
+            _explore_short = {s.level: f"L{s.level} {s.label}" for s in seq.stages}
             explore_level = st.radio(
                 "レベル探索",
                 options=_all_levels,
-                format_func=lambda x: _EXPLORE_SHORT.get(x, f"L{x}"),
+                format_func=lambda x: _explore_short.get(x, f"L{x}"),
                 key="stream_explore_level",
                 horizontal=True,
                 label_visibility="collapsed",
