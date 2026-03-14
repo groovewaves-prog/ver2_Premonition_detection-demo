@@ -595,3 +595,35 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             selected_incident_candidate, target_device_id,
             topology, api_key,
         )
+
+        # =====================================================
+        # ★ 予兆ステータス履歴 (Inbox) パネル
+        # =====================================================
+        st.markdown("### 📥 予兆ステータス履歴 (Inbox)")
+
+        history = st.session_state.get("alert_history", [])
+
+        if not history:
+            st.info("現在、対応待ちの予兆はありません。")
+        else:
+            with st.container(height=400):
+                for idx, item in enumerate(history):
+                    _dev = item.get("device_id")
+                    _lvl = item.get("level")
+
+                    with st.container(border=True):
+                        st.markdown(f"**{_dev}** (Level {_lvl})")
+
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            if st.button("🔍 詳細", key=f"hist_view_{idx}", use_container_width=True):
+                                st.session_state["active_context_item"] = item
+                                st.rerun()
+                        with col2:
+                            if st.button("✅ 対応", key=f"hist_resolve_{idx}", use_container_width=True):
+                                st.session_state["alert_history"].pop(idx)
+                                st.rerun()
+                        with col3:
+                            if st.button("🚫 静観", key=f"hist_ignore_{idx}", use_container_width=True):
+                                st.session_state["alert_history"].pop(idx)
+                                st.rerun()
