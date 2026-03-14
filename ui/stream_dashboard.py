@@ -40,15 +40,28 @@ logger = logging.getLogger(__name__)
 
 def auto_start_stream(target_device: str, scenario_key: str, start_level: int):
     """
-    劣化進行度が 0→>=1 に変化した時に自動でストリームを開始する。
+    劣化進行度が変化した時に自動でストリームを開始/再開始する。
 
     サイドバーの _render_weak_signal_injection から呼ばれる。
-    既にストリームが実行中/完了済みの場合は何もしない。
+    既存のストリームが異なるレベルで完了済みの場合は、クリアして再開始する。
     """
     sim = _get_simulator()
-    # 既に同一設定で実行中 or 完了済みなら何もしない
-    if sim is not None and sim.is_started:
+
+    # 既に実行中（未完了）なら何もしない
+    if sim is not None and sim.is_started and not sim.is_complete:
         return
+
+    # 完了済みで同一 start_level → 再開始不要
+    if (sim is not None and sim.is_started and sim.is_complete
+            and getattr(sim, 'start_level', 1) == start_level
+            and sim.device_id == target_device
+            and sim.sequence.pattern == scenario_key):
+        return
+
+    # 既存のストリームをクリア（レベル/デバイス/シナリオ変更時）
+    if sim is not None:
+        _clear_simulator()
+        st.session_state.pop("stream_completion_result", None)
 
     speed = 5.0  # 固定速度
     interfaces = get_default_interfaces(target_device, scenario_key)
@@ -98,7 +111,7 @@ def render_stream_dashboard():
         f"{status_icon} {status_text} — "
         f"{seq.pattern.upper()} | {sim.device_id}{start_info}"
     )
-    with st.expander(_expander_label, expanded=not is_complete):
+    with st.expander(_expander_label, expanded=True):
         # ── 1. ステージタイムライン ──
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
@@ -166,41 +179,6 @@ def render_stream_dashboard():
             f'{chart_svg}</div>'
         )
         _components.html(_scroll_html, height=350, scrolling=True)
-
-        # ── 3.5 レベル探索スライダー（グラフ直下） ──
-        #   完了後に運用者が任意のレベルの状態を振り返るためのコントロール。
-        if is_complete and events:
-            _EXPLORE_LABELS = {
-                1: "L1: 初期劣化", 2: "L2: 劣化進行", 3: "L3: 警戒域",
-                4: "L4: 危険域", 5: "L5: 障害直前",
-            }
-            _available_levels = sorted(set(e.level for e in events))
-            if _available_levels:
-                # デフォルト値: 前回選択値があればそれ、なければ最大レベル
-                _default = st.session_state.get("stream_explore_level", _available_levels[-1])
-                if _default not in _available_levels:
-                    _default = _available_levels[-1]
-
-                explore_level = st.select_slider(
-                    "🔍 レベル探索",
-                    options=_available_levels,
-                    value=_default,
-                    format_func=lambda x: _EXPLORE_LABELS.get(x, f"L{x}"),
-                    help="レベルを選択すると、その時点の劣化状態でコックピットの分析が更新されます。",
-                    key="stream_explore_level",
-                )
-                # 選択レベルに対応するイベントから injected_weak_signal を常に更新
-                _explore_events = [e for e in events if e.level == explore_level]
-                if _explore_events:
-                    _latest_explore = _explore_events[-1]
-                    st.session_state["injected_weak_signal"] = {
-                        "device_id": sim.device_id,
-                        "messages": _latest_explore.messages,
-                        "message": _latest_explore.messages[0] if _latest_explore.messages else "",
-                        "level": explore_level,
-                        "scenario": sim.sequence.pattern,
-                        "source": "stream_explore",
-                    }
 
         st.markdown("---")
 
