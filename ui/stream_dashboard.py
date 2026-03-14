@@ -99,34 +99,22 @@ def render_stream_dashboard():
     is_complete = sim.is_complete
     start_lvl = getattr(sim, 'start_level', 1)
 
-    # ── レベル探索の値を先に取得（Single Source of Truth: サイドバースライダー） ──
-    # explore_level の意味: 「このレベルまで確認済み」
-    #   例: explore_level=3 → L1,L2,L3 実線（確認済み）、L4,L5 点線（予測）
-    # ソース: サイドバーの pred_level スライダー → on_change → stream_explore_level
+    # ── グラフ表示はシステム状態（current_level）に固定 ──
+    # グラフ・ゲージ・タイムラインは常にシミュレーションの「現実」を反映。
+    # What-If セレクター（whatif_phase）は付随情報パネルのみに影響する。
     _all_levels = list(range(start_lvl, 6))
-    explore_level = current_level
-    if is_complete and len(_all_levels) > 1:
-        _default = st.session_state.get("stream_explore_level", start_lvl)
-        if _default not in _all_levels:
-            _default = start_lvl
-        explore_level = _default
+    display_events = live_events
+    display_level = current_level
 
-    # ── 探索レベルに基づいてイベントをフィルタ（表示用） ──
-    # explore_level 選択時: そのレベルの最終イベントを境界としてスナップ
-    if is_complete and explore_level <= current_level:
-        display_events = [e for e in all_events if e.level <= explore_level]
-        display_level = explore_level
-        _explore_last_t = display_events[-1].elapsed_sec if display_events else 0
-    else:
-        display_events = live_events
+    # 完了時: 全イベントを表示（グラフはシステム状態の最終レベルまで実線）
+    if is_complete:
+        display_events = all_events
         display_level = current_level
-        _explore_last_t = None
 
-    # ── ゲージ用メトリクス: ステージ代表値にスナップ（ジッター排除） ──
-    # 探索モード時はステージ定義の metric_value を使い、閾値境界にピタリと合わせる
+    # ── ゲージ用メトリクス: 最終レベルの代表値にスナップ（ジッター排除） ──
     _snap_metric = None
-    if is_complete and explore_level <= current_level and explore_level >= 1:
-        _stage_idx = explore_level - 1
+    if is_complete and current_level >= 1:
+        _stage_idx = current_level - 1
         if _stage_idx < len(seq.stages):
             _snap_metric = seq.stages[_stage_idx].metric_value
 
@@ -145,17 +133,9 @@ def render_stream_dashboard():
         active_stages = [s for s in seq.stages if s.level >= start_lvl]
         stages_info = [{"label": s.label} for s in active_stages]
         relative_level = max(0, display_level - start_lvl + 1) if display_level >= start_lvl else 0
-        # 探索モードではプログレスバーをステージ円の中心にスナップ
-        # 円の位置: (i + 0.5) / num_stages（render_timeline_svg L145 と同一計算）
-        _num_stages = len(stages_info)
-        if _explore_last_t is not None and _num_stages > 0:
-            _level_index = explore_level - start_lvl  # 0-based index
-            _explore_progress = (_level_index + 0.5) / _num_stages * 100
-        else:
-            _explore_progress = progress
-        _tl_cache_key = f"{relative_level}|{int(_explore_progress // 5 * 5)}|{explore_level}"
+        _tl_cache_key = f"{relative_level}|{int(progress // 5 * 5)}"
         timeline_svg = _svg_cached("timeline", _tl_cache_key,
-                                   render_timeline_svg, relative_level, _explore_progress, stages_info)
+                                   render_timeline_svg, relative_level, progress, stages_info)
         st_html(timeline_svg, height=100)
 
         st.markdown("---")
@@ -181,11 +161,7 @@ def render_stream_dashboard():
 
         with col_kpi1:
             severity = display_events[-1].severity if display_events else "NORMAL"
-            # 探索モードでは探索レベルの最終イベント時刻を使用
-            if _explore_last_t is not None:
-                elapsed = _explore_last_t
-            else:
-                elapsed = sim.current_elapsed_sec
+            elapsed = sim.current_elapsed_sec
             remaining = max(0, sim.total_duration_sec - elapsed)
             latest_stage = display_events[-1].stage_label if display_events else "-"
 
@@ -211,16 +187,15 @@ def render_stream_dashboard():
             chart_points.append((ev.elapsed_sec, ev.metric_value, ev.level))
         chart_points.append((sim.total_duration_sec, seq.failure_value, 6))
 
-        # 探索モード時: 各レベルの最終点をステージ代表値にスナップ
-        # → 実線の端点がマーカーの Y 値（閾値）とピタリと一致する
-        _el = explore_level if is_complete else 0
+        # グラフはシステム状態で描画（What-If に非連動）
+        # 完了時: current_level まで実線、それ以降を点線
+        _el = current_level if is_complete else 0
         if _el > 0:
             for lvl_snap in range(1, 6):
                 _si = lvl_snap - 1
                 if _si >= len(seq.stages):
                     break
                 _snap_v = seq.stages[_si].metric_value
-                # 各レベルの最終点のインデックスを探す
                 _last_idx = None
                 for _ci in range(len(chart_points) - 1, -1, -1):
                     if chart_points[_ci][2] == lvl_snap:
@@ -229,7 +204,6 @@ def render_stream_dashboard():
                 if _last_idx is not None:
                     _old = chart_points[_last_idx]
                     chart_points[_last_idx] = (_old[0], _snap_v, _old[2])
-        # シナリオ固有のレベルラベルを構築
         _level_labels = {s.level: s.label for s in seq.stages if 1 <= s.level <= 5}
         chart_svg = render_degradation_chart_svg(
             chart_points=chart_points,
@@ -241,7 +215,6 @@ def render_stream_dashboard():
             explore_level=_el,
             level_labels=_level_labels,
         )
-        # data-el 属性で iframe キャッシュバスト（explore_level 変更時に確実に再描画）
         import streamlit.components.v1 as _components
         _scroll_html = (
             f'<div data-el="{_el}" style="overflow-x:auto;overflow-y:hidden;'
@@ -250,43 +223,62 @@ def render_stream_dashboard():
         )
         _components.html(_scroll_html, height=380, scrolling=True)
 
-        # ── 3.5 レベルインジケーター（表示専用・操作不可） ──
-        # 原則1: 操作はサイドバーに集約。右側は読み取り専用の状態表示のみ。
+        # ── 3.5 What-If フェーズセレクター（ビュー操作・システム状態に影響しない） ──
+        # 原則1改訂: ビュー操作はメイン画面に配置。グラフは変えず付随情報のみ切替。
         if is_complete and len(_all_levels) > 1:
-            _indicator_items = []
-            for lvl in _all_levels:
-                _label = next((s.label for s in seq.stages if s.level == lvl), f"L{lvl}")
-                _is_active = (lvl == explore_level)
-                if _is_active:
-                    _indicator_items.append(
-                        f'<span style="display:inline-block;padding:4px 12px;margin:0 3px;'
-                        f'border-radius:16px;font-size:13px;font-weight:bold;'
-                        f'background:#D32F2F;color:#fff;">'
-                        f'L{lvl} {_label}</span>'
-                    )
-                else:
-                    _indicator_items.append(
-                        f'<span style="display:inline-block;padding:4px 12px;margin:0 3px;'
-                        f'border-radius:16px;font-size:13px;'
-                        f'background:#F5F5F5;color:#999;border:1px solid #E0E0E0;">'
-                        f'L{lvl} {_label}</span>'
-                    )
-            _indicator_html = (
-                '<div style="text-align:center;padding:6px 0;">'
-                + ''.join(_indicator_items)
-                + '</div>'
+            _whatif_labels = {s.level: f"L{s.level} {s.label}" for s in seq.stages}
+            whatif_level = st.radio(
+                "What-If フェーズ",
+                options=_all_levels,
+                format_func=lambda x: _whatif_labels.get(x, f"L{x}"),
+                key="whatif_phase",
+                horizontal=True,
+                label_visibility="collapsed",
             )
-            st_html(_indicator_html, height=45)
+
+            # ── What-If 予測情報パネル（グラフは変えず付随情報のみ表示） ──
+            from digital_twin_pkg.alarm_stream import (
+                SCENARIO_BASE_TTF_HOURS, _DETERMINISTIC_DECAY,
+            )
+            _base_ttf = SCENARIO_BASE_TTF_HOURS.get(seq.pattern, 336)
+            _wi_decay = _DETERMINISTIC_DECAY.get(whatif_level, 1.0)
+            _wi_rul_h = max(1, int(_base_ttf * _wi_decay))
+            _wi_rul_disp = f"{_wi_rul_h // 24}日後" if _wi_rul_h >= 24 else f"{_wi_rul_h}時間後"
+            _wi_stage = next((s for s in seq.stages if s.level == whatif_level), None)
+            _wi_label = _wi_stage.label if _wi_stage else f"L{whatif_level}"
+
+            # 推奨アクションをレベルに応じて生成
+            if whatif_level <= 2:
+                _wi_action = "定期監視を継続。次回メンテナンス窓で予防保全を検討"
+            elif whatif_level <= 3:
+                _wi_action = "予備品の確保を開始。メンテナンス計画を前倒しで策定"
+            elif whatif_level <= 4:
+                _wi_action = "緊急メンテナンスを計画。影響範囲の切替準備を実施"
+            else:
+                _wi_action = "即座に冗長切替を実行。障害発生前の緊急対応を開始"
+
+            _wi_color = "#D32F2F" if whatif_level >= 4 else "#FF9800" if whatif_level >= 2 else "#4CAF50"
+            _wi_html = (
+                f'<div style="background:#FAFAFA;border-left:4px solid {_wi_color};'
+                f'padding:10px 14px;margin:6px 0;border-radius:4px;font-size:13px;">'
+                f'<b>What-If: {_wi_label} に到達した場合</b><br>'
+                f'<span style="color:#666;">障害予測: </span>'
+                f'<b style="color:{_wi_color};">{_wi_rul_disp}</b>'
+                f'<span style="color:#666;margin-left:16px;">推奨: </span>'
+                f'{_wi_action}'
+                f'</div>'
+            )
+            st_html(_wi_html, height=70)
 
             # injected_weak_signal を更新して cockpit の分析を連動
-            _explore_events = [e for e in all_events if e.level == explore_level]
+            _explore_events = [e for e in all_events if e.level == whatif_level]
             if _explore_events:
                 _latest_explore = _explore_events[-1]
                 st.session_state["injected_weak_signal"] = {
                     "device_id": sim.device_id,
                     "messages": _latest_explore.messages,
                     "message": _latest_explore.messages[0] if _latest_explore.messages else "",
-                    "level": explore_level,
+                    "level": whatif_level,
                     "scenario": seq.pattern,
                     "source": "stream_explore",
                 }
@@ -301,6 +293,27 @@ def render_stream_dashboard():
                 st.caption(f"直近30件を表示中（全{len(display_events)}件）")
         else:
             st.caption("イベント待機中...")
+
+        # ── 完了時: 自動昇格（L5到達 → 予兆履歴からインシデントへ昇格） ──
+        if is_complete and current_level >= 5:
+            _escalation_key = f"_stream_escalated_{sim.device_id}"
+            if _escalation_key not in st.session_state:
+                try:
+                    _dt_engine = _get_shared_dt_engine()
+                    if _dt_engine is not None:
+                        _esc_result = _dt_engine.forecast_auto_confirm_on_incident(
+                            device_id=sim.device_id,
+                            scenario=seq.pattern,
+                        )
+                        if _esc_result.get("confirmed", 0) > 0:
+                            st.warning(
+                                f"⚡ {sim.device_id} が障害フェーズ（L5）に到達。"
+                                f"予兆履歴の {_esc_result['confirmed']}件を"
+                                f"「根本原因候補（アクティブインシデント）」へ自動昇格しました。"
+                            )
+                except Exception as e:
+                    logger.debug("Auto-escalation skipped: %s", e)
+                st.session_state[_escalation_key] = True
 
         # ── 完了時: DB同期結果 ──
         if is_complete:
