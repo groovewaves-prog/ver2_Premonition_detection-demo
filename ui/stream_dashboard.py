@@ -180,6 +180,50 @@ def render_stream_dashboard():
         )
         _components.html(_scroll_html, height=350, scrolling=True)
 
+        # ── 3.5 レベル探索スライダー（グラフ直下） ──
+        #   サイドバーの劣化進行度と連動し、選択レベルでストリームを再開始する。
+        if events:
+            _EXPLORE_LABELS = {
+                1: "L1: 初期劣化", 2: "L2: 劣化進行", 3: "L3: 警戒域",
+                4: "L4: 危険域", 5: "L5: 障害直前",
+            }
+            # 利用可能なレベル: start_level ～ 5
+            _all_levels = list(range(start_lvl, 6))
+            if _all_levels:
+                explore_level = st.select_slider(
+                    "🔍 レベル探索",
+                    options=_all_levels,
+                    value=start_lvl,
+                    format_func=lambda x: _EXPLORE_LABELS.get(x, f"L{x}"),
+                    help="レベルを選択すると、その開始レベルでストリームが再実行されます。",
+                    key="stream_explore_level",
+                )
+                # 探索レベルがストリームの start_level と異なる場合、再開始
+                if explore_level != start_lvl:
+                    _clear_simulator()
+                    st.session_state.pop("stream_completion_result", None)
+                    interfaces = get_default_interfaces(sim.device_id, seq.pattern)
+                    new_sim = AlarmStreamSimulator(
+                        scenario_key=seq.pattern,
+                        device_id=sim.device_id,
+                        interfaces=interfaces,
+                        speed_multiplier=5.0,
+                        start_level=explore_level,
+                    )
+                    new_sim.start()
+                    _save_simulator(new_sim)
+                    # injected_weak_signal も更新
+                    st.session_state["injected_weak_signal"] = {
+                        "device_id": sim.device_id,
+                        "messages": [],
+                        "message": "",
+                        "level": explore_level,
+                        "scenario": seq.pattern,
+                        "source": "stream_explore",
+                    }
+                    st.session_state.pop("dt_prediction_cache", None)
+                    st.rerun()
+
         st.markdown("---")
 
         # ── 4. イベントログ ──
