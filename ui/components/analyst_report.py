@@ -121,19 +121,21 @@ def render_analyst_report(
             if _gs_rec:
                 st.caption(f"💡 推奨: {_gs_rec}")
 
-    # ★ エッセンス6: AI自律診断の思考ログ表示
+    # ★ エッセンス6: AI診断の思考ログ表示
     _diag_session = get_diagnostic_session(cand.get("id", ""))
     if _diag_session and _diag_session.is_complete:
+        _step_labels = {
+            "plan": ("🧠", "調査項目の選定"),
+            "execute": ("⚡", "コマンド実行"),
+            "analyze": ("🔍", "結果の読み取り"),
+            "conclude": ("📋", "判定"),
+        }
         with st.expander("🧠 AI診断プロセス（思考ログ）", expanded=False):
             for _step in _diag_session.steps:
-                _step_icons = {
-                    "plan": "🧠", "execute": "⚡",
-                    "analyze": "🔍", "conclude": "📋",
-                }
-                _icon = _step_icons.get(_step.step_type, "❓")
+                _icon, _label = _step_labels.get(_step.step_type, ("❓", "不明"))
                 st.markdown(
                     f"<div style='font-size:13px;padding:2px 0;'>"
-                    f"{_icon} <b>R{_step.round_num}</b>: {_step.description}</div>",
+                    f"{_icon} <b>{_label}</b> (調査{_step.round_num}回目): {_step.description}</div>",
                     unsafe_allow_html=True,
                 )
                 if _step.insights:

@@ -38,6 +38,7 @@ from ui.components.root_cause_table import render_root_cause_table
 from ui.components.topology_panel import render_topology_panel
 from ui.components.analyst_report import render_analyst_report
 from ui.components.remediation import render_remediation
+from ui.components.unified_pipeline import render_unified_pipeline
 from ui.components.chat_panel import render_chat_panel
 from ui.components.command_popup import show_command_popup_if_pending
 from ui.prediction_pipeline import run_prediction_pipeline
@@ -751,7 +752,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # 4. 2カラムレイアウト
     col_map, col_chat = st.columns([1.2, 1])
 
-    # 左カラム: トポロジー + 影響伝搬 + AI学習ルール + Auto-Diagnostics
+    # 左カラム: トポロジー + 影響伝搬 + AI学習ルール
     with col_map:
         render_topology_panel(
             topology, alarms, analysis_results,
@@ -760,22 +761,18 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             symptom_devices=symptom_devices,
         )
 
-        # ★ エッセンス5: AI自律診断パネル [PHM: RUL予測 tier]
-        with render_tier_section(
-            TIER_PHM_RUL, "AI自律診断", icon="🤖",
-            description="根本原因候補に対して自律的にコマンド計画→実行→分析のループを回し、障害の根因を深掘りします。",
-        ) as _diag_ok:
-            if _diag_ok:
-                render_autonomous_diagnostic_panel(
-                    selected_incident_candidate, topology, scenario,
-                )
-
-    # 右カラム: AI Analyst Report + Remediation + Chat
+    # 右カラム: 統合診断パイプライン + 自動復旧 + Chat
     with col_chat:
-        render_analyst_report(
-            selected_incident_candidate, topology,
-            scenario, site_id, api_key,
-        )
+        # ★ 統合診断パイプライン: ②AI診断 → ③確認手順書 → ④予防措置プラン
+        with render_tier_section(
+            TIER_PHM_RUL, "診断パイプライン", icon="📋",
+            description="AI診断→確認手順書→予防措置プランを順にガイドする統合診断フローです。",
+        ) as _pipe_ok:
+            if _pipe_ok:
+                render_unified_pipeline(
+                    selected_incident_candidate, topology,
+                    scenario, site_id, api_key,
+                )
 
         with render_tier_section(
             TIER_PHM_RUL, "自動復旧 (Remediation)", icon="🛠️",

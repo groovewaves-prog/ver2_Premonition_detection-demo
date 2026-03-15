@@ -174,7 +174,7 @@ def _render_generate_fix_button(cand, topology, scenario, site_id, api_key, is_p
         fix_label    = "🔮 予防措置プランを生成 (Preventive Measures)"
         report_prereq = "「🔮 予兆の確認手順を生成」"
         st.caption(
-            "📋 **ステップ③**: 確認手順の診断結果を踏まえたメンテナンス作業計画書。"
+            "📋 **ステップ④**: 確認手順の診断結果を踏まえたメンテナンス作業計画書。"
             "config系の予防コマンドを含み、「復旧実行」ボタンで自動実行できます。"
         )
     else:
