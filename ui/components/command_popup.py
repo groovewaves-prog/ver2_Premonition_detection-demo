@@ -391,17 +391,17 @@ def render_triage_cards(rec_actions: list, device_id: str, card_idx):
                     _result = _inline_results.get(_cmd)
                     if _result:
                         _step_lines.append(
-                            f'<div style="font-size:13px;color:#2E7D32;padding:1px 0;">'
-                            f'{_num}. <code>{_cmd}</code> ✅</div>'
+                            f'<div style="font-size:15px;color:#2E7D32;padding:2px 0;">'
+                            f'{_num}. <code style="font-size:15px;">{_cmd}</code> ✅</div>'
                         )
                     else:
                         _step_lines.append(
-                            f'<div style="font-size:13px;color:#333;padding:1px 0;">'
-                            f'{_num}. <code>{_cmd}</code></div>'
+                            f'<div style="font-size:15px;color:#333;padding:2px 0;">'
+                            f'{_num}. <code style="font-size:15px;">{_cmd}</code></div>'
                         )
                 else:
                     _step_lines.append(
-                        f'<div style="font-size:13px;color:#333;padding:1px 0;">'
+                        f'<div style="font-size:15px;color:#333;padding:2px 0;">'
                         f'{_num}. {step["text"]}</div>'
                     )
             _steps_html = (
