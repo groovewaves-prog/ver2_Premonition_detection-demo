@@ -305,19 +305,31 @@ def _render_inbox_panel(dt_engine):
             )
 
             with st.expander(_expander_label, expanded=False):
-                # 証拠シグナル一覧
-                if _evidence_entries:
-                    st.markdown("**🔍 証拠シグナル一覧**")
-                    _box_h = 200 if len(_evidence_entries) > 4 else None
+                from ui.components.helpers import st_html
+
+                # 証拠シグナル一覧（リッチHTML版）
+                _raw_entries = _evidence_entries or item.get("messages", [])
+                if _raw_entries:
+                    st.markdown("**🔍 証拠シグナル一覧（検知ログ詳細）**")
+                    _box_h = 250 if len(_raw_entries) > 4 else None
                     _scroll = st.container(height=_box_h, border=True) if _box_h else st.container(border=True)
                     with _scroll:
-                        for _entry in _evidence_entries:
-                            st.code(_entry, language="text")
-                elif item.get("messages"):
-                    st.markdown("**🔍 証拠シグナル一覧**")
-                    with st.container(border=True):
-                        for _msg in item["messages"]:
-                            st.code(_msg, language="text")
+                        for _entry in _raw_entries:
+                            # タイムスタンプ部分をハイライト
+                            import re as _re
+                            _ts_match = _re.match(r'(\[.*?\])(.*)', str(_entry))
+                            if _ts_match:
+                                _ts_part = f"<span style='color:#888;'>{_ts_match.group(1)}</span>"
+                                _msg_part = _ts_match.group(2)
+                            else:
+                                _ts_part = ""
+                                _msg_part = str(_entry)
+                            st_html(
+                                f"<div style='font-family:monospace;font-size:0.85em;"
+                                f"background:#F8F9FA;padding:4px 8px;margin-bottom:4px;"
+                                f"border-left:3px solid #FFC107;word-break:break-all;'>"
+                                f"{_ts_part}{_msg_part}</div>"
+                            )
 
                 # アクションボタン
                 col1, col2, col3 = st.columns(3)
@@ -370,7 +382,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     # ヘッダー
     col_header = st.columns([4, 1])
     with col_header[0]:
-        st.markdown(f"### 🛡️ AIOps インシデント・コックピット")
+        st.markdown(f"### 🛡️ {display_name} — インシデント監視")
     with col_header[1]:
         if st.button(
             "🔙 一覧に戻る",
@@ -387,13 +399,16 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     if _is_history_mode:
         from datetime import datetime as _dt_cls
         _ctx_device = _ctx.get("device_id", "不明")
-        _ctx_incident = _ctx.get("incident_name", _ctx.get("rule_pattern", "不明"))
+        _ctx_level = _ctx.get("level", 0)
         _ctx_conf = _ctx.get("confidence", 0)
         _ctx_ts = _ctx.get("created_at", 0)
         try:
             _ctx_time_str = _dt_cls.fromtimestamp(_ctx_ts).strftime("%Y/%m/%d %H:%M") if _ctx_ts else "不明"
         except Exception:
             _ctx_time_str = "不明"
+
+        # History バナータイトル: デバイス名 (Level N) — 検知: 時刻
+        _history_title = f"{_ctx_device} (Level {_ctx_level}) — 検知: {_ctx_time_str}"
 
         # History バナー
         _banner_html = (
@@ -403,9 +418,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             '<span style="font-size:1.5em;">📋</span>'
             '<div>'
             f'<div style="font-weight:bold;font-size:1.05em;">'
-            f'History モード — {_ctx_incident}</div>'
+            f'History モード — {_history_title}</div>'
             f'<div style="font-size:0.85em;opacity:0.85;">'
-            f'デバイス: {_ctx_device} ｜ 信頼度: {_ctx_conf*100:.0f}% ｜ 検知: {_ctx_time_str}'
+            f'信頼度: {_ctx_conf*100:.0f}%'
             f'</div></div></div>'
         )
         from ui.components.helpers import st_html
@@ -413,8 +428,8 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
         _dismiss_col, _ = st.columns([1, 3])
         with _dismiss_col:
-            if st.button("✖ 選択解除（ライブ監視に戻る）", key="dismiss_history_ctx",
-                         type="secondary", use_container_width=True):
+            if st.button("🔄 ライブ監視に戻る", key="dismiss_history_ctx",
+                         type="primary", use_container_width=True):
                 st.session_state["active_context_item"] = None
                 st.session_state.pop("dt_prediction_cache", None)
                 st.session_state.pop("generated_report", None)
