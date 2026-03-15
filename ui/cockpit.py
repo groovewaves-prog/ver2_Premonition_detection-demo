@@ -354,6 +354,28 @@ def _render_inbox_panel(dt_engine):
                                     if _msg:
                                         _record_ai_feedback(_msg, is_positive=True)
                         st.session_state["alert_history"].pop(idx)
+
+                        # ★ 予兆シミュレーション状態を正常に復帰
+                        #   対応済み = 問題解消。予兆表示をクリアして正常状態に戻す。
+                        _remaining = st.session_state.get("alert_history", [])
+                        if not _remaining:
+                            # 全件対応済み → シミュレーション状態を完全クリア
+                            st.session_state["injected_weak_signal"] = None
+                            st.session_state["pred_level"] = 0
+                            st.session_state.pop("dt_prediction_cache", None)
+                            # トリアージキャッシュもクリア
+                            _keys_to_clean = [
+                                k for k in list(st.session_state.keys())
+                                if k.startswith("_triage_pred_")
+                                or k.startswith("_triage_inline_")
+                            ]
+                            for k in _keys_to_clean:
+                                st.session_state.pop(k, None)
+                            # ストリームシミュレータを停止
+                            from ui.stream_dashboard import _clear_simulator
+                            _clear_simulator()
+                            st.session_state.pop("stream_completion_result", None)
+
                         st.rerun()
                 with col3:
                     if st.button("🚫 静観", key=f"hist_ignore_{idx}", use_container_width=True):
