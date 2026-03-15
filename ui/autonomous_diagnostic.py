@@ -635,6 +635,117 @@ def render_autonomous_diagnostic_panel(
                 st.rerun()
 
 
+def _build_situation_briefing(
+    session: DiagnosticSession,
+    crit_insights: list,
+    warn_insights: list,
+    ok_insights: list,
+) -> list:
+    """検出結果から運用者向けの状況ブリーフィングを組み立てる。
+
+    個別の検出項目を集約し、「今どういう状況か」「なぜ次のステップが必要か」を
+    平易な日本語で伝える文章を返す。
+    """
+    lines = []
+
+    # ── 検出パターンの集約 ──
+    all_insights = crit_insights + warn_insights
+    _patterns = {
+        "hw_fail": False,       # ハードウェア異常
+        "intf_down": False,     # インターフェースダウン
+        "packet_loss": False,   # パケットロス
+        "optical_degrade": False,  # 光レベル劣化
+        "cpu_high": False,      # CPU高負荷
+        "mac_flap": False,      # MACフラッピング
+        "stp_change": False,    # STPトポロジー変更
+        "stp_block": False,     # STPブロッキング
+        "error_counter": False, # エラーカウンタ
+        "vlan_no_uplink": False,  # VLANアップリンク断
+        "full_loss": False,     # 完全疎通不可
+    }
+
+    for ins in all_insights:
+        ins_lower = ins.lower()
+        if "ハードウェア異常" in ins or "fail" in ins_lower or "critical" in ins_lower:
+            _patterns["hw_fail"] = True
+        if "ダウン状態" in ins:
+            _patterns["intf_down"] = True
+        if "部分的パケットロス" in ins:
+            _patterns["packet_loss"] = True
+        if "完全疎通不可" in ins or "0%到達" in ins:
+            _patterns["full_loss"] = True
+        if "光受信パワー" in ins:
+            _patterns["optical_degrade"] = True
+        if "cpu高負荷" in ins_lower:
+            _patterns["cpu_high"] = True
+        if "macアドレスフラッピング" in ins_lower:
+            _patterns["mac_flap"] = True
+        if "stpトポロジー変更" in ins_lower:
+            _patterns["stp_change"] = True
+        if "ブロッキングポート" in ins:
+            _patterns["stp_block"] = True
+        if "エラーカウンタ" in ins:
+            _patterns["error_counter"] = True
+        if "アップリンクが存在しない" in ins:
+            _patterns["vlan_no_uplink"] = True
+
+    # ── 状況の組み立て ──
+    if _patterns["hw_fail"]:
+        lines.append("• 対象機器で<b>ハードウェアの異常</b>が検出されています。電源・ファン・温度等に問題がある可能性があります。")
+
+    if _patterns["intf_down"]:
+        lines.append("• 一部の<b>インターフェースがダウン</b>しており、通信に影響が出ている可能性があります。")
+
+    if _patterns["full_loss"]:
+        lines.append("• 疎通確認で<b>完全に通信不可</b>の状態です。早急な復旧が必要です。")
+    elif _patterns["packet_loss"]:
+        lines.append("• <b>部分的なパケットロス</b>が発生しています。通信品質が低下しています。")
+
+    if _patterns["optical_degrade"]:
+        lines.append("• <b>光トランシーバーの受信パワーが低下</b>しています。ファイバーまたはモジュールの劣化が疑われます。")
+
+    if _patterns["cpu_high"]:
+        lines.append("• <b>CPUが高負荷</b>の状態です。処理遅延やパケットドロップの原因になっている可能性があります。")
+
+    if _patterns["mac_flap"]:
+        lines.append("• <b>MACアドレスフラッピング</b>を検出しました。L2ループが発生している可能性があります。")
+
+    if _patterns["stp_change"]:
+        lines.append("• <b>STPのトポロジー変更</b>が発生しています。ネットワーク全体で経路再計算が行われ、通信が不安定になっています。")
+
+    if _patterns["stp_block"]:
+        lines.append("• <b>STPブロッキングポート</b>を検出しました。通信経路が遮断されている可能性があります。")
+
+    if _patterns["error_counter"]:
+        lines.append("• <b>インターフェースのエラーカウンタが蓄積</b>しています。物理層（ケーブル・コネクタ）の問題が疑われます。")
+
+    if _patterns["vlan_no_uplink"]:
+        lines.append("• <b>アクティブなアップリンクが存在しないVLAN</b>があります。該当VLANのユーザーは通信できない状態です。")
+
+    # ── 正常項目のサマリ ──
+    if ok_insights and not lines:
+        lines.append(f"• 主要な{len(ok_insights)}項目を確認しましたが、<b>現時点で明確な異常は検出されていません</b>。")
+        lines.append("• 引き続き監視を継続し、状態変化があれば再診断を実施してください。")
+        return lines
+
+    if ok_insights:
+        lines.append(f"• 一方、{len(ok_insights)}項目は正常を確認しています。")
+
+    # ── 次ステップへの誘導 ──
+    if crit_insights:
+        lines.append(
+            "→ <b>次のステップ「③ 確認手順書」</b>で、この状況に対する"
+            "具体的な確認手順と対処方法を確認してください。"
+        )
+    elif warn_insights:
+        lines.append(
+            "→ <b>次のステップ「③ 確認手順書」</b>で、警告項目の詳細な確認方法と"
+            "予防的な対処方法を確認することを推奨します。"
+        )
+
+    return lines
+
+
 def _render_thought_log(session: DiagnosticSession):
     """思考ログを運用者向けに表示する。
 
@@ -660,7 +771,7 @@ def _render_thought_log(session: DiagnosticSession):
             st.success(f"✅ **診断結論**: {session.conclusion}")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 2. 診断サマリ（何を調べて何がわかったか）
+    # 2. 現在の状況ブリーフィング（検出結果を平易に要約）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     all_commands = []
     all_insights_ok = []
@@ -677,6 +788,25 @@ def _render_thought_log(session: DiagnosticSession):
             elif "✅" in ins:
                 all_insights_ok.append(ins)
 
+    _situation_lines = _build_situation_briefing(
+        session, all_insights_crit, all_insights_warn, all_insights_ok
+    )
+    if _situation_lines:
+        _situation_color = "#D32F2F" if all_insights_crit else "#FF8F00" if all_insights_warn else "#2E7D32"
+        _situation_bg = "#FFF3F3" if all_insights_crit else "#FFF8E1" if all_insights_warn else "#F1F8E9"
+        st.markdown(
+            f'<div style="background:{_situation_bg};border-left:4px solid {_situation_color};'
+            f'padding:10px 14px;border-radius:4px;margin:8px 0;font-size:13px;line-height:1.7;">'
+            f'<b>📌 現在の状況:</b><br>'
+            + "<br>".join(_situation_lines)
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 3. 診断サマリ（何を調べて何がわかったか）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
     st.markdown(
         f'<div style="background:#f8f9fa;padding:10px 14px;border-radius:8px;'
         f'margin:8px 0;font-size:13px;">'
@@ -691,7 +821,7 @@ def _render_thought_log(session: DiagnosticSession):
     )
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 3. 検出結果（異常・警告を先に、正常は折りたたみ）
+    # 4. 検出結果（異常・警告を先に、正常は折りたたみ）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if all_insights_crit or all_insights_warn:
         st.markdown("**検出された問題:**")
@@ -709,7 +839,7 @@ def _render_thought_log(session: DiagnosticSession):
                             unsafe_allow_html=True)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 4. 診断プロセス詳細（折りたたみ — 詳しく見たい人向け）
+    # 5. 診断プロセス詳細（折りたたみ — 詳しく見たい人向け）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with st.expander(
         f"🔬 診断プロセス詳細（{session.current_round}回目の調査 / 確認項目{len(session.steps)}件）",
