@@ -636,68 +636,132 @@ def render_autonomous_diagnostic_panel(
 
 
 def _render_thought_log(session: DiagnosticSession):
-    """思考ログを時系列で表示する。"""
-    # 結論サマリー
+    """思考ログを運用者向けに表示する。
+
+    従来の技術者向けログ（R1計画/R1実行/...）を、
+    運用者が「今何が起きていて、何をすべきか」を直感的に理解できる
+    プログレス形式に変換して表示する。
+    """
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 1. 診断結論（最も重要な情報を最上部に）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if session.conclusion:
-        _is_silent_conclusion = "サイレント障害" in session.conclusion
-        has_critical = "重大" in session.conclusion or ("サイレント障害の兆候" in session.conclusion)
-        has_warning = "警告" in session.conclusion or ("サイレント障害の疑い" in session.conclusion)
+        _is_silent = "サイレント障害" in session.conclusion
+        has_critical = "重大" in session.conclusion or "サイレント障害の兆候" in session.conclusion
+        has_warning = "警告" in session.conclusion or "サイレント障害の疑い" in session.conclusion
+
         if has_critical:
             st.error(f"🔴 **診断結論**: {session.conclusion}")
         elif has_warning:
             st.warning(f"🟡 **診断結論**: {session.conclusion}")
-        elif _is_silent_conclusion:
+        elif _is_silent:
             st.warning(f"🟣 **診断結論**: {session.conclusion}")
         else:
             st.success(f"✅ **診断結論**: {session.conclusion}")
 
-    st.caption(
-        f"対象: {session.device_id} | "
-        f"ラウンド数: {session.current_round} | "
-        f"ステップ数: {len(session.steps)}"
-    )
-
-    # 思考ログ（時系列）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 2. 診断サマリ（何を調べて何がわかったか）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    all_commands = []
+    all_insights_ok = []
+    all_insights_warn = []
+    all_insights_crit = []
     for step in session.steps:
-        _render_step(step)
+        if step.commands:
+            all_commands.extend(step.commands)
+        for ins in (step.insights or []):
+            if "🔴" in ins:
+                all_insights_crit.append(ins)
+            elif "🟡" in ins or "⚠" in ins:
+                all_insights_warn.append(ins)
+            elif "✅" in ins:
+                all_insights_ok.append(ins)
 
-
-def _render_step(step: DiagnosticStep):
-    """1ステップを描画する。"""
-    # ステップタイプ別のアイコンと色
-    _type_config = {
-        "plan": ("🧠", "計画", "#1565C0"),
-        "execute": ("⚡", "実行", "#FF8F00"),
-        "analyze": ("🔍", "分析", "#6A1B9A"),
-        "conclude": ("📋", "結論", "#2E7D32"),
-    }
-    icon, label, color = _type_config.get(step.step_type, ("❓", "不明", "#666"))
-
-    # ヘッダー
     st.markdown(
-        f'<div style="border-left:3px solid {color};padding:4px 12px;margin:6px 0;">'
-        f'<span style="font-size:13px;font-weight:600;color:{color};">'
-        f'{icon} R{step.round_num} {label}</span>'
-        f'<span style="font-size:12px;color:#888;margin-left:8px;">{step.description}</span>'
+        f'<div style="background:#f8f9fa;padding:10px 14px;border-radius:8px;'
+        f'margin:8px 0;font-size:13px;">'
+        f'<b>対象:</b> {session.device_id} &nbsp;|&nbsp; '
+        f'<b>実行コマンド:</b> {len(all_commands)}件 &nbsp;|&nbsp; '
+        f'<b>検出:</b> '
+        f'<span style="color:#D32F2F;">異常 {len(all_insights_crit)}</span> / '
+        f'<span style="color:#FF8F00;">警告 {len(all_insights_warn)}</span> / '
+        f'<span style="color:#2E7D32;">正常 {len(all_insights_ok)}</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
-    # コマンドリスト（plan/execute）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 3. 検出結果（異常・警告を先に、正常は折りたたみ）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if all_insights_crit or all_insights_warn:
+        st.markdown("**検出された問題:**")
+        for ins in all_insights_crit:
+            st.markdown(f"<div style='font-size:13px;padding:2px 0;'>{ins}</div>",
+                        unsafe_allow_html=True)
+        for ins in all_insights_warn:
+            st.markdown(f"<div style='font-size:13px;padding:2px 0;'>{ins}</div>",
+                        unsafe_allow_html=True)
+
+    if all_insights_ok:
+        with st.expander(f"✅ 正常確認済み ({len(all_insights_ok)}件)", expanded=False):
+            for ins in all_insights_ok:
+                st.markdown(f"<div style='font-size:13px;padding:2px 0;'>{ins}</div>",
+                            unsafe_allow_html=True)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 4. 診断プロセス詳細（折りたたみ — 詳しく見たい人向け）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with st.expander(
+        f"🔬 診断プロセス詳細（{session.current_round}ラウンド / {len(session.steps)}ステップ）",
+        expanded=False,
+    ):
+        for step in session.steps:
+            _render_step(step)
+
+
+def _render_step(step: DiagnosticStep):
+    """1ステップを描画する（詳細ビュー内）。"""
+    # 運用者向けラベル（技術ラベルから変換）
+    _type_config = {
+        "plan":     ("🧠", "調査項目の選定", "#1565C0",
+                     "アラーム内容から、確認すべきコマンドを選定しました"),
+        "execute":  ("⚡", "コマンド実行", "#FF8F00",
+                     "選定したコマンドを機器に実行しました"),
+        "analyze":  ("🔍", "結果の読み取り", "#6A1B9A",
+                     "実行結果から異常パターンを検出しました"),
+        "conclude": ("📋", "判定", "#2E7D32",
+                     "全ての結果を総合して判定しました"),
+    }
+    icon, label, color, guide = _type_config.get(
+        step.step_type, ("❓", "不明", "#666", "")
+    )
+
+    # ヘッダー（運用者向けラベル）
+    st.markdown(
+        f'<div style="border-left:3px solid {color};padding:4px 12px;margin:6px 0;">'
+        f'<span style="font-size:13px;font-weight:600;color:{color};">'
+        f'{icon} {label}</span>'
+        f'<span style="font-size:12px;color:#888;margin-left:8px;">'
+        f'ラウンド{step.round_num}: {step.description}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # コマンドリスト（何のために実行するか reason 付き）
     if step.commands:
         cmd_text = "\n".join(f"  $ {c}" for c in step.commands)
         st.code(cmd_text, language="bash")
 
-    # コマンド実行結果（execute）
+    # コマンド実行結果
     if step.results:
         with st.expander(f"📊 実行結果 ({len(step.results)}件)", expanded=False):
             for r in step.results:
                 reason = r.get("reason", "")
                 if reason:
-                    st.caption(f"💡 {reason}")
+                    st.caption(f"💡 **目的:** {reason}")
                 st.code(r.get("output", ""), language="text")
 
-    # 洞察（analyze/conclude）
+    # 洞察
     if step.insights:
         for insight in step.insights:
             st.markdown(f"<div style='font-size:13px;padding:2px 0;'>{insight}</div>",
