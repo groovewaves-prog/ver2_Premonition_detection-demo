@@ -111,6 +111,64 @@ _DEMO_COMMAND_OUTPUTS = {
             "99   MGMT                             active\n"
             "NOTE: VLAN 10 has no active uplink port — traffic isolation possible"
         ),
+        # トラフィック・QoS関連
+        "show interfaces counters rates": (
+            "Port           InRate(bps)    OutRate(bps)   InPkts/s  OutPkts/s\n"
+            "-------------- -------------- -------------- --------- ---------\n"
+            "Gi0/0/1          580,000,000    620,000,000     85,000    92,000\n"
+            "Gi0/0/2          450,000,000    480,000,000     62,000    68,000\n"
+            "Gi0/0/3          720,000,000    690,000,000    105,000    98,000\n"
+            "WARNING: Gi0/0/3 output rate exceeds 70% of link capacity (1 Gbps)"
+        ),
+        "show policy-map interface": (
+            "GigabitEthernet0/0/1\n"
+            "  Service-policy output: QOS-POLICY\n"
+            "    Class-map: PRIORITY (match-any)\n"
+            "      3456789 packets, 456789012 bytes\n"
+            "      30 second offered rate 45000 bps, drop rate 0 bps\n"
+            "      Match: dscp ef\n"
+            "      Priority: 20% (200000 kbps), burst bytes 50000,\n"
+            "        conformed 3456789 packets, exceeded 0 packets\n"
+            "    Class-map: BULK-DATA (match-any)\n"
+            "      12345678 packets, 1234567890 bytes\n"
+            "      30 second offered rate 580000 bps, drop rate 12000 bps\n"
+            "      Match: dscp af11 af12 af13\n"
+            "      Queueing\n"
+            "        queue depth 245/512, total drops 1234, no-buffer drops 89\n"
+            "        output drops 1234 ← WARNING: drops detected\n"
+            "    Class-map: class-default (match-any)\n"
+            "      9876543 packets, 987654321 bytes\n"
+            "      30 second offered rate 420000 bps, drop rate 8500 bps\n"
+            "      queue depth 189/256, total drops 567, no-buffer drops 34\n"
+            "      output drops 567"
+        ),
+        "show buffers": (
+            "Buffer elements:\n"
+            "     599 in free list (500 min, 1000 max allowed, 600 hits, 12 misses)\n"
+            "Public buffer pools:\n"
+            "Small buffers, 104 bytes (total 50, permanent 50):\n"
+            "     45 in free list (20 min, 150 max allowed, 2340 hits, 0 misses, 0 trims)\n"
+            "Big buffers, 1524 bytes (total 50, permanent 50):\n"
+            "     12 in free list (5 min, 150 max allowed, 12890 hits, 234 misses, 45 trims)\n"
+            "     ← WARNING: Big buffer misses elevated (234). Potential congestion.\n"
+            "Very Big buffers, 4520 bytes (total 10, permanent 10):\n"
+            "     2 in free list (0 min, 100 max allowed, 890 hits, 56 misses, 12 trims)\n"
+            "     ← WARNING: Very Big buffer pool near exhaustion."
+        ),
+        "show ip traffic": (
+            "IP statistics:\n"
+            "  Rcvd:  45678901 total, 44567890 local destination\n"
+            "         0 format errors, 0 checksum errors, 123 bad hop count\n"
+            "         1111011 unknown protocol, 0 not a gateway\n"
+            "  Sent:  43210987 generated, 2345678 forwarded\n"
+            "         0 encapsulation failed, 456 no route, 0 redundant\n"
+            "TCP statistics:\n"
+            "  Rcvd: 23456789 total, 0 checksum errors, 12 no port\n"
+            "  Sent: 22345678 total\n"
+            "UDP statistics:\n"
+            "  Rcvd: 12345678 total, 0 checksum errors, 5 no port\n"
+            "  Sent: 11234567 total"
+        ),
     },
     "request": {
         "default": (

@@ -9,9 +9,9 @@ from utils.const import SCENARIO_MAP
 from utils.llm_helper import get_rate_limiter, GENAI_AVAILABLE
 from ui.stream_dashboard import auto_start_stream, _get_simulator, _clear_simulator, inject_stream_alarms_to_session
 from ui.service_tier import (
-    tier_has_access, get_service_tier,
+    tier_has_access, get_service_tier, get_enabled_phm_features,
     TIER_BASIC, TIER_PHM, TIER_PHM_PREMONITION, TIER_PHM_RUL, TIER_PHM_TRAFFIC, TIER_FULL,
-    ALL_TIERS,
+    BASE_TIERS, PHM_FEATURE_LIST, PHM_FEATURE_INFO, ALL_TIERS,
 )
 from ui.shared_sim_config import scenario_key_to_display
 
@@ -229,38 +229,36 @@ def render_sidebar():
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # ★ サービスティア切替（デモ用）
+        #   ラジオボタン(Basic/PHM/Full) + PHMチェックボックス(組み合わせ)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         from ui.service_tier import TIER_DESCRIPTIONS
-        _tier_options = {
-            TIER_BASIC:           "Basic — トポロジー + アラート分析",
-            TIER_PHM_PREMONITION: "PHM: 予兆検知 — Future Radar / シミュレーション",
-            TIER_PHM_RUL:         "PHM: RUL予測 — AI自律診断 / 自動復旧",
-            TIER_PHM_TRAFFIC:     "PHM: トラフィック — 帯域監視 / 輻輳予測",
-            TIER_FULL:            "Full — 全機能",
-        }
-        # ★ BugFix: selectbox のウィジェットキーを "service_tier" に統一。
-        #   旧コードでは "_service_tier_select"（ウィジェット用）と
-        #   "service_tier"（アプリロジック用）の2つのキーを同期していたが、
-        #   Streamlit の rerun サイクル中に index パラメータがユーザー選択を
-        #   上書きし、Full→Basic 切替に2-3回の選択が必要なバグがあった。
-        #   ウィジェットキー = アプリキーとすることで同期問題を根本排除。
 
-        # service_tier を session_state に確実に初期化（selectbox が読む前に）
+        _base_tier_labels = {
+            TIER_BASIC: "Basic — トポロジー + アラート分析",
+            TIER_PHM:   "PHM — 予兆 / RUL / トラフィック（選択制）",
+            TIER_FULL:  "Full — 全機能",
+        }
+
+        # service_tier を session_state に確実に初期化（ラジオが読む前に）
         if "service_tier" not in st.session_state:
             _env_tier = os.environ.get("SERVICE_TIER", "full").lower().strip()
-            if _env_tier == "phm":
-                _env_tier = TIER_PHM_PREMONITION  # 後方互換
+            # 後方互換: 旧 phm_* 値を "phm" にマッピング
+            if _env_tier in {"phm_premonition", "phm_rul", "phm_traffic"}:
+                _env_tier = TIER_PHM
             st.session_state["service_tier"] = (
-                _env_tier if _env_tier in set(ALL_TIERS)
-                else TIER_FULL
+                _env_tier if _env_tier in set(BASE_TIERS) else TIER_FULL
             )
+        # ★ 後方互換: 旧セッションの phm_* 値をベースティアに変換
+        elif st.session_state["service_tier"] in PHM_FEATURE_LIST:
+            st.session_state["service_tier"] = TIER_PHM
+
+        # PHM 機能フラグの初期化（デフォルト: 予兆検知のみON）
+        if "phm_features" not in st.session_state:
+            st.session_state["phm_features"] = {TIER_PHM_PREMONITION}
 
         def _on_tier_change():
-            """ティア切替時のステートクリア。on_change は値確定後・rerun 前に発火。
-            ウィジェットキーが "service_tier" なので、コールバック時点で
-            st.session_state["service_tier"] は既に新しい値になっている。"""
+            """ティア切替時のステートクリア。"""
             for _sid in list_sites():
-                # アラームキャッシュを全クリア（シナリオ別キーを網羅）
                 _keys_to_del = [
                     k for k in list(st.session_state.keys())
                     if k.startswith(f"_alarm_cache_{_sid}")
@@ -268,16 +266,13 @@ def render_sidebar():
                 for k in _keys_to_del:
                     del st.session_state[k]
 
-                # レポートキャッシュのクリア
                 _rpt_keys = [k for k in list(st.session_state.report_cache.keys()) if _sid in k]
                 for k in _rpt_keys:
                     del st.session_state.report_cache[k]
 
-            # 予測APIキャッシュのクリア
             if "dt_prediction_cache" in st.session_state:
                 st.session_state.dt_prediction_cache.clear()
 
-            # アクティブ画面のステートリセット
             st.session_state.generated_report = None
             st.session_state.remediation_plan = None
             st.session_state.messages = []
@@ -285,28 +280,59 @@ def render_sidebar():
             st.session_state.live_result = None
             st.session_state.verification_result = None
 
-        _current_tier = get_service_tier()
-
         with st.expander("🔑 サービスティア", expanded=False):
-            st.selectbox(
-                "SERVICE_TIER",
-                options=list(_tier_options.keys()),
-                format_func=lambda t: _tier_options[t],
+            # ★ ベースティア: ラジオボタン
+            st.radio(
+                "サービスプラン",
+                options=list(_base_tier_labels.keys()),
+                format_func=lambda t: _base_tier_labels[t],
                 key="service_tier",
                 on_change=_on_tier_change,
                 label_visibility="collapsed",
             )
 
-            # 現在のティアの含まれる機能一覧
             _current_tier = get_service_tier()
-            st.caption(f"**{_tier_options[_current_tier].split(' — ')[0]}** プラン:")
-            st.caption(TIER_DESCRIPTIONS.get(_current_tier, ""))
-            if _current_tier != TIER_FULL:
-                _cur_idx = ALL_TIERS.index(_current_tier) if _current_tier in ALL_TIERS else 0
-                if _cur_idx + 1 < len(ALL_TIERS):
-                    _next_tier = ALL_TIERS[_cur_idx + 1]
-                    _next_label = _tier_options[_next_tier].split(" — ")[0]
-                    st.caption(f"⬆️ **{_next_label}** にアップグレードすると: {TIER_DESCRIPTIONS.get(_next_tier, '')}")
+
+            # ★ PHM 選択時: 機能チェックボックスを表示
+            if _current_tier == TIER_PHM:
+                st.markdown("---")
+                st.caption("**PHM 機能を選択（組み合わせ自由）:**")
+
+                _current_features = set(st.session_state.get("phm_features", set()))
+                _new_features = set()
+
+                for fkey in PHM_FEATURE_LIST:
+                    finfo = PHM_FEATURE_INFO[fkey]
+                    _checked = st.checkbox(
+                        f"{finfo['icon']} {finfo['label']}",
+                        value=fkey in _current_features,
+                        key=f"_phm_cb_{fkey}",
+                        help=finfo["description"],
+                    )
+                    if _checked:
+                        _new_features.add(fkey)
+
+                # チェックボックス変更を反映
+                if _new_features != _current_features:
+                    st.session_state["phm_features"] = _new_features
+                    _on_tier_change()
+                    st.rerun()
+
+                if not _new_features:
+                    st.warning("少なくとも1つの PHM 機能を選択してください。")
+
+                # 有効な機能の一覧
+                _enabled = get_enabled_phm_features()
+                if _enabled:
+                    _labels = [PHM_FEATURE_INFO[f]["label"] for f in PHM_FEATURE_LIST if f in _enabled]
+                    st.caption(f"有効: {' / '.join(_labels)}")
+
+            elif _current_tier == TIER_BASIC:
+                st.caption(f"**Basic** プラン: {TIER_DESCRIPTIONS[TIER_BASIC]}")
+                st.caption("⬆️ **PHM** にアップグレードすると: 予兆検知・RUL予測・トラフィック分析が利用可能")
+
+            elif _current_tier == TIER_FULL:
+                st.caption(f"**Full** プラン: {TIER_DESCRIPTIONS[TIER_FULL]}")
 
         st.divider()
 
@@ -315,7 +341,7 @@ def render_sidebar():
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         from ui.service_tier import render_tier_section
         with render_tier_section(
-            TIER_PHM, "予兆シミュレーション", icon="🔮",
+            TIER_PHM_PREMONITION, "予兆シミュレーション", icon="🔮",
             description="対象デバイス・劣化シナリオを選択し、劣化進行度を制御して予兆検知のデモを実行できます。",
         ) as _sim_ok:
             if _sim_ok:

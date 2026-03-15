@@ -693,14 +693,32 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         root_cause_candidates, symptom_devices, unrelated_devices,
     )
 
-    # 2. Future Radar（予兆専用表示）[PHM tier]
+    # 2. Future Radar（予兆専用表示）[PHM: 予兆検知]
     prediction_candidates = [c for c in root_cause_candidates if c.get('is_prediction')]
     with render_tier_section(
-        TIER_PHM, "AIOps Future Radar", icon="🔮",
+        TIER_PHM_PREMONITION, "AIOps Future Radar", icon="🔮",
         description="WARNING レベルの微弱シグナルから将来の CRITICAL インシデントを予測。予兆候補のタイムライン・信頼度スコア・推定影響範囲を可視化します。",
     ) as _fr_ok:
         if _fr_ok:
             render_future_radar(prediction_candidates, topology=topology)
+
+    # 2.5. トラフィックモニタ [PHM: トラフィック予測]
+    with render_tier_section(
+        TIER_PHM_TRAFFIC, "トラフィックモニタ", icon="📊",
+        description="インターフェース帯域利用率・輻輳予測・BFS下流の影響ユーザー数をリアルタイム可視化します。",
+    ) as _traffic_ok:
+        if _traffic_ok:
+            from ui.components.traffic_monitor import render_traffic_monitor
+            _deg_level = st.session_state.get("pred_level", 0)
+            _target_dev = None
+            _injected = st.session_state.get("injected_weak_signal")
+            if _injected:
+                _target_dev = _injected.get("device_id")
+            render_traffic_monitor(
+                topology,
+                target_device_id=_target_dev,
+                degradation_level=_deg_level,
+            )
 
     # 3. 根本原因候補テーブル
     selected_incident_candidate, target_device_id = render_root_cause_table(
