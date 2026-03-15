@@ -43,13 +43,13 @@ print()
 print("=" * 70)
 print("TEST 2: 21ルール全数チェック")
 print("=" * 70)
-check(f"ルール数 = 21 (実際: {len(ESCALATION_RULES)})", len(ESCALATION_RULES) == 21)
+check(f"ルール数 = 22 (実際: {len(ESCALATION_RULES)})", len(ESCALATION_RULES) == 22)
 
 expected_patterns = [
     "stp_loop", "mac_flap", "arp_storm",
     "bgp_flap", "ospf_adj",
     "ha_split",
-    "bandwidth", "drop_error",
+    "bandwidth", "drop_error", "latency_jitter",
     "ntp_drift", "dhcp_dns",
     "optical", "temperature", "fan_fail", "power_quality", "storage",
     "memory_leak", "cpu_load", "process_crash",

@@ -1,8 +1,8 @@
 # ui/components/traffic_monitor.py — トラフィックモニタリングパネル
 #
 # PHM: トラフィック予測ティアでゲートされる。
-# トポロジ JSON の interfaces / estimated_users を使い、
-# インターフェース帯域利用率と影響ユーザー推定を可視化する。
+# トポロジ JSON の interfaces を使い、
+# 劣化シナリオ別のトラフィック影響予測を可視化する。
 import random as _rng
 import streamlit as st
 import datetime as _dt
@@ -10,9 +10,92 @@ from typing import Optional, List, Dict
 
 from digital_twin_pkg.common import (
     get_node_attr, get_metadata,
-    estimate_downstream_users,
+    get_downstream_devices,
     build_children_map,
 )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 劣化シナリオ別トラフィック影響プロファイル
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# util_map: 劣化レベル(0-5) → 帯域利用率(%)
+# secondary: 副次メトリクスの定義
+#   name: メトリクス名, unit: 単位,
+#   values: レベル(0-5)→値, color: グラフ色
+TRAFFIC_IMPACT_PROFILES: Dict[str, dict] = {
+    "optical": {
+        "label": "光信号劣化",
+        "description": "リンク帯域低下 → 利用率上昇",
+        "util_map": {0: 35.0, 1: 55.0, 2: 70.0, 3: 85.0, 4: 93.0, 5: 99.0},
+        "secondary": {
+            "name": "Rx Power",
+            "unit": "dBm",
+            "values": {0: -8.0, 1: -18.5, 2: -20.2, 3: -22.0, 4: -23.5, 5: -25.0},
+            "color": "#7B1FA2",
+            "domain": [-30.0, 0.0],
+        },
+    },
+    "microburst": {
+        "label": "マイクロバースト",
+        "description": "バッファ溢れ → 利用率は横ばい、ドロップ急増",
+        "util_map": {0: 35.0, 1: 45.0, 2: 50.0, 3: 52.0, 4: 55.0, 5: 55.0},
+        "secondary": {
+            "name": "Queue Drops",
+            "unit": "drops/s",
+            "values": {0: 0.0, 1: 200.0, 2: 600.0, 3: 1500.0, 4: 3000.0, 5: 5000.0},
+            "color": "#E65100",
+            "domain": [0.0, 6000.0],
+        },
+    },
+    "memory_leak": {
+        "label": "メモリリーク",
+        "description": "転送テーブル破損 → スループット不規則低下",
+        "util_map": {0: 35.0, 1: 38.0, 2: 30.0, 3: 22.0, 4: 15.0, 5: 5.0},
+        "secondary": {
+            "name": "Memory Usage",
+            "unit": "%",
+            "values": {0: 45.0, 1: 72.0, 2: 80.0, 3: 88.0, 4: 94.0, 5: 98.0},
+            "color": "#1565C0",
+            "domain": [0.0, 100.0],
+        },
+    },
+    "crc_fcs_error": {
+        "label": "CRC/FCSエラー",
+        "description": "フレーム破損 → 再送増加 → 実効帯域低下",
+        "util_map": {0: 35.0, 1: 42.0, 2: 50.0, 3: 58.0, 4: 48.0, 5: 30.0},
+        "secondary": {
+            "name": "CRC Error Rate",
+            "unit": "%",
+            "values": {0: 0.0, 1: 0.3, 2: 1.0, 3: 2.5, 4: 5.0, 5: 8.0},
+            "color": "#6A1B9A",
+            "domain": [0.0, 10.0],
+        },
+    },
+    "latency_jitter": {
+        "label": "遅延/ジッター",
+        "description": "RTT増大 → プロトコルタイムアウト → セッション断",
+        "util_map": {0: 35.0, 1: 36.0, 2: 37.0, 3: 35.0, 4: 30.0, 5: 20.0},
+        "secondary": {
+            "name": "RTT",
+            "unit": "ms",
+            "values": {0: 2.0, 1: 15.0, 2: 50.0, 3: 150.0, 4: 300.0, 5: 500.0},
+            "color": "#00695C",
+            "domain": [0.0, 600.0],
+        },
+    },
+}
+
+# フォールバック（旧来の単調増加モデル）
+_DEFAULT_UTIL_MAP = {0: 35.0, 1: 55.0, 2: 70.0, 3: 85.0, 4: 93.0, 5: 99.0}
+
+
+def _interpolate_level(level_map: dict, effective_level: float) -> float:
+    """レベル間を線形補間する共通ヘルパー。"""
+    level_low = int(effective_level)
+    level_high = min(level_low + 1, 5)
+    frac = effective_level - level_low
+    val_low = level_map.get(level_low, level_map.get(0, 0.0))
+    val_high = level_map.get(level_high, val_low)
+    return val_low + (val_high - val_low) * frac
 
 
 def _render_trend_chart(
@@ -20,40 +103,35 @@ def _render_trend_chart(
     interfaces: list,
     base_util_map: dict,
     current_level: int,
+    secondary: Optional[dict] = None,
 ):
-    """過去24時間の帯域利用率トレンドを折れ線グラフで描画する。"""
+    """過去24時間の帯域利用率トレンドを折れ線グラフで描画する。
+    secondary が指定されている場合、副次メトリクスを第2Y軸で重畳。
+    """
     import altair as alt
     import pandas as pd
 
     now = _dt.datetime.now()
-    # 過去24時間を30分刻み（48ポイント）
     n_points = 48
     interval_min = 30
     timestamps = [now - _dt.timedelta(minutes=interval_min * (n_points - 1 - i)) for i in range(n_points)]
 
     rows = []
+    sec_rows = []
+
     for iface in interfaces:
         if not isinstance(iface, dict):
             continue
         iface_name = iface.get('name', '?')
-        bw_mbps = iface.get('bandwidth_mbps', 100)
         connected_to = iface.get('connected_to', '')
         label = f"{iface_name} → {connected_to}"
 
         for ti, ts in enumerate(timestamps):
-            # 劣化レベルの時間推移をシミュレーション:
-            # 直近ほど current_level に近づく sigmoid 風カーブ
-            progress = ti / max(n_points - 1, 1)  # 0.0 → 1.0
+            progress = ti / max(n_points - 1, 1)
             effective_level = current_level * progress
-            # effective_level の前後のベース利用率を補間
-            level_low = int(effective_level)
-            level_high = min(level_low + 1, 5)
-            frac = effective_level - level_low
-            base_low = base_util_map.get(level_low, 35.0)
-            base_high = base_util_map.get(level_high, 35.0)
-            base_val = base_low + (base_high - base_low) * frac
 
-            # 時刻とインターフェースごとの再現可能なジッター
+            # 帯域利用率
+            base_val = _interpolate_level(base_util_map, effective_level)
             _ts_seed = hash(f"trend_{device_id}_{iface_name}_{ti}")
             _rng_t = _rng.Random(_ts_seed)
             jitter = _rng_t.uniform(-8.0, 8.0)
@@ -65,9 +143,18 @@ def _render_trend_chart(
                 "インターフェース": label,
             })
 
+            # 副次メトリクス（インターフェース共通の1本線）
+            if secondary and iface == interfaces[0]:
+                sec_val = _interpolate_level(secondary["values"], effective_level)
+                sec_jitter = _rng_t.uniform(-0.03, 0.03) * abs(sec_val) if sec_val != 0 else 0
+                sec_rows.append({
+                    "時刻": ts,
+                    "value": round(sec_val + sec_jitter, 2),
+                })
+
     df = pd.DataFrame(rows)
 
-    # 閾値ライン用データ
+    # 閾値ライン
     thresholds = pd.DataFrame([
         {"利用率 (%)": 60, "label": "混雑 (60%)"},
         {"利用率 (%)": 80, "label": "輻輳 (80%)"},
@@ -101,11 +188,52 @@ def _render_trend_chart(
 
     st.altair_chart(chart, use_container_width=True)
 
+    # ---- 副次メトリクス（独立グラフ）----
+    if secondary and sec_rows:
+        sec_df = pd.DataFrame(sec_rows)
+        sec_name = secondary["name"]
+        sec_unit = secondary["unit"]
+        sec_color = secondary["color"]
+        sec_domain = secondary.get("domain", [sec_df["value"].min(), sec_df["value"].max()])
+
+        sec_line = alt.Chart(sec_df).mark_area(
+            line={"color": sec_color, "strokeWidth": 2},
+            color=alt.Gradient(
+                gradient="linear",
+                stops=[
+                    alt.GradientStop(color=sec_color, offset=1),
+                    alt.GradientStop(color=f"{sec_color}20", offset=0),
+                ],
+                x1=1, x2=1, y1=1, y2=0,
+            ),
+        ).encode(
+            x=alt.X("時刻:T", title="時刻", axis=alt.Axis(format="%H:%M")),
+            y=alt.Y("value:Q",
+                     scale=alt.Scale(domain=sec_domain),
+                     title=f"{sec_name} ({sec_unit})"),
+            tooltip=[
+                alt.Tooltip("時刻:T"),
+                alt.Tooltip("value:Q", title=sec_name, format=".1f"),
+            ],
+        )
+
+        sec_chart = sec_line.properties(
+            height=160,
+            title=alt.Title(
+                text=f"{sec_name} ({sec_unit}) — 劣化シナリオ連動",
+                fontSize=13,
+                color="#555",
+            ),
+        )
+
+        st.altair_chart(sec_chart, use_container_width=True)
+
 
 def render_traffic_monitor(
     topology: dict,
     target_device_id: Optional[str] = None,
     degradation_level: int = 0,
+    scenario_key: str = "optical",
 ):
     """トラフィックモニタリングパネルを描画する。
 
@@ -113,12 +241,30 @@ def render_traffic_monitor(
         topology: トポロジー辞書
         target_device_id: 選択中のデバイスID（なければ全デバイス概要）
         degradation_level: 劣化進行度 (0-5)、利用率シミュレーションに反映
+        scenario_key: 劣化シナリオキー ("optical", "microburst", "memory_leak")
     """
     st.subheader("📊 トラフィックモニタ")
 
     if not topology:
         st.info("トポロジーが読み込まれていません。")
         return
+
+    # ---- プロファイル取得 ----
+    profile = TRAFFIC_IMPACT_PROFILES.get(scenario_key)
+    if profile:
+        base_util_map = profile["util_map"]
+        secondary = profile["secondary"]
+        scenario_label = profile["label"]
+        scenario_desc = profile["description"]
+    else:
+        base_util_map = _DEFAULT_UTIL_MAP
+        secondary = None
+        scenario_label = scenario_key
+        scenario_desc = "帯域利用率が単調に上昇"
+
+    # ---- シナリオ表示 ----
+    if degradation_level > 0:
+        st.caption(f"劣化シナリオ: **{scenario_label}** — {scenario_desc}")
 
     # ---- デバイスセレクター ----
     devices_with_interfaces = [
@@ -153,8 +299,6 @@ def render_traffic_monitor(
     st.caption(f"**{selected_device}** ({vendor} {model})")
 
     # ---- 利用率シミュレーション ----
-    # base_util: degradation_level に応じた基本利用率
-    base_util_map = {0: 35.0, 1: 55.0, 2: 70.0, 3: 85.0, 4: 93.0, 5: 99.0}
     base_util = base_util_map.get(degradation_level, 35.0)
 
     _seed = hash(f"traffic_{selected_device}_{degradation_level}")
@@ -174,7 +318,7 @@ def render_traffic_monitor(
 
     total_capacity = 0
     total_used = 0
-    iface_data: List[Dict] = []  # 折れ線グラフ用に各IFのデータを蓄積
+    iface_data: List[Dict] = []
 
     for iface in interfaces:
         if not isinstance(iface, dict):
@@ -184,7 +328,6 @@ def render_traffic_monitor(
         connected_to = iface.get('connected_to', '')
         link_type = iface.get('link_type', 'copper')
 
-        # 個別ジッター
         jitter = rng.uniform(-15.0, 15.0)
         util_pct = max(1.0, min(99.9, base_util + jitter))
         used_mbps = bw_mbps * util_pct / 100.0
@@ -192,18 +335,17 @@ def render_traffic_monitor(
         total_capacity += bw_mbps
         total_used += used_mbps
 
-        # 色の決定
         if util_pct < 60:
-            color = "#4CAF50"   # green
+            color = "#4CAF50"
             status = "正常"
         elif util_pct < 80:
-            color = "#FF9800"   # orange
+            color = "#FF9800"
             status = "混雑"
         elif util_pct < 90:
-            color = "#FF5722"   # deep orange
+            color = "#FF5722"
             status = "輻輳"
         else:
-            color = "#D32F2F"   # red
+            color = "#D32F2F"
             status = "飽和"
 
         iface_data.append({
@@ -233,9 +375,26 @@ def render_traffic_monitor(
                 f'</div>',
                 unsafe_allow_html=True,
             )
+
+        # 棒グラフモードでも副次メトリクス現在値を表示
+        if secondary and degradation_level > 0:
+            sec_val = secondary["values"].get(degradation_level, 0)
+            sec_color = secondary["color"]
+            st.markdown(
+                f'<div style="margin:8px 0;padding:8px 12px;background:{sec_color}10;'
+                f'border-radius:6px;border-left:4px solid {sec_color};">'
+                f'<span style="font-size:13px;color:{sec_color};font-weight:700;">'
+                f'{secondary["name"]}: {sec_val:.1f} {secondary["unit"]}'
+                f'</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
     else:
-        # ---- 折れ線グラフ（時系列トレンド）----
-        _render_trend_chart(selected_device, interfaces, base_util_map, degradation_level)
+        # ---- 折れ線グラフ（時系列トレンド）+ 副次メトリクス ----
+        _render_trend_chart(
+            selected_device, interfaces, base_util_map, degradation_level,
+            secondary=secondary if degradation_level > 0 else None,
+        )
 
     # ---- サマリKPI ----
     avg_util = (total_used / total_capacity * 100) if total_capacity > 0 else 0
@@ -248,38 +407,58 @@ def render_traffic_monitor(
     with col3:
         st.metric("使用帯域", f"{total_used:,.0f} Mbps")
 
-    # ---- 影響ユーザー推定 ----
-    st.markdown("##### 影響ユーザー推定（BFS下流）")
+    # ---- 影響デバイス範囲（BFS下流）----
+    st.markdown("##### 影響デバイス範囲（BFS下流）")
 
     children_map = build_children_map(topology)
-    user_info = estimate_downstream_users(topology, selected_device, children_map)
+    downstream = get_downstream_devices(
+        topology, selected_device, children_map=children_map,
+    )
 
-    if user_info["ap_count"] == 0:
-        st.caption("下流にアクセスポイントがありません。")
+    if not downstream:
+        st.caption("下流デバイスはありません（末端ノード）。")
     else:
-        # 利用率が高い場合の影響度計算
+        # デバイス種別ごとに集計
+        _type_counts: Dict[str, List[str]] = {}
+        for dev_id in downstream:
+            node = topology.get(dev_id)
+            if not node:
+                continue
+            dev_type = get_node_attr(node, 'type', 'UNKNOWN')
+            _type_counts.setdefault(dev_type, []).append(dev_id)
+
+        total_devices = len(downstream)
+
+        # 影響レベル判定（帯域利用率ベース）
         if avg_util >= 90:
             impact_level = "深刻"
             impact_color = "#D32F2F"
-            impact_desc = "帯域飽和によりほぼ全ユーザーに影響"
-            affected_ratio = 0.95
+            impact_desc = "帯域飽和により配下デバイス全体に影響"
         elif avg_util >= 80:
             impact_level = "重大"
             impact_color = "#FF5722"
             impact_desc = "帯域輻輳により遅延・パケットロスが頻発"
-            affected_ratio = 0.70
         elif avg_util >= 60:
             impact_level = "軽微"
             impact_color = "#FF9800"
-            impact_desc = "一部ユーザーで速度低下の可能性"
-            affected_ratio = 0.30
+            impact_desc = "一部の配下デバイスで速度低下の可能性"
         else:
             impact_level = "なし"
             impact_color = "#4CAF50"
             impact_desc = "通常のトラフィック状態"
-            affected_ratio = 0.0
 
-        affected_users = int(user_info["total_users"] * affected_ratio)
+        # 種別サマリ文字列を生成  例: "FW×2, SW×3, AP×4"
+        _type_label_map = {
+            "ROUTER": "Router",
+            "FIREWALL": "FW",
+            "SWITCH": "SW",
+            "ACCESS_POINT": "AP",
+        }
+        _type_parts = []
+        for dtype, devs in sorted(_type_counts.items()):
+            label = _type_label_map.get(dtype, dtype)
+            _type_parts.append(f"{label}×{len(devs)}")
+        _type_summary = ", ".join(_type_parts)
 
         st.markdown(
             f'<div style="padding:10px;border-radius:8px;'
@@ -291,20 +470,18 @@ def render_traffic_monitor(
             f'{impact_desc}'
             f'</div>'
             f'<div style="font-size:20px;font-weight:700;margin-top:6px;">'
-            f'推定 {affected_users:,} / {user_info["total_users"]:,} ユーザーに影響'
+            f'影響範囲: {total_devices}台'
             f'</div>'
             f'<div style="font-size:12px;color:#888;margin-top:4px;">'
-            f'AP数: {user_info["ap_count"]}台'
+            f'{_type_summary}'
             f'</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
 
-        # AP 詳細テーブル
-        with st.expander(f"📡 AP別ユーザー内訳 ({user_info['ap_count']}台)", expanded=False):
-            for ap in user_info["ap_details"]:
-                ap_affected = int(ap["users"] * affected_ratio)
-                st.caption(
-                    f"**{ap['id']}** ({ap['location']}) — "
-                    f"{ap_affected}/{ap['users']} ユーザーに影響"
-                )
+        # デバイス一覧（折りたたみ）
+        with st.expander(f"📡 配下デバイス一覧 ({total_devices}台)", expanded=False):
+            for dtype, devs in sorted(_type_counts.items()):
+                label = _type_label_map.get(dtype, dtype)
+                dev_list = ", ".join(devs)
+                st.caption(f"**{label}** ({len(devs)}台): {dev_list}")
