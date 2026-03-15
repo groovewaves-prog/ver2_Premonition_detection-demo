@@ -57,6 +57,9 @@ def build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
                 _detail_items.append(f"  根拠: {reas}")
             if steps:
                 _detail_items.append(f"  手順:")
+                # steps は文字列（改行区切り）またはリスト。文字列の場合は分割する。
+                if isinstance(steps, str):
+                    steps = [s.strip() for s in steps.split('\n') if s.strip()]
                 for si, s in enumerate(steps, 1):
                     _detail_items.append(f"    {si}. {s}")
             _detail_items.append("")
