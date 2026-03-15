@@ -10,7 +10,7 @@ from typing import Optional, List, Dict
 
 from digital_twin_pkg.common import (
     get_node_attr, get_metadata,
-    estimate_downstream_users,
+    get_downstream_devices,
     build_children_map,
 )
 
@@ -248,38 +248,58 @@ def render_traffic_monitor(
     with col3:
         st.metric("使用帯域", f"{total_used:,.0f} Mbps")
 
-    # ---- 影響ユーザー推定 ----
-    st.markdown("##### 影響ユーザー推定（BFS下流）")
+    # ---- 影響デバイス範囲（BFS下流）----
+    st.markdown("##### 影響デバイス範囲（BFS下流）")
 
     children_map = build_children_map(topology)
-    user_info = estimate_downstream_users(topology, selected_device, children_map)
+    downstream = get_downstream_devices(
+        topology, selected_device, children_map=children_map,
+    )
 
-    if user_info["ap_count"] == 0:
-        st.caption("下流にアクセスポイントがありません。")
+    if not downstream:
+        st.caption("下流デバイスはありません（末端ノード）。")
     else:
-        # 利用率が高い場合の影響度計算
+        # デバイス種別ごとに集計
+        _type_counts: Dict[str, List[str]] = {}
+        for dev_id in downstream:
+            node = topology.get(dev_id)
+            if not node:
+                continue
+            dev_type = get_node_attr(node, 'type', 'UNKNOWN')
+            _type_counts.setdefault(dev_type, []).append(dev_id)
+
+        total_devices = len(downstream)
+
+        # 影響レベル判定（帯域利用率ベース）
         if avg_util >= 90:
             impact_level = "深刻"
             impact_color = "#D32F2F"
-            impact_desc = "帯域飽和によりほぼ全ユーザーに影響"
-            affected_ratio = 0.95
+            impact_desc = "帯域飽和により配下デバイス全体に影響"
         elif avg_util >= 80:
             impact_level = "重大"
             impact_color = "#FF5722"
             impact_desc = "帯域輻輳により遅延・パケットロスが頻発"
-            affected_ratio = 0.70
         elif avg_util >= 60:
             impact_level = "軽微"
             impact_color = "#FF9800"
-            impact_desc = "一部ユーザーで速度低下の可能性"
-            affected_ratio = 0.30
+            impact_desc = "一部の配下デバイスで速度低下の可能性"
         else:
             impact_level = "なし"
             impact_color = "#4CAF50"
             impact_desc = "通常のトラフィック状態"
-            affected_ratio = 0.0
 
-        affected_users = int(user_info["total_users"] * affected_ratio)
+        # 種別サマリ文字列を生成  例: "FW×2, SW×3, AP×4"
+        _type_label_map = {
+            "ROUTER": "Router",
+            "FIREWALL": "FW",
+            "SWITCH": "SW",
+            "ACCESS_POINT": "AP",
+        }
+        _type_parts = []
+        for dtype, devs in sorted(_type_counts.items()):
+            label = _type_label_map.get(dtype, dtype)
+            _type_parts.append(f"{label}×{len(devs)}")
+        _type_summary = ", ".join(_type_parts)
 
         st.markdown(
             f'<div style="padding:10px;border-radius:8px;'
@@ -291,20 +311,18 @@ def render_traffic_monitor(
             f'{impact_desc}'
             f'</div>'
             f'<div style="font-size:20px;font-weight:700;margin-top:6px;">'
-            f'推定 {affected_users:,} / {user_info["total_users"]:,} ユーザーに影響'
+            f'影響範囲: {total_devices}台'
             f'</div>'
             f'<div style="font-size:12px;color:#888;margin-top:4px;">'
-            f'AP数: {user_info["ap_count"]}台'
+            f'{_type_summary}'
             f'</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
 
-        # AP 詳細テーブル
-        with st.expander(f"📡 AP別ユーザー内訳 ({user_info['ap_count']}台)", expanded=False):
-            for ap in user_info["ap_details"]:
-                ap_affected = int(ap["users"] * affected_ratio)
-                st.caption(
-                    f"**{ap['id']}** ({ap['location']}) — "
-                    f"{ap_affected}/{ap['users']} ユーザーに影響"
-                )
+        # デバイス一覧（折りたたみ）
+        with st.expander(f"📡 配下デバイス一覧 ({total_devices}台)", expanded=False):
+            for dtype, devs in sorted(_type_counts.items()):
+                label = _type_label_map.get(dtype, dtype)
+                dev_list = ", ".join(devs)
+                st.caption(f"**{label}** ({len(devs)}台): {dev_list}")
