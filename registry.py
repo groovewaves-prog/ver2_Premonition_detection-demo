@@ -50,6 +50,7 @@ class NetworkNode:
     type: str
     parent_id: Optional[str] = None
     redundancy_group: Optional[str] = None
+    interfaces: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):
@@ -215,6 +216,7 @@ class SiteRegistry:
                         type=node_data.get("type", "UNKNOWN"),
                         parent_id=node_data.get("parent_id"),
                         redundancy_group=node_data.get("redundancy_group"),
+                        interfaces=node_data.get("interfaces", []),
                         metadata=node_data.get("metadata", {})
                     )
                 
@@ -291,6 +293,7 @@ def load_topology(topology_path) -> Dict[str, NetworkNode]:
                         type=node_data.get("type", "UNKNOWN"),
                         parent_id=node_data.get("parent_id"),
                         redundancy_group=node_data.get("redundancy_group"),
+                        interfaces=node_data.get("interfaces", []),
                         metadata=node_data.get("metadata", {})
                     )
                 return topology

@@ -178,7 +178,7 @@ def _render_incident_triage(cand: dict, topology: dict):
     if _rc_actions:
         with st.expander(f"🛠 初動トリアージ: {_rc_dev}", expanded=True):
             st.caption(
-                "🕐 最初の5分: 状況把握のためのshowコマンドです。"
+                "🕐 ステップ①: 最初の5分: 状況把握のためのshowコマンドです。"
                 "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
                 "🔧マークは人手作業です。"
             )
