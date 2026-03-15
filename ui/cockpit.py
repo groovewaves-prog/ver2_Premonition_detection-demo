@@ -734,15 +734,22 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     ) as _traffic_ok:
         if _traffic_ok:
             from ui.components.traffic_monitor import render_traffic_monitor
+            from ui.shared_sim_config import scenario_display_to_key, SIM_SCENARIO_KEY
             _deg_level = st.session_state.get("pred_level", 0)
             _target_dev = None
+            _scenario_key = "optical"
             _injected = st.session_state.get("injected_weak_signal")
             if _injected:
                 _target_dev = _injected.get("device_id")
+            # シナリオキー取得: 共有設定 → 表示名を逆変換
+            _sim_scenario_display = st.session_state.get(SIM_SCENARIO_KEY, "")
+            if _sim_scenario_display:
+                _scenario_key = scenario_display_to_key(_sim_scenario_display)
             render_traffic_monitor(
                 topology,
                 target_device_id=_target_dev,
                 degradation_level=_deg_level,
+                scenario_key=_scenario_key,
             )
 
     # 3. 根本原因候補テーブル
