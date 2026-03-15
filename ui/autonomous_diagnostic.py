@@ -273,12 +273,12 @@ def plan_diagnostic_commands(
         if "error" in insights_text or "エラー" in insights_text:
             commands.append({
                 "command": "show logging | include Error",
-                "reason": "前ラウンドでエラー兆候を検知 → エラーログの詳細を確認",
+                "reason": "前回の調査でエラー兆候を検知 → エラーログの詳細を確認",
             })
         if "down" in insights_text or "ダウン" in insights_text:
             commands.append({
                 "command": "show interfaces status",
-                "reason": "前ラウンドでダウン状態を検知 → 全ポートの状態一覧を確認",
+                "reason": "前回の調査でダウン状態を検知 → 全ポートの状態一覧を確認",
             })
 
     # 重複排除 & 上限
@@ -376,7 +376,7 @@ def analyze_command_results(
             insights.append(f"🔴 {cmd}: アクティブなアップリンクが存在しないVLANを検出 — 通信断の原因")
 
     if not insights:
-        insights.append(f"ラウンド{round_num}: 明確な異常パターンは検出されませんでした")
+        insights.append(f"調査{round_num}回目: 明確な異常パターンは検出されませんでした")
 
     return insights
 
@@ -469,7 +469,7 @@ def run_autonomous_diagnostic(
             round_num=round_num,
             step_type="plan",
             timestamp=time.time(),
-            description=f"ラウンド{round_num}: アラーム「{alarm_label[:60]}」に基づき{len(commands)}個の診断コマンドを計画",
+            description=f"調査{round_num}回目: アラーム「{alarm_label[:60]}」に基づき{len(commands)}個の診断コマンドを計画",
             commands=[c["command"] for c in commands],
         )
         session.steps.append(plan_step)
@@ -484,7 +484,7 @@ def run_autonomous_diagnostic(
             round_num=round_num,
             step_type="execute",
             timestamp=time.time(),
-            description=f"ラウンド{round_num}: {len(results)}個のコマンドを実行完了",
+            description=f"調査{round_num}回目: {len(results)}個のコマンドを実行完了",
             commands=[c["command"] for c in commands],
             results=results,
         )
@@ -498,13 +498,13 @@ def run_autonomous_diagnostic(
             round_num=round_num,
             step_type="analyze",
             timestamp=time.time(),
-            description=f"ラウンド{round_num}: コマンド結果を分析し{len(insights)}個の洞察を取得",
+            description=f"調査{round_num}回目: コマンド結果を分析し{len(insights)}個の所見を取得",
             insights=insights,
         )
 
         # ── Step 4: 継続判定 ──
         if should_continue_diagnosis(insights, round_num):
-            analysis_step.next_action = "追加診断が必要 → 次ラウンドへ"
+            analysis_step.next_action = "追加診断が必要 → 次の調査へ"
         else:
             analysis_step.next_action = "診断完了"
 
@@ -607,7 +607,7 @@ def render_autonomous_diagnostic_panel(
             # ── 診断実行 ──
             st.caption(
                 "AIエージェントがアラーム内容を分析し、診断コマンドを自動で計画・実行・解析します。"
-                "各ステップの思考プロセスが時系列で可視化されます。"
+                "各確認項目の思考プロセスが時系列で可視化されます。"
             )
 
             _diag_btn_key = f"start_autodiag_{device_id}"
@@ -712,7 +712,7 @@ def _render_thought_log(session: DiagnosticSession):
     # 4. 診断プロセス詳細（折りたたみ — 詳しく見たい人向け）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with st.expander(
-        f"🔬 診断プロセス詳細（{session.current_round}ラウンド / {len(session.steps)}ステップ）",
+        f"🔬 診断プロセス詳細（{session.current_round}回目の調査 / 確認項目{len(session.steps)}件）",
         expanded=False,
     ):
         for step in session.steps:
@@ -742,7 +742,7 @@ def _render_step(step: DiagnosticStep):
         f'<span style="font-size:13px;font-weight:600;color:{color};">'
         f'{icon} {label}</span>'
         f'<span style="font-size:12px;color:#888;margin-left:8px;">'
-        f'ラウンド{step.round_num}: {step.description}</span>'
+        f'調査{step.round_num}回目: {step.description}</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -782,14 +782,14 @@ def get_thought_log_for_llm(device_id: str) -> str:
     if not session or not session.steps:
         return ""
 
-    lines = [f"■ AI自律診断ログ ({session.device_id})"]
+    lines = [f"■ AI診断ログ ({session.device_id})"]
     for step in session.steps:
         _type_labels = {
-            "plan": "計画", "execute": "実行",
-            "analyze": "分析", "conclude": "結論",
+            "plan": "調査項目の選定", "execute": "コマンド実行",
+            "analyze": "結果の読み取り", "conclude": "判定",
         }
         label = _type_labels.get(step.step_type, step.step_type)
-        lines.append(f"  [{label}] R{step.round_num}: {step.description}")
+        lines.append(f"  [{label}] 調査{step.round_num}回目: {step.description}")
 
         if step.commands:
             for c in step.commands:
