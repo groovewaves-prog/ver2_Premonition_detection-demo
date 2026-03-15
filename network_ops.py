@@ -719,6 +719,116 @@ def run_diagnostic_simulation(
 
 
 # =====================================================
+# ダミーRunning Config生成（トラフィック分析用）
+# =====================================================
+def generate_fake_running_config(
+    target_node,
+    utilization_pct: float = 35.0,
+    api_key: str = None,
+) -> str:
+    """トポロジのインターフェース情報からダミーRunning Config + show interfaces 出力を生成。
+
+    AIを使わず、トポロジJSONのinterfaces定義から決定論的に生成する。
+    utilization_pct で全体の利用率レベルを制御（劣化シナリオのmetric_valueに対応）。
+
+    Returns:
+        Running Config + show interfaces 形式のテキスト
+    """
+    import random as _rng
+
+    device_id = target_node.id if hasattr(target_node, 'id') else str(target_node)
+    vendor = "Cisco"
+    if hasattr(target_node, 'metadata') and isinstance(target_node.metadata, dict):
+        vendor = target_node.metadata.get('vendor', 'Cisco')
+    elif hasattr(target_node, 'metadata'):
+        vendor = getattr(target_node.metadata, 'vendor', 'Cisco')
+
+    interfaces = []
+    if hasattr(target_node, 'interfaces'):
+        interfaces = target_node.interfaces or []
+    elif isinstance(target_node, dict):
+        interfaces = target_node.get('interfaces', [])
+
+    if not interfaces:
+        return f"! No interface data available for {device_id}\n"
+
+    # シード固定で同一入力は同一出力
+    _seed = hash(f"{device_id}_{utilization_pct:.1f}")
+    rng = _rng.Random(_seed)
+
+    lines = [
+        f"! ============================================",
+        f"! Device: {device_id} ({vendor})",
+        f"! Generated Running Config + Interface Status",
+        f"! ============================================",
+        f"!",
+        f"hostname {device_id}",
+        f"!",
+    ]
+
+    for iface in interfaces:
+        if not isinstance(iface, dict):
+            continue
+        name = iface.get('name', 'unknown')
+        bw_mbps = iface.get('bandwidth_mbps', 100)
+        connected_to = iface.get('connected_to', '')
+        link_type = iface.get('link_type', 'copper')
+
+        # 個別インターフェースの利用率に±15%のジッターを加える
+        jitter = rng.uniform(-15.0, 15.0)
+        intf_util = max(1.0, min(99.0, utilization_pct + jitter))
+        rate_bps = int(bw_mbps * 1_000_000 * intf_util / 100)
+        rate_mbps = rate_bps / 1_000_000
+
+        # queue drops は利用率に応じて増加
+        if intf_util < 60:
+            output_drops = 0
+            input_drops = 0
+        elif intf_util < 80:
+            output_drops = rng.randint(10, 200)
+            input_drops = 0
+        elif intf_util < 90:
+            output_drops = rng.randint(200, 2000)
+            input_drops = rng.randint(0, 50)
+        else:
+            output_drops = rng.randint(2000, 15000)
+            input_drops = rng.randint(50, 500)
+
+        lines.extend([
+            f"!",
+            f"interface {name}",
+            f" description To_{connected_to}",
+            f" bandwidth {bw_mbps * 1000}",  # kbps
+            f" {'media-type sfp' if link_type == 'fiber' else '! media-type copper'}",
+            f" duplex full",
+            f" speed auto",
+            f" service-policy output QOS-POLICY",
+            f" load-interval 30",
+            f" no shutdown",
+            f"!",
+            f"! --- show interfaces {name} ---",
+            f"  {name} is up, line protocol is up",
+            f"    Hardware is {'SFP-10G' if link_type == 'fiber' else 'GigabitEthernet'}",
+            f"    Description: To_{connected_to}",
+            f"    MTU 1500 bytes, BW {bw_mbps * 1000} Kbit/sec, DLY 10 usec",
+            f"    reliability 255/255, txload {max(1, int(intf_util * 255 / 100))}/255, rxload {max(1, int(intf_util * 255 / 100 * rng.uniform(0.6, 1.0)))}/255",
+            f"    5 minute input rate {int(rate_bps * rng.uniform(0.6, 1.0))} bits/sec",
+            f"    5 minute output rate {rate_bps} bits/sec",
+            f"      utilization: {intf_util:.1f}% ({rate_mbps:.1f} Mbps / {bw_mbps} Mbps)",
+            f"    input queue drops {input_drops}, output queue drops {output_drops}",
+            f"    {rng.randint(1000000, 99999999)} packets input, {rng.randint(100000000, 9999999999)} bytes",
+            f"    {rng.randint(1000000, 99999999)} packets output, {rng.randint(100000000, 9999999999)} bytes",
+        ])
+
+    lines.extend([
+        f"!",
+        f"end",
+    ])
+
+    return "\n".join(lines)
+
+
+# =====================================================
 # 並列修復処理
 # =====================================================
 def run_remediation_parallel_v2(

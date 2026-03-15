@@ -236,3 +236,85 @@ def classify_device(
         current = parent_id
 
     return "unrelated"
+
+
+# ====================================================
+# トラフィック分析ユーティリティ
+# ====================================================
+
+DEFAULT_ESTIMATED_USERS = 20  # AP に estimated_users が未定義の場合のデフォルト
+
+
+def estimate_downstream_users(
+    topology: dict,
+    root_id: str,
+    children_map: Optional[Dict[str, List[str]]] = None,
+) -> Dict[str, Any]:
+    """BFS で下流の ACCESS_POINT を探索し、推定ユーザー数を集計する。
+
+    Returns:
+        {
+            "total_users": int,
+            "ap_count": int,
+            "ap_details": [{"id": str, "location": str, "users": int}, ...],
+        }
+    """
+    downstream = get_downstream_devices(
+        topology, root_id, children_map=children_map,
+    )
+    ap_details: List[Dict[str, Any]] = []
+    total = 0
+    for dev_id in downstream:
+        node = topology.get(dev_id)
+        if not node:
+            continue
+        dev_type = get_node_attr(node, 'type', '')
+        if dev_type != 'ACCESS_POINT':
+            continue
+        md = get_metadata(node)
+        users = md.get('estimated_users', DEFAULT_ESTIMATED_USERS)
+        location = md.get('location', '')
+        ap_details.append({"id": dev_id, "location": location, "users": users})
+        total += users
+
+    return {
+        "total_users": total,
+        "ap_count": len(ap_details),
+        "ap_details": ap_details,
+    }
+
+
+def get_interface_to(
+    topology: dict,
+    from_id: str,
+    to_id: str,
+) -> Optional[Dict[str, Any]]:
+    """from_id のインターフェースのうち to_id に接続されているものを返す。
+
+    Returns:
+        {"name": str, "bandwidth_mbps": int, "link_type": str, ...} or None
+    """
+    node = topology.get(from_id)
+    if not node:
+        return None
+    interfaces = get_node_attr(node, 'interfaces', [])
+    for iface in interfaces:
+        if isinstance(iface, dict) and iface.get('connected_to') == to_id:
+            return iface
+    return None
+
+
+def get_link_capacity_mbps(
+    topology: dict,
+    from_id: str,
+    to_id: str,
+) -> int:
+    """2ノード間のリンク帯域 (Mbps) を取得。見つからない場合は 0。"""
+    iface = get_interface_to(topology, from_id, to_id)
+    if iface:
+        return iface.get('bandwidth_mbps', 0)
+    # 逆方向もチェック
+    iface_rev = get_interface_to(topology, to_id, from_id)
+    if iface_rev:
+        return iface_rev.get('bandwidth_mbps', 0)
+    return 0

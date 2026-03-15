@@ -8,7 +8,11 @@ from registry import list_sites, get_display_name, load_topology, get_paths
 from utils.const import SCENARIO_MAP
 from utils.llm_helper import get_rate_limiter, GENAI_AVAILABLE
 from ui.stream_dashboard import auto_start_stream, _get_simulator, _clear_simulator, inject_stream_alarms_to_session
-from ui.service_tier import tier_has_access, get_service_tier, TIER_BASIC, TIER_PHM, TIER_FULL
+from ui.service_tier import (
+    tier_has_access, get_service_tier,
+    TIER_BASIC, TIER_PHM, TIER_PHM_PREMONITION, TIER_PHM_RUL, TIER_PHM_TRAFFIC, TIER_FULL,
+    ALL_TIERS,
+)
 from ui.shared_sim_config import scenario_key_to_display
 
 def render_sidebar():
@@ -228,9 +232,11 @@ def render_sidebar():
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         from ui.service_tier import TIER_DESCRIPTIONS
         _tier_options = {
-            TIER_BASIC: "Basic — トポロジー + アラート分析",
-            TIER_PHM:   "PHM — + 予兆検知 / RUL予測",
-            TIER_FULL:  "Full — 全機能",
+            TIER_BASIC:           "Basic — トポロジー + アラート分析",
+            TIER_PHM_PREMONITION: "PHM: 予兆検知 — Future Radar / シミュレーション",
+            TIER_PHM_RUL:         "PHM: RUL予測 — AI自律診断 / 自動復旧",
+            TIER_PHM_TRAFFIC:     "PHM: トラフィック — 帯域監視 / 輻輳予測",
+            TIER_FULL:            "Full — 全機能",
         }
         # ★ BugFix: selectbox のウィジェットキーを "service_tier" に統一。
         #   旧コードでは "_service_tier_select"（ウィジェット用）と
@@ -242,8 +248,10 @@ def render_sidebar():
         # service_tier を session_state に確実に初期化（selectbox が読む前に）
         if "service_tier" not in st.session_state:
             _env_tier = os.environ.get("SERVICE_TIER", "full").lower().strip()
+            if _env_tier == "phm":
+                _env_tier = TIER_PHM_PREMONITION  # 後方互換
             st.session_state["service_tier"] = (
-                _env_tier if _env_tier in {TIER_BASIC, TIER_PHM, TIER_FULL}
+                _env_tier if _env_tier in set(ALL_TIERS)
                 else TIER_FULL
             )
 
@@ -294,9 +302,11 @@ def render_sidebar():
             st.caption(f"**{_tier_options[_current_tier].split(' — ')[0]}** プラン:")
             st.caption(TIER_DESCRIPTIONS.get(_current_tier, ""))
             if _current_tier != TIER_FULL:
-                _next_tier = TIER_PHM if _current_tier == TIER_BASIC else TIER_FULL
-                _next_label = _tier_options[_next_tier].split(" — ")[0]
-                st.caption(f"⬆️ **{_next_label}** にアップグレードすると: {TIER_DESCRIPTIONS.get(_next_tier, '')}")
+                _cur_idx = ALL_TIERS.index(_current_tier) if _current_tier in ALL_TIERS else 0
+                if _cur_idx + 1 < len(ALL_TIERS):
+                    _next_tier = ALL_TIERS[_cur_idx + 1]
+                    _next_label = _tier_options[_next_tier].split(" — ")[0]
+                    st.caption(f"⬆️ **{_next_label}** にアップグレードすると: {TIER_DESCRIPTIONS.get(_next_tier, '')}")
 
         st.divider()
 

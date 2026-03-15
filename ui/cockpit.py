@@ -42,7 +42,7 @@ from ui.components.chat_panel import render_chat_panel
 from ui.components.command_popup import show_command_popup_if_pending
 from ui.prediction_pipeline import run_prediction_pipeline
 from ui.autonomous_diagnostic import render_autonomous_diagnostic_panel
-from ui.service_tier import render_tier_section, TIER_PHM, TIER_FULL
+from ui.service_tier import render_tier_section, TIER_PHM, TIER_PHM_PREMONITION, TIER_PHM_RUL, TIER_PHM_TRAFFIC, TIER_FULL
 
 
 # =====================================================
@@ -720,9 +720,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             symptom_devices=symptom_devices,
         )
 
-        # ★ エッセンス5: AI自律診断パネル [PHM tier]
+        # ★ エッセンス5: AI自律診断パネル [PHM: RUL予測 tier]
         with render_tier_section(
-            TIER_PHM, "AI自律診断", icon="🤖",
+            TIER_PHM_RUL, "AI自律診断", icon="🤖",
             description="根本原因候補に対して自律的にコマンド計画→実行→分析のループを回し、障害の根因を深掘りします。",
         ) as _diag_ok:
             if _diag_ok:
@@ -738,7 +738,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         )
 
         with render_tier_section(
-            TIER_PHM, "自動復旧 (Remediation)", icon="🛠️",
+            TIER_PHM_RUL, "自動復旧 (Remediation)", icon="🛠️",
             description="推奨される復旧アクション（コマンド/設定変更）を自動生成し、承認ベースで実行します。",
         ) as _rem_ok:
             if _rem_ok:

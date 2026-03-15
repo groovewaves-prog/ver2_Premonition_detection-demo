@@ -201,6 +201,72 @@ scenarios:
           - "%SYS-0-FATAL: Unrecoverable memory state. Automatic reload in 60 seconds."
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Phase 1: トラフィック輻輳シナリオ（PHM: トラフィックティア）
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  traffic_congestion:
+    display_name: "Traffic Congestion (帯域輻輳進行)"
+    display_name_short: "Traffic (帯域輻輳)"
+    category: "Network/Bandwidth"
+    metric_name: "Link Utilization"
+    metric_unit: "%"
+    normal_value: 35.0
+    failure_value: 99.0
+    default_interfaces: ["Gi0/0/1", "Gi0/0/2", "Gi0/0/3"]
+    enabled: true
+    phase: 1
+    stages:
+      - level: 1
+        label: "通常増加"
+        duration_sec: 12.0
+        metric_value: 55.0
+        severity: "INFO"
+        color: "#FFC107"
+        alarm_templates:
+          - "%LINK-5-UTILIZATION: Interface {intf} utilization {value:.0f}% (normal increase). bandwidth usage rising."
+      - level: 2
+        label: "混雑開始"
+        duration_sec: 10.0
+        metric_value: 70.0
+        severity: "WARNING"
+        color: "#FF9800"
+        alarm_templates:
+          - "%LINK-4-UTILIZATION: Interface {intf} utilization {value:.0f}% (congestion starting). bandwidth exceeded 70% threshold."
+          - "%QOS-4-POLICER: Traffic policing activated on {intf}. output drops increasing due to congestion."
+      - level: 3
+        label: "輻輳"
+        duration_sec: 7.0
+        metric_value: 85.0
+        severity: "WARNING"
+        color: "#FF5722"
+        alarm_templates:
+          - "%LINK-3-UTILIZATION: Interface {intf} utilization {value:.0f}% (congested). bandwidth exceeded 85% threshold."
+          - "%QOS-3-BUFFER: buffer pressure on {intf}. queue depth increasing. output drops {value:.0f}/sec."
+          - "%SYS-4-PERFORMANCE: High throughput detected. CPU utilization elevated due to packet processing."
+      - level: 4
+        label: "帯域逼迫"
+        duration_sec: 5.0
+        metric_value: 93.0
+        severity: "CRITICAL"
+        color: "#D32F2F"
+        alarm_templates:
+          - "%LINK-2-UTILIZATION: Interface {intf} utilization {value:.0f}% (CRITICAL). bandwidth near saturation."
+          - "%QOS-2-BUFFER_EXHAUSTED: buffer exhaustion imminent on {intf}. packet loss detected."
+          - "%PLATFORM-3-ELEMENT_WARNING: Interface {intf} throughput exceeding design capacity."
+          - "%SYS-3-CPUHOG: CPU utilization exceeded threshold during high traffic volume."
+      - level: 5
+        label: "飽和"
+        duration_sec: 3.0
+        metric_value: 99.0
+        severity: "CRITICAL"
+        color: "#B71C1C"
+        alarm_templates:
+          - "%LINK-1-UTILIZATION: Interface {intf} utilization {value:.0f}% (SATURATED). bandwidth EXHAUSTED."
+          - "%QOS-1-BUFFER_FAIL: ALL buffers consumed on {intf}. Massive packet loss."
+          - "%PLATFORM-1-ELEMENT_CRITICAL: Interface {intf} capacity exceeded. Service degradation imminent."
+          - "%SYS-1-SERVICE_DISRUPTED: Multiple services affected by bandwidth saturation."
+          - "%LINK-2-UPDOWN: Interface {intf}, changed state to err-disabled (traffic overload)"
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # Phase 2: 将来追加シナリオ（enabled: false）
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   cpu_overload:

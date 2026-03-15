@@ -4,6 +4,11 @@
     "type": "ROUTER",
     "parent_id": null,
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "Gi0/0/0", "bandwidth_mbps": 10000, "connected_to": "WAN_UPLINK", "link_type": "fiber"},
+      {"name": "Gi0/0/1", "bandwidth_mbps": 1000, "connected_to": "FW_01_PRIMARY", "link_type": "fiber"},
+      {"name": "Gi0/0/2", "bandwidth_mbps": 1000, "connected_to": "FW_01_SECONDARY", "link_type": "fiber"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "vendor": "Cisco",
@@ -26,6 +31,11 @@
     "type": "FIREWALL",
     "parent_id": "WAN_ROUTER_01",
     "redundancy_group": "FW_HA_GROUP",
+    "interfaces": [
+      {"name": "ge-0/0/0", "bandwidth_mbps": 1000, "connected_to": "WAN_ROUTER_01", "link_type": "fiber"},
+      {"name": "ge-0/0/1", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_01", "link_type": "fiber"},
+      {"name": "ge-0/0/2", "bandwidth_mbps": 1000, "connected_to": "FW_01_SECONDARY", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "role": "Active",
@@ -48,6 +58,11 @@
     "type": "FIREWALL",
     "parent_id": "WAN_ROUTER_01",
     "redundancy_group": "FW_HA_GROUP",
+    "interfaces": [
+      {"name": "ge-0/0/0", "bandwidth_mbps": 1000, "connected_to": "WAN_ROUTER_01", "link_type": "fiber"},
+      {"name": "ge-0/0/1", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_01", "link_type": "fiber"},
+      {"name": "ge-0/0/2", "bandwidth_mbps": 1000, "connected_to": "FW_01_PRIMARY", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "role": "Standby",
@@ -64,6 +79,11 @@
     "type": "SWITCH",
     "parent_id": "FW_01_PRIMARY",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "Gi0/0/1", "bandwidth_mbps": 1000, "connected_to": "FW_01_PRIMARY", "link_type": "fiber"},
+      {"name": "Gi0/0/2", "bandwidth_mbps": 1000, "connected_to": "L2_SW_01", "link_type": "fiber"},
+      {"name": "Gi0/0/3", "bandwidth_mbps": 1000, "connected_to": "L2_SW_02", "link_type": "fiber"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "vendor": "Cisco",
@@ -85,6 +105,11 @@
     "type": "SWITCH",
     "parent_id": "CORE_SW_01",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "Gi0/1", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_01", "link_type": "fiber"},
+      {"name": "Gi0/2", "bandwidth_mbps": 100, "connected_to": "AP_01", "link_type": "copper"},
+      {"name": "Gi0/3", "bandwidth_mbps": 100, "connected_to": "AP_02", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "location": "Floor 1",
@@ -97,6 +122,11 @@
     "type": "SWITCH",
     "parent_id": "CORE_SW_01",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "Gi0/1", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_01", "link_type": "fiber"},
+      {"name": "Gi0/2", "bandwidth_mbps": 100, "connected_to": "AP_03", "link_type": "copper"},
+      {"name": "Gi0/3", "bandwidth_mbps": 100, "connected_to": "AP_04", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "location": "Floor 2",
@@ -109,8 +139,12 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_01",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_01", "link_type": "copper"}
+    ],
     "metadata": {
-      "location": "Meeting Room A"
+      "location": "Meeting Room A",
+      "estimated_users": 30
     }
   },
   "AP_02": {
@@ -118,8 +152,12 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_01",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_01", "link_type": "copper"}
+    ],
     "metadata": {
-      "location": "Office Area North"
+      "location": "Office Area North",
+      "estimated_users": 60
     }
   },
   "AP_03": {
@@ -127,8 +165,12 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_02",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_02", "link_type": "copper"}
+    ],
     "metadata": {
-      "location": "Office Area South"
+      "location": "Office Area South",
+      "estimated_users": 55
     }
   },
   "AP_04": {
@@ -136,8 +178,12 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_02",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_02", "link_type": "copper"}
+    ],
     "metadata": {
-      "location": "Cafeteria"
+      "location": "Cafeteria",
+      "estimated_users": 45
     }
   }
 }

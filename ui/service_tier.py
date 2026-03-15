@@ -1,38 +1,61 @@
 # ui/service_tier.py — サービスティア管理
 #
 # 段階的導入に対応するサービスティア定義:
-#   BASIC      (Phase 1-2): トポロジーマップ + アラート分析 + ノイズ削減 + ベイズ推論
-#   PHM        (Phase 3):   + RUL予測 + 消耗品寿命可視化 + 予兆検知フル機能
-#   FULL       (Phase 4+):  + 全機能（将来拡張含む）
+#   BASIC              (Phase 1-2): トポロジーマップ + アラート分析 + ノイズ削減 + ベイズ推論
+#   PHM_PREMONITION    (Phase 3a):  + 予兆検知 / Future Radar / シミュレーション
+#   PHM_RUL            (Phase 3b):  + RUL予測 / 消耗品寿命可視化 / AI自律診断 / 自動復旧
+#   PHM_TRAFFIC        (Phase 3c):  + トラフィック分析 / 帯域利用率監視 / 輻輳予測
+#   FULL               (Phase 4+):  + 全機能（Granger因果 / GDN偏差 / GrayScope / GNN）
 #
 # 現在のデモ環境では全機能がON（FULL）。
 # 環境変数 SERVICE_TIER で切り替え可能。
 # ティア不足時は折りたたみ表示 + ロックアイコンで段階的解放を演出。
+#
+# ★ 後方互換: TIER_PHM は TIER_PHM_RUL のエイリアス。
+#   tier_has_access(TIER_PHM) は PHM_PREMONITION 以上で True を返す。
 import os
 from contextlib import contextmanager
 import streamlit as st
 
 # サービスティア定義
-TIER_BASIC = "basic"
-TIER_PHM   = "phm"
-TIER_FULL  = "full"
+TIER_BASIC           = "basic"
+TIER_PHM_PREMONITION = "phm_premonition"
+TIER_PHM_RUL         = "phm_rul"
+TIER_PHM_TRAFFIC     = "phm_traffic"
+TIER_FULL            = "full"
+
+# ★ 後方互換エイリアス: 既存コードで TIER_PHM を参照している箇所はそのまま動作
+TIER_PHM = TIER_PHM_PREMONITION
 
 # ティアの階層順（低→高）
-_TIER_ORDER = {TIER_BASIC: 1, TIER_PHM: 2, TIER_FULL: 3}
+_TIER_ORDER = {
+    TIER_BASIC: 1,
+    TIER_PHM_PREMONITION: 2,
+    TIER_PHM_RUL: 3,
+    TIER_PHM_TRAFFIC: 4,
+    TIER_FULL: 5,
+}
 
 # ティアの表示名
 _TIER_LABELS = {
-    TIER_BASIC: "Basic",
-    TIER_PHM:   "PHM",
-    TIER_FULL:  "Full",
+    TIER_BASIC:           "Basic",
+    TIER_PHM_PREMONITION: "PHM: 予兆検知",
+    TIER_PHM_RUL:         "PHM: RUL予測",
+    TIER_PHM_TRAFFIC:     "PHM: トラフィック",
+    TIER_FULL:            "Full",
 }
 
 # ティア別の概要説明（サイドバー用）
 TIER_DESCRIPTIONS = {
-    TIER_BASIC: "トポロジー可視化 / アラート分析 / ノイズ削減 / ベイズ推論",
-    TIER_PHM:   "↑ Basic + 予兆検知 / RUL予測 / Future Radar",
-    TIER_FULL:  "↑ PHM + Granger因果 / GDN偏差 / GrayScope / GNN",
+    TIER_BASIC:           "トポロジー可視化 / アラート分析 / ノイズ削減 / ベイズ推論",
+    TIER_PHM_PREMONITION: "↑ Basic + 予兆検知 / Future Radar / シミュレーション",
+    TIER_PHM_RUL:         "↑ 予兆検知 + RUL予測 / AI自律診断 / 自動復旧",
+    TIER_PHM_TRAFFIC:     "↑ RUL予測 + トラフィック分析 / 帯域監視 / 輻輳予測",
+    TIER_FULL:            "↑ トラフィック + Granger因果 / GDN偏差 / GrayScope / GNN",
 }
+
+# 全ティアの順序付きリスト（UI表示用）
+ALL_TIERS = [TIER_BASIC, TIER_PHM_PREMONITION, TIER_PHM_RUL, TIER_PHM_TRAFFIC, TIER_FULL]
 
 
 def get_service_tier() -> str:
@@ -40,8 +63,10 @@ def get_service_tier() -> str:
     # session_state が優先（UI からの動的変更用）
     if "service_tier" in st.session_state:
         return st.session_state["service_tier"]
-    # 環境変数
+    # 環境変数（後方互換: "phm" → TIER_PHM_PREMONITION）
     tier = os.environ.get("SERVICE_TIER", "full").lower().strip()
+    if tier == "phm":
+        tier = TIER_PHM_PREMONITION
     if tier not in _TIER_ORDER:
         tier = TIER_FULL
     return tier
@@ -154,7 +179,7 @@ def render_tier_section(
             required_order = _TIER_ORDER.get(required_tier, 0)
 
             upgrade_path = []
-            for t_key in [TIER_BASIC, TIER_PHM, TIER_FULL]:
+            for t_key in ALL_TIERS:
                 t_order = _TIER_ORDER[t_key]
                 if current_order < t_order <= required_order:
                     t_desc = TIER_DESCRIPTIONS.get(t_key, "")

@@ -4,6 +4,11 @@
     "type": "ROUTER",
     "parent_id": null,
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "et-0/0/0", "bandwidth_mbps": 10000, "connected_to": "WAN_UPLINK", "link_type": "fiber"},
+      {"name": "et-0/0/1", "bandwidth_mbps": 1000, "connected_to": "FW_B01_PRIMARY", "link_type": "fiber"},
+      {"name": "et-0/0/2", "bandwidth_mbps": 1000, "connected_to": "FW_B01_SECONDARY", "link_type": "fiber"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "vendor": "Juniper",
@@ -20,6 +25,12 @@
     "type": "FIREWALL",
     "parent_id": "EDGE_ROUTER_B01",
     "redundancy_group": "FW_B_HA_GROUP",
+    "interfaces": [
+      {"name": "ethernet1/1", "bandwidth_mbps": 1000, "connected_to": "EDGE_ROUTER_B01", "link_type": "fiber"},
+      {"name": "ethernet1/2", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_B01", "link_type": "fiber"},
+      {"name": "ethernet1/3", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_B02", "link_type": "fiber"},
+      {"name": "ha1", "bandwidth_mbps": 1000, "connected_to": "FW_B01_SECONDARY", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "role": "Active",
@@ -36,6 +47,12 @@
     "type": "FIREWALL",
     "parent_id": "EDGE_ROUTER_B01",
     "redundancy_group": "FW_B_HA_GROUP",
+    "interfaces": [
+      {"name": "ethernet1/1", "bandwidth_mbps": 1000, "connected_to": "EDGE_ROUTER_B01", "link_type": "fiber"},
+      {"name": "ethernet1/2", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_B01", "link_type": "fiber"},
+      {"name": "ethernet1/3", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_B02", "link_type": "fiber"},
+      {"name": "ha1", "bandwidth_mbps": 1000, "connected_to": "FW_B01_PRIMARY", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "role": "Standby",
@@ -52,6 +69,12 @@
     "type": "SWITCH",
     "parent_id": "FW_B01_PRIMARY",
     "redundancy_group": "CORE_B_STACK",
+    "interfaces": [
+      {"name": "Ethernet1", "bandwidth_mbps": 1000, "connected_to": "FW_B01_PRIMARY", "link_type": "fiber"},
+      {"name": "Ethernet2", "bandwidth_mbps": 1000, "connected_to": "L2_SW_B01", "link_type": "fiber"},
+      {"name": "Ethernet3", "bandwidth_mbps": 1000, "connected_to": "L2_SW_B02", "link_type": "fiber"},
+      {"name": "Ethernet49", "bandwidth_mbps": 10000, "connected_to": "CORE_SW_B02", "link_type": "fiber"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "vendor": "Arista",
@@ -67,6 +90,11 @@
     "type": "SWITCH",
     "parent_id": "FW_B01_PRIMARY",
     "redundancy_group": "CORE_B_STACK",
+    "interfaces": [
+      {"name": "Ethernet1", "bandwidth_mbps": 1000, "connected_to": "FW_B01_PRIMARY", "link_type": "fiber"},
+      {"name": "Ethernet2", "bandwidth_mbps": 1000, "connected_to": "L2_SW_B03", "link_type": "fiber"},
+      {"name": "Ethernet49", "bandwidth_mbps": 10000, "connected_to": "CORE_SW_B01", "link_type": "fiber"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "vendor": "Arista",
@@ -82,6 +110,11 @@
     "type": "SWITCH",
     "parent_id": "CORE_SW_B01",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "Gi1/0/1", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_B01", "link_type": "fiber"},
+      {"name": "Gi1/0/2", "bandwidth_mbps": 100, "connected_to": "AP_B01", "link_type": "copper"},
+      {"name": "Gi1/0/3", "bandwidth_mbps": 100, "connected_to": "AP_B02", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "location": "HQ Floor 3",
@@ -98,6 +131,11 @@
     "type": "SWITCH",
     "parent_id": "CORE_SW_B01",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "Gi1/0/1", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_B01", "link_type": "fiber"},
+      {"name": "Gi1/0/2", "bandwidth_mbps": 100, "connected_to": "AP_B03", "link_type": "copper"},
+      {"name": "Gi1/0/3", "bandwidth_mbps": 100, "connected_to": "AP_B04", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "location": "HQ Floor 4",
@@ -114,6 +152,11 @@
     "type": "SWITCH",
     "parent_id": "CORE_SW_B02",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "1", "bandwidth_mbps": 1000, "connected_to": "CORE_SW_B02", "link_type": "fiber"},
+      {"name": "2", "bandwidth_mbps": 100, "connected_to": "AP_B05", "link_type": "copper"},
+      {"name": "3", "bandwidth_mbps": 100, "connected_to": "AP_B06", "link_type": "copper"}
+    ],
     "metadata": {
       "redundancy_type": "PSU",
       "location": "Branch Office",
@@ -130,10 +173,14 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_B01",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_B01", "link_type": "copper"}
+    ],
     "metadata": {
       "location": "HQ 3F Reception",
       "vendor": "Aruba",
-      "model": "AP-515"
+      "model": "AP-515",
+      "estimated_users": 25
     }
   },
   "AP_B02": {
@@ -141,10 +188,14 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_B01",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_B01", "link_type": "copper"}
+    ],
     "metadata": {
       "location": "HQ 3F Open Space",
       "vendor": "Aruba",
-      "model": "AP-515"
+      "model": "AP-515",
+      "estimated_users": 80
     }
   },
   "AP_B03": {
@@ -152,10 +203,14 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_B02",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_B02", "link_type": "copper"}
+    ],
     "metadata": {
       "location": "HQ 4F Meeting Rooms",
       "vendor": "Aruba",
-      "model": "AP-515"
+      "model": "AP-515",
+      "estimated_users": 40
     }
   },
   "AP_B04": {
@@ -163,10 +218,14 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_B02",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_B02", "link_type": "copper"}
+    ],
     "metadata": {
       "location": "HQ 4F Cafeteria",
       "vendor": "Aruba",
-      "model": "AP-515"
+      "model": "AP-515",
+      "estimated_users": 50
     }
   },
   "AP_B05": {
@@ -174,10 +233,14 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_B03",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_B03", "link_type": "copper"}
+    ],
     "metadata": {
       "location": "Branch Office Entrance",
       "vendor": "Aruba",
-      "model": "AP-505"
+      "model": "AP-505",
+      "estimated_users": 15
     }
   },
   "AP_B06": {
@@ -185,10 +248,14 @@
     "type": "ACCESS_POINT",
     "parent_id": "L2_SW_B03",
     "redundancy_group": null,
+    "interfaces": [
+      {"name": "eth0", "bandwidth_mbps": 100, "connected_to": "L2_SW_B03", "link_type": "copper"}
+    ],
     "metadata": {
       "location": "Branch Office Work Area",
       "vendor": "Aruba",
-      "model": "AP-505"
+      "model": "AP-505",
+      "estimated_users": 35
     }
   }
 }
