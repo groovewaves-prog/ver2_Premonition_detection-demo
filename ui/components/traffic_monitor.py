@@ -5,13 +5,101 @@
 # インターフェース帯域利用率と影響ユーザー推定を可視化する。
 import random as _rng
 import streamlit as st
-from typing import Optional
+import datetime as _dt
+from typing import Optional, List, Dict
 
 from digital_twin_pkg.common import (
     get_node_attr, get_metadata,
     estimate_downstream_users,
     build_children_map,
 )
+
+
+def _render_trend_chart(
+    device_id: str,
+    interfaces: list,
+    base_util_map: dict,
+    current_level: int,
+):
+    """過去24時間の帯域利用率トレンドを折れ線グラフで描画する。"""
+    import altair as alt
+    import pandas as pd
+
+    now = _dt.datetime.now()
+    # 過去24時間を30分刻み（48ポイント）
+    n_points = 48
+    interval_min = 30
+    timestamps = [now - _dt.timedelta(minutes=interval_min * (n_points - 1 - i)) for i in range(n_points)]
+
+    rows = []
+    for iface in interfaces:
+        if not isinstance(iface, dict):
+            continue
+        iface_name = iface.get('name', '?')
+        bw_mbps = iface.get('bandwidth_mbps', 100)
+        connected_to = iface.get('connected_to', '')
+        label = f"{iface_name} → {connected_to}"
+
+        for ti, ts in enumerate(timestamps):
+            # 劣化レベルの時間推移をシミュレーション:
+            # 直近ほど current_level に近づく sigmoid 風カーブ
+            progress = ti / max(n_points - 1, 1)  # 0.0 → 1.0
+            effective_level = current_level * progress
+            # effective_level の前後のベース利用率を補間
+            level_low = int(effective_level)
+            level_high = min(level_low + 1, 5)
+            frac = effective_level - level_low
+            base_low = base_util_map.get(level_low, 35.0)
+            base_high = base_util_map.get(level_high, 35.0)
+            base_val = base_low + (base_high - base_low) * frac
+
+            # 時刻とインターフェースごとの再現可能なジッター
+            _ts_seed = hash(f"trend_{device_id}_{iface_name}_{ti}")
+            _rng_t = _rng.Random(_ts_seed)
+            jitter = _rng_t.uniform(-8.0, 8.0)
+            util = max(1.0, min(99.9, base_val + jitter))
+
+            rows.append({
+                "時刻": ts,
+                "利用率 (%)": round(util, 1),
+                "インターフェース": label,
+            })
+
+    df = pd.DataFrame(rows)
+
+    # 閾値ライン用データ
+    thresholds = pd.DataFrame([
+        {"利用率 (%)": 60, "label": "混雑 (60%)"},
+        {"利用率 (%)": 80, "label": "輻輳 (80%)"},
+        {"利用率 (%)": 90, "label": "飽和 (90%)"},
+    ])
+
+    line = alt.Chart(df).mark_line(strokeWidth=2).encode(
+        x=alt.X("時刻:T", title="時刻", axis=alt.Axis(format="%H:%M")),
+        y=alt.Y("利用率 (%):Q", scale=alt.Scale(domain=[0, 100]), title="利用率 (%)"),
+        color=alt.Color("インターフェース:N", title="インターフェース"),
+        tooltip=["時刻:T", "インターフェース:N", "利用率 (%):Q"],
+    )
+
+    rules = alt.Chart(thresholds).mark_rule(strokeDash=[4, 4], opacity=0.5).encode(
+        y="利用率 (%):Q",
+        color=alt.value("#FF9800"),
+    )
+
+    rule_labels = alt.Chart(thresholds).mark_text(
+        align="right", dx=-4, dy=-6, fontSize=10, color="#888",
+    ).encode(
+        y="利用率 (%):Q",
+        text="label:N",
+    )
+
+    chart = (line + rules + rule_labels).properties(
+        height=280,
+    ).configure_legend(
+        orient="bottom",
+    )
+
+    st.altair_chart(chart, use_container_width=True)
 
 
 def render_traffic_monitor(
@@ -72,11 +160,21 @@ def render_traffic_monitor(
     _seed = hash(f"traffic_{selected_device}_{degradation_level}")
     rng = _rng.Random(_seed)
 
-    # ---- インターフェース帯域利用率バー ----
+    # ---- インターフェース帯域利用率 ----
     st.markdown("##### インターフェース帯域利用率")
+
+    # 表示モード切替
+    _chart_mode = st.radio(
+        "表示モード",
+        ["棒グラフ（現在値）", "折れ線グラフ（時系列トレンド）"],
+        horizontal=True,
+        key="_traffic_chart_mode",
+        label_visibility="collapsed",
+    )
 
     total_capacity = 0
     total_used = 0
+    iface_data: List[Dict] = []  # 折れ線グラフ用に各IFのデータを蓄積
 
     for iface in interfaces:
         if not isinstance(iface, dict):
@@ -108,26 +206,36 @@ def render_traffic_monitor(
             color = "#D32F2F"   # red
             status = "飽和"
 
-        # リンクアイコン
-        link_icon = "🔗" if link_type == "fiber" else "🔌"
+        iface_data.append({
+            "name": name, "connected_to": connected_to,
+            "link_type": link_type, "bw_mbps": bw_mbps,
+            "util_pct": util_pct, "used_mbps": used_mbps,
+            "color": color, "status": status,
+        })
 
-        st.markdown(
-            f'<div style="margin:4px 0;padding:6px 10px;background:#f8f9fa;'
-            f'border-radius:6px;border-left:4px solid {color};">'
-            f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;">'
-            f'<span><b>{name}</b> {link_icon} → {connected_to}</span>'
-            f'<span style="color:{color};font-weight:700;">{util_pct:.1f}% ({status})</span>'
-            f'</div>'
-            f'<div style="background:#e0e0e0;border-radius:3px;height:8px;margin-top:4px;">'
-            f'<div style="background:{color};width:{min(util_pct, 100):.1f}%;'
-            f'height:100%;border-radius:3px;transition:width 0.3s;"></div>'
-            f'</div>'
-            f'<div style="font-size:11px;color:#888;margin-top:2px;">'
-            f'{used_mbps:.1f} / {bw_mbps} Mbps'
-            f'</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+    if _chart_mode == "棒グラフ（現在値）":
+        for d in iface_data:
+            link_icon = "🔗" if d["link_type"] == "fiber" else "🔌"
+            st.markdown(
+                f'<div style="margin:4px 0;padding:6px 10px;background:#f8f9fa;'
+                f'border-radius:6px;border-left:4px solid {d["color"]};">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;">'
+                f'<span><b>{d["name"]}</b> {link_icon} → {d["connected_to"]}</span>'
+                f'<span style="color:{d["color"]};font-weight:700;">{d["util_pct"]:.1f}% ({d["status"]})</span>'
+                f'</div>'
+                f'<div style="background:#e0e0e0;border-radius:3px;height:8px;margin-top:4px;">'
+                f'<div style="background:{d["color"]};width:{min(d["util_pct"], 100):.1f}%;'
+                f'height:100%;border-radius:3px;transition:width 0.3s;"></div>'
+                f'</div>'
+                f'<div style="font-size:11px;color:#888;margin-top:2px;">'
+                f'{d["used_mbps"]:.1f} / {d["bw_mbps"]} Mbps'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        # ---- 折れ線グラフ（時系列トレンド）----
+        _render_trend_chart(selected_device, interfaces, base_util_map, degradation_level)
 
     # ---- サマリKPI ----
     avg_util = (total_used / total_capacity * 100) if total_capacity > 0 else 0

@@ -33,10 +33,11 @@ def render_topology_panel(
     render_topology_graph(topology, alarms, analysis_results)
 
     # --- BFS 影響伝搬グラフ ---
+    # 障害シナリオ（確定インシデント）・劣化シナリオ（予兆検知）の両方で表示する
     try:
         if (selected_incident_candidate
-                and selected_incident_candidate.get('id') != 'SYSTEM'
-                and not selected_incident_candidate.get('is_prediction')):
+                and selected_incident_candidate.get('id') != 'SYSTEM'):
+            _is_prediction = selected_incident_candidate.get('is_prediction', False)
             _impact_rc_id = selected_incident_candidate['id']
             _impact_data = None
             if dt_engine and hasattr(dt_engine, '_get_downstream_impact'):
@@ -47,10 +48,17 @@ def render_topology_panel(
             if not _impact_data:
                 _impact_data = _compute_downstream_fallback(topology, _impact_rc_id)
 
-            # 派生アラート（symptom）が存在する場合のみ影響伝搬マップを表示
             _has_symptoms = bool(symptom_devices)
-            if _impact_data and _has_symptoms:
-                with st.expander(f"🌊 影響伝搬マップ: {_impact_rc_id} → {len(_impact_data)}台", expanded=True):
+            if _impact_data and (_has_symptoms or _is_prediction):
+                # 予兆の場合は「潜在的影響範囲」として初期折りたたみ表示
+                _label_suffix = "（潜在的影響範囲）" if _is_prediction else ""
+                _expanded = not _is_prediction  # 障害=展開、予兆=折りたたみ
+                with st.expander(
+                    f"🌊 影響伝搬マップ: {_impact_rc_id} → {len(_impact_data)}台{_label_suffix}",
+                    expanded=_expanded,
+                ):
+                    if _is_prediction:
+                        st.caption("⚠️ 予兆段階のため、現時点で実被害は発生していません。障害発生時の潜在的影響範囲を示しています。")
                     render_impact_graph(
                         _impact_rc_id, _impact_data, topology,
                         analysis_results=analysis_results,
