@@ -128,6 +128,40 @@ _DIAGNOSTIC_COMMAND_MAP = {
         ("show ip interface brief", "インターフェースの状態を確認"),
         ("ping 8.8.8.8 repeat 10", "外部への疎通をパケットロス率で確認"),
     ],
+    # トラフィック輻輳・帯域
+    "utilization": [
+        ("show interfaces", "全インターフェースのトラフィック統計・利用率を確認"),
+        ("show interfaces counters rates", "インターフェースごとの入出力レートを確認"),
+        ("show policy-map interface", "QoSポリシーマップの適用状況とドロップ数を確認"),
+        ("show buffers", "バッファプールの使用状況・枯渇リスクを確認"),
+    ],
+    "congestion": [
+        ("show interfaces", "インターフェースの利用率とエラーカウンタを確認"),
+        ("show policy-map interface", "QoSポリシーのドロップ・キュー深度を確認"),
+        ("show processes cpu", "パケット処理負荷によるCPU使用率を確認"),
+        ("show buffers", "バッファ使用率と枯渇状況を確認"),
+    ],
+    "bandwidth": [
+        ("show interfaces counters rates", "インターフェースごとの帯域使用率を確認"),
+        ("show interfaces", "全インターフェースのトラフィック統計を確認"),
+        ("show ip traffic", "プロトコル別のトラフィック統計を確認"),
+    ],
+    "traffic": [
+        ("show interfaces counters rates", "トラフィックレートの確認"),
+        ("show interfaces", "インターフェース統計の詳細確認"),
+        ("show policy-map interface", "QoSポリシーとキュー統計を確認"),
+    ],
+    "qos": [
+        ("show policy-map interface", "QoSポリシーマップの適用状況を確認"),
+        ("show class-map", "トラフィック分類設定を確認"),
+        ("show interfaces counters errors", "パケットドロップの有無を確認"),
+    ],
+    "output drops": [
+        ("show interfaces", "出力ドロップが発生しているインターフェースを特定"),
+        ("show policy-map interface", "QoSキューのドロップ統計を確認"),
+        ("show buffers", "出力バッファの枯渇状態を確認"),
+        ("show processes cpu", "パケット処理負荷を確認"),
+    ],
     # サイレント障害（L2レベル）
     "silent": [
         ("show mac address-table", "MACアドレステーブルの異常（エントリ消失・フラッピング）を確認"),
