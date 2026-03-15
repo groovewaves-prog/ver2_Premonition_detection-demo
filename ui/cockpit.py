@@ -362,7 +362,9 @@ def _render_inbox_panel(dt_engine):
                         if not _remaining:
                             # 全件対応済み → シミュレーション状態を完全クリア
                             st.session_state["injected_weak_signal"] = None
-                            st.session_state["pred_level"] = 0
+                            # pred_level はウィジェットキーなので直接代入不可。
+                            # サイドバー側で描画前にリセットされるフラグを使う。
+                            st.session_state["reset_pred_level"] = True
                             st.session_state.pop("dt_prediction_cache", None)
                             # トリアージキャッシュもクリア
                             _keys_to_clean = [
