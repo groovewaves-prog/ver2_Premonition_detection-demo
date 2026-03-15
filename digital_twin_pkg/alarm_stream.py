@@ -178,6 +178,78 @@ DEGRADATION_SEQUENCES: Dict[str, DegradationSequence] = {
             ], "CRITICAL", "#B71C1C"),
         ]
     ),
+
+    "crc_fcs_error": DegradationSequence(
+        pattern="crc_fcs_error",
+        category="Hardware/Physical",
+        metric_name="CRC Error Rate",
+        metric_unit="%",
+        normal_value=0.0,
+        failure_value=8.0,
+        stages=[
+            DegradationStage(1, "散発エラー", 10.0, 0.3, [
+                "%LINK-4-CRC_THRESHOLD: CRC error rate {value:.2f}% on {intf}. input errors increasing. fcs error detected.",
+            ], "WARNING", "#FFC107"),
+            DegradationStage(2, "エラー率上昇", 8.0, 1.0, [
+                "%LINK-4-CRC_THRESHOLD: CRC error rate {value:.2f}% on {intf}. input errors increasing. fcs error detected.",
+                "%INTERFACE-3-ERR_COUNTER: Input errors rising on {intf}. crc error count {value:.0f}/min. Cable integrity suspect.",
+            ], "WARNING", "#FF9800"),
+            DegradationStage(3, "再送多発", 6.0, 2.5, [
+                "%LINK-3-CRC_CRITICAL: CRC error rate {value:.2f}% on {intf}. fcs error rate exceeds threshold.",
+                "%INTERFACE-3-ERR_COUNTER: Input errors critical on {intf}. crc error count {value:.0f}/min.",
+                "%SYS-4-PERFORMANCE: Retransmission rate elevated on {intf} due to frame errors.",
+            ], "WARNING", "#FF5722"),
+            DegradationStage(4, "回線劣化", 5.0, 5.0, [
+                "%LINK-2-CRC_CRITICAL: CRC error rate {value:.2f}% on {intf}. LINK INTEGRITY COMPROMISED.",
+                "%INTERFACE-2-ERR_CRITICAL: Excessive input errors on {intf}. fcs error rate {value:.1f}%.",
+                "%LINK-3-UPDOWN: Interface {intf}, changed state to down (intermittent, CRC)",
+                "%LINEPROTO-3-UPDOWN: Line protocol on Interface {intf}, flapping due to frame errors",
+            ], "CRITICAL", "#D32F2F"),
+            DegradationStage(5, "リンク断直前", 3.0, 8.0, [
+                "%LINK-1-CRC_FAIL: CRC error rate {value:.2f}% on {intf}. LINK FAILURE imminent.",
+                "%INTERFACE-1-ERR_FATAL: Input errors on {intf} exceed recovery threshold. fcs error critical.",
+                "%LINK-2-UPDOWN: Interface {intf}, changed state to err-disabled (excessive CRC errors)",
+                "%LINEPROTO-2-UPDOWN: Line protocol on Interface {intf}, changed state to down",
+                "%SYS-1-LINK_FAIL: Physical layer degradation on {intf}. Cable/SFP replacement required.",
+            ], "CRITICAL", "#B71C1C"),
+        ]
+    ),
+
+    "latency_jitter": DegradationSequence(
+        pattern="latency_jitter",
+        category="Network/QoS",
+        metric_name="RTT",
+        metric_unit="ms",
+        normal_value=2.0,
+        failure_value=500.0,
+        stages=[
+            DegradationStage(1, "遅延微増", 10.0, 15.0, [
+                "%IP-4-SLA_THRESHOLD: RTT {value:.0f}ms on {intf}. latency above baseline. jitter detected.",
+            ], "WARNING", "#FFC107"),
+            DegradationStage(2, "ジッター発生", 8.0, 50.0, [
+                "%IP-4-SLA_THRESHOLD: RTT {value:.0f}ms on {intf}. latency above threshold. jitter {alt_value:.0f}ms.",
+                "%QOS-4-LATENCY: Latency spike detected on {intf}. round-trip time {value:.0f}ms. jitter variance high.",
+            ], "WARNING", "#FF9800"),
+            DegradationStage(3, "遅延顕在化", 6.0, 150.0, [
+                "%IP-3-SLA_CRITICAL: RTT {value:.0f}ms on {intf}. latency exceeds SLA threshold.",
+                "%QOS-3-LATENCY: Sustained high latency on {intf}. round-trip time {value:.0f}ms. jitter {alt_value:.0f}ms.",
+                "%SYS-4-PERFORMANCE: Application timeout risk. keepalive delay on {intf}.",
+            ], "WARNING", "#FF5722"),
+            DegradationStage(4, "SLA違反", 5.0, 300.0, [
+                "%IP-2-SLA_VIOLATION: RTT {value:.0f}ms on {intf}. SLA VIOLATION. latency critical.",
+                "%QOS-2-LATENCY_CRITICAL: Round-trip time {value:.0f}ms on {intf}. Service quality DEGRADED.",
+                "%LINEPROTO-3-UPDOWN: Keepalive timeout on Interface {intf} (high latency)",
+                "%SYS-3-TIMEOUT: Protocol timeouts detected. BGP/OSPF holdtime at risk.",
+            ], "CRITICAL", "#D32F2F"),
+            DegradationStage(5, "通信不能", 3.0, 500.0, [
+                "%IP-1-SLA_FAIL: RTT {value:.0f}ms on {intf}. COMMUNICATION FAILURE.",
+                "%QOS-1-LATENCY_FAIL: Round-trip time {value:.0f}ms. All real-time services DISRUPTED.",
+                "%LINEPROTO-2-UPDOWN: Line protocol on Interface {intf}, changed state to down (timeout)",
+                "%SYS-1-SERVICE_DISRUPTED: Multiple protocol sessions lost due to excessive latency.",
+                "%SYS-1-LINK_FAIL: Effective link failure on {intf}. Latency exceeds usable threshold.",
+            ], "CRITICAL", "#B71C1C"),
+        ]
+    ),
 }
 
 
@@ -582,6 +654,8 @@ def get_available_scenarios() -> Dict[str, str]:
         "optical": "Optical Decay (光減衰進行)",
         "microburst": "Microburst (パケット破棄増加)",
         "memory_leak": "Memory Leak (メモリ枯渇進行)",
+        "crc_fcs_error": "CRC/FCS Error (物理回線劣化)",
+        "latency_jitter": "Latency/Jitter (遅延・ジッター)",
     }
 
 
@@ -591,5 +665,9 @@ def get_default_interfaces(device_id: str, scenario_key: str) -> List[str]:
         return ["Gi0/0/1", "Gi0/0/2", "Te1/0/1"]
     elif scenario_key == "microburst":
         return ["Gi0/1/0", "Gi0/1/1", "Gi0/1/2"]
+    elif scenario_key == "crc_fcs_error":
+        return ["Gi0/0/1", "Gi0/0/2", "Gi0/0/3"]
+    elif scenario_key == "latency_jitter":
+        return ["Gi0/0/1", "Gi0/0/2", "Te1/0/1"]
     else:
         return ["System"]

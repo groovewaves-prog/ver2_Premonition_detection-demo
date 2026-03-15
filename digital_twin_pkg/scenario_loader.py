@@ -131,6 +131,8 @@ def get_scenario_short_names(yaml_path: str = _YAML_PATH) -> Dict[str, str]:
             "optical": "Optical Decay (光減衰)",
             "microburst": "Microburst (パケット破棄)",
             "memory_leak": "Memory Leak (メモリリーク)",
+            "crc_fcs_error": "CRC/FCS Error (物理回線劣化)",
+            "latency_jitter": "Latency/Jitter (遅延・ジッター)",
         }
 
     result: Dict[str, str] = {}

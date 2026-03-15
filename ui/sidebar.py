@@ -481,6 +481,50 @@ def _render_weak_signal_injection():
 
                     log_messages.append(_msg)
 
+            elif scenario_key == "crc_fcs_error":
+                crc_interfaces = [
+                    "Gi0/0/1", "Gi0/0/2", "Gi0/0/3", "Gi0/0/4",
+                    "Te1/0/1", "Te1/0/2", "Te1/0/3", "Te1/0/4"
+                ]
+
+                num_affected = min(degradation_level + (1 if degradation_level >= 5 else 0), len(crc_interfaces))
+                selected_interfaces = _rng_local.sample(crc_interfaces, num_affected)
+
+                crc_rate = [0.0, 0.3, 1.0, 2.5, 5.0, 8.0][min(degradation_level, 5)]
+
+                for i, intf in enumerate(selected_interfaces):
+                    if i == 0 or degradation_level >= 3:
+                        _msg = (f"%LINK-4-CRC_THRESHOLD: CRC error rate {crc_rate:.2f}% on {intf}. "
+                               f"input errors increasing. fcs error detected.")
+                        log_messages.append(_msg)
+
+                    if (i == 1 or degradation_level >= 4) and len(log_messages) < degradation_level:
+                        _msg = (f"%INTERFACE-3-ERR_COUNTER: Input errors rising on {intf}. "
+                               f"crc error count {int(crc_rate * 100)}/min. Cable integrity suspect.")
+                        log_messages.append(_msg)
+
+            elif scenario_key == "latency_jitter":
+                latency_interfaces = [
+                    "Gi0/0/1", "Gi0/0/2", "Gi0/0/3", "Gi0/0/4",
+                    "Te1/0/1", "Te1/0/2", "Te1/0/3", "Te1/0/4"
+                ]
+
+                num_affected = min(degradation_level + (1 if degradation_level >= 5 else 0), len(latency_interfaces))
+                selected_interfaces = _rng_local.sample(latency_interfaces, num_affected)
+
+                rtt = [2, 15, 50, 150, 300, 500][min(degradation_level, 5)]
+
+                for i, intf in enumerate(selected_interfaces):
+                    if i == 0 or degradation_level >= 3:
+                        _msg = (f"%IP-4-SLA_THRESHOLD: RTT {rtt}ms on {intf}. "
+                               f"latency above baseline. jitter detected.")
+                        log_messages.append(_msg)
+
+                    if (i == 1 or degradation_level >= 4) and len(log_messages) < degradation_level:
+                        _msg = (f"%QOS-4-LATENCY: Latency spike detected on {intf}. "
+                               f"round-trip time {rtt}ms. jitter variance high.")
+                        log_messages.append(_msg)
+
 
         # Session State に保存
         if log_messages:

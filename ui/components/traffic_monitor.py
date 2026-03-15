@@ -58,6 +58,30 @@ TRAFFIC_IMPACT_PROFILES: Dict[str, dict] = {
             "domain": [0.0, 100.0],
         },
     },
+    "crc_fcs_error": {
+        "label": "CRC/FCSエラー",
+        "description": "フレーム破損 → 再送増加 → 実効帯域低下",
+        "util_map": {0: 35.0, 1: 42.0, 2: 50.0, 3: 58.0, 4: 48.0, 5: 30.0},
+        "secondary": {
+            "name": "CRC Error Rate",
+            "unit": "%",
+            "values": {0: 0.0, 1: 0.3, 2: 1.0, 3: 2.5, 4: 5.0, 5: 8.0},
+            "color": "#6A1B9A",
+            "domain": [0.0, 10.0],
+        },
+    },
+    "latency_jitter": {
+        "label": "遅延/ジッター",
+        "description": "RTT増大 → プロトコルタイムアウト → セッション断",
+        "util_map": {0: 35.0, 1: 36.0, 2: 37.0, 3: 35.0, 4: 30.0, 5: 20.0},
+        "secondary": {
+            "name": "RTT",
+            "unit": "ms",
+            "values": {0: 2.0, 1: 15.0, 2: 50.0, 3: 150.0, 4: 300.0, 5: 500.0},
+            "color": "#00695C",
+            "domain": [0.0, 600.0],
+        },
+    },
 }
 
 # フォールバック（旧来の単調増加モデル）

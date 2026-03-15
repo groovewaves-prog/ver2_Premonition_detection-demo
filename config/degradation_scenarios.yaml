@@ -267,6 +267,138 @@ scenarios:
           - "%LINK-2-UPDOWN: Interface {intf}, changed state to err-disabled (traffic overload)"
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Phase 1: CRC/FCSエラー（物理層劣化の先行指標）
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  crc_fcs_error:
+    display_name: "CRC/FCS Error (物理回線劣化)"
+    display_name_short: "CRC/FCS Error (物理回線劣化)"
+    category: "Hardware/Physical"
+    metric_name: "CRC Error Rate"
+    metric_unit: "%"
+    normal_value: 0.0
+    failure_value: 8.0
+    default_interfaces: ["Gi0/0/1", "Gi0/0/2", "Gi0/0/3"]
+    enabled: true
+    phase: 1
+    stages:
+      - level: 1
+        label: "散発エラー"
+        duration_sec: 10.0
+        metric_value: 0.3
+        severity: "WARNING"
+        color: "#FFC107"
+        alarm_templates:
+          - "%LINK-4-CRC_THRESHOLD: CRC error rate {value:.2f}% on {intf}. input errors increasing. fcs error detected."
+      - level: 2
+        label: "エラー率上昇"
+        duration_sec: 8.0
+        metric_value: 1.0
+        severity: "WARNING"
+        color: "#FF9800"
+        alarm_templates:
+          - "%LINK-4-CRC_THRESHOLD: CRC error rate {value:.2f}% on {intf}. input errors increasing. fcs error detected."
+          - "%INTERFACE-3-ERR_COUNTER: Input errors rising on {intf}. crc error count {value:.0f}/min. Cable integrity suspect."
+      - level: 3
+        label: "再送多発"
+        duration_sec: 6.0
+        metric_value: 2.5
+        severity: "WARNING"
+        color: "#FF5722"
+        alarm_templates:
+          - "%LINK-3-CRC_CRITICAL: CRC error rate {value:.2f}% on {intf}. fcs error rate exceeds threshold."
+          - "%INTERFACE-3-ERR_COUNTER: Input errors critical on {intf}. crc error count {value:.0f}/min."
+          - "%SYS-4-PERFORMANCE: Retransmission rate elevated on {intf} due to frame errors."
+      - level: 4
+        label: "回線劣化"
+        duration_sec: 5.0
+        metric_value: 5.0
+        severity: "CRITICAL"
+        color: "#D32F2F"
+        alarm_templates:
+          - "%LINK-2-CRC_CRITICAL: CRC error rate {value:.2f}% on {intf}. LINK INTEGRITY COMPROMISED."
+          - "%INTERFACE-2-ERR_CRITICAL: Excessive input errors on {intf}. fcs error rate {value:.1f}%."
+          - "%LINK-3-UPDOWN: Interface {intf}, changed state to down (intermittent, CRC)"
+          - "%LINEPROTO-3-UPDOWN: Line protocol on Interface {intf}, flapping due to frame errors"
+      - level: 5
+        label: "リンク断直前"
+        duration_sec: 3.0
+        metric_value: 8.0
+        severity: "CRITICAL"
+        color: "#B71C1C"
+        alarm_templates:
+          - "%LINK-1-CRC_FAIL: CRC error rate {value:.2f}% on {intf}. LINK FAILURE imminent."
+          - "%INTERFACE-1-ERR_FATAL: Input errors on {intf} exceed recovery threshold. fcs error critical."
+          - "%LINK-2-UPDOWN: Interface {intf}, changed state to err-disabled (excessive CRC errors)"
+          - "%LINEPROTO-2-UPDOWN: Line protocol on Interface {intf}, changed state to down"
+          - "%SYS-1-LINK_FAIL: Physical layer degradation on {intf}. Cable/SFP replacement required."
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Phase 1: 遅延/ジッター（QoS劣化の直接指標）
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  latency_jitter:
+    display_name: "Latency/Jitter (遅延・ジッター増大)"
+    display_name_short: "Latency/Jitter (遅延・ジッター)"
+    category: "Network/QoS"
+    metric_name: "RTT"
+    metric_unit: "ms"
+    normal_value: 2.0
+    failure_value: 500.0
+    default_interfaces: ["Gi0/0/1", "Gi0/0/2", "Te1/0/1"]
+    enabled: true
+    phase: 1
+    stages:
+      - level: 1
+        label: "遅延微増"
+        duration_sec: 10.0
+        metric_value: 15.0
+        severity: "WARNING"
+        color: "#FFC107"
+        alarm_templates:
+          - "%IP-4-SLA_THRESHOLD: RTT {value:.0f}ms on {intf}. latency above baseline. jitter detected."
+      - level: 2
+        label: "ジッター発生"
+        duration_sec: 8.0
+        metric_value: 50.0
+        severity: "WARNING"
+        color: "#FF9800"
+        alarm_templates:
+          - "%IP-4-SLA_THRESHOLD: RTT {value:.0f}ms on {intf}. latency above threshold. jitter {alt_value:.0f}ms."
+          - "%QOS-4-LATENCY: Latency spike detected on {intf}. round-trip time {value:.0f}ms. jitter variance high."
+      - level: 3
+        label: "遅延顕在化"
+        duration_sec: 6.0
+        metric_value: 150.0
+        severity: "WARNING"
+        color: "#FF5722"
+        alarm_templates:
+          - "%IP-3-SLA_CRITICAL: RTT {value:.0f}ms on {intf}. latency exceeds SLA threshold."
+          - "%QOS-3-LATENCY: Sustained high latency on {intf}. round-trip time {value:.0f}ms. jitter {alt_value:.0f}ms."
+          - "%SYS-4-PERFORMANCE: Application timeout risk. keepalive delay on {intf}."
+      - level: 4
+        label: "SLA違反"
+        duration_sec: 5.0
+        metric_value: 300.0
+        severity: "CRITICAL"
+        color: "#D32F2F"
+        alarm_templates:
+          - "%IP-2-SLA_VIOLATION: RTT {value:.0f}ms on {intf}. SLA VIOLATION. latency critical."
+          - "%QOS-2-LATENCY_CRITICAL: Round-trip time {value:.0f}ms on {intf}. Service quality DEGRADED."
+          - "%LINEPROTO-3-UPDOWN: Keepalive timeout on Interface {intf} (high latency)"
+          - "%SYS-3-TIMEOUT: Protocol timeouts detected. BGP/OSPF holdtime at risk."
+      - level: 5
+        label: "通信不能"
+        duration_sec: 3.0
+        metric_value: 500.0
+        severity: "CRITICAL"
+        color: "#B71C1C"
+        alarm_templates:
+          - "%IP-1-SLA_FAIL: RTT {value:.0f}ms on {intf}. COMMUNICATION FAILURE."
+          - "%QOS-1-LATENCY_FAIL: Round-trip time {value:.0f}ms. All real-time services DISRUPTED."
+          - "%LINEPROTO-2-UPDOWN: Line protocol on Interface {intf}, changed state to down (timeout)"
+          - "%SYS-1-SERVICE_DISRUPTED: Multiple protocol sessions lost due to excessive latency."
+          - "%SYS-1-LINK_FAIL: Effective link failure on {intf}. Latency exceeds usable threshold."
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # Phase 2: 将来追加シナリオ（enabled: false）
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   cpu_overload:
