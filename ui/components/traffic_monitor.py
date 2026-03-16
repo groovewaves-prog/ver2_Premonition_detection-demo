@@ -98,15 +98,59 @@ def _interpolate_level(level_map: dict, effective_level: float) -> float:
     return val_low + (val_high - val_low) * frac
 
 
+def _classify_interface_direction(
+    iface: dict, device_id: str, topology: Optional[dict],
+) -> str:
+    """インターフェースの方向（Uplink/Downlink）をトポロジーから推定する。"""
+    if not topology:
+        return "unknown"
+    connected_to = iface.get('connected_to', '')
+    if not connected_to or connected_to == 'WAN_UPLINK':
+        return "uplink"
+
+    # 自デバイスの parent_id を取得
+    node = topology.get(device_id)
+    if not node:
+        return "unknown"
+    parent_id = (node.get('parent_id') if isinstance(node, dict)
+                 else getattr(node, 'parent_id', None))
+
+    # 接続先がHA peer（同一冗長グループ）かチェック
+    rg = (node.get('redundancy_group') if isinstance(node, dict)
+          else getattr(node, 'redundancy_group', None))
+    if rg:
+        peer_node = topology.get(connected_to)
+        if peer_node:
+            peer_rg = (peer_node.get('redundancy_group') if isinstance(peer_node, dict)
+                       else getattr(peer_node, 'redundancy_group', None))
+            if peer_rg == rg:
+                return "ha_peer"
+
+    if connected_to == parent_id:
+        return "uplink"
+
+    # 接続先の parent_id がこのデバイスなら downlink
+    target = topology.get(connected_to)
+    if target:
+        target_parent = (target.get('parent_id') if isinstance(target, dict)
+                         else getattr(target, 'parent_id', None))
+        if target_parent == device_id:
+            return "downlink"
+
+    return "uplink"  # デフォルトはuplink扱い
+
+
 def _render_trend_chart(
     device_id: str,
     interfaces: list,
     base_util_map: dict,
     current_level: int,
     secondary: Optional[dict] = None,
+    topology: Optional[dict] = None,
 ):
     """過去24時間の帯域利用率トレンドを折れ線グラフで描画する。
-    secondary が指定されている場合、副次メトリクスを第2Y軸で重畳。
+    secondary が指定されている場合、副次メトリクスを独立グラフで表示。
+    topology が指定されている場合、Uplink/Downlink方向を分類表示。
     """
     import altair as alt
     import pandas as pd
@@ -124,7 +168,11 @@ def _render_trend_chart(
             continue
         iface_name = iface.get('name', '?')
         connected_to = iface.get('connected_to', '')
+        direction = _classify_interface_direction(iface, device_id, topology)
+        dir_label = {"uplink": "↑Up", "downlink": "↓Down", "ha_peer": "⇔HA"}.get(direction, "")
         label = f"{iface_name} → {connected_to}"
+        if dir_label:
+            label = f"[{dir_label}] {label}"
 
         for ti, ts in enumerate(timestamps):
             progress = ti / max(n_points - 1, 1)
@@ -141,6 +189,7 @@ def _render_trend_chart(
                 "時刻": ts,
                 "利用率 (%)": round(util, 1),
                 "インターフェース": label,
+                "方向": direction,
             })
 
             # 副次メトリクス（インターフェース共通の1本線）
@@ -243,8 +292,6 @@ def render_traffic_monitor(
         degradation_level: 劣化進行度 (0-5)、利用率シミュレーションに反映
         scenario_key: 劣化シナリオキー ("optical", "microburst", "memory_leak")
     """
-    st.subheader("📊 トラフィックモニタ")
-
     if not topology:
         st.info("トポロジーが読み込まれていません。")
         return
@@ -262,226 +309,247 @@ def render_traffic_monitor(
         scenario_label = scenario_key
         scenario_desc = "帯域利用率が単調に上昇"
 
-    # ---- シナリオ表示 ----
+    # ---- 折りたたみ可能パネル ----
+    _traffic_label = "📊 トラフィックモニタ"
     if degradation_level > 0:
-        st.caption(f"劣化シナリオ: **{scenario_label}** — {scenario_desc}")
+        _traffic_label += f" — {scenario_label}: Level {degradation_level}"
 
-    # ---- デバイスセレクター ----
-    devices_with_interfaces = [
-        dev_id for dev_id, node in topology.items()
-        if get_node_attr(node, 'interfaces')
-    ]
-    if not devices_with_interfaces:
-        st.info("トポロジーにインターフェース情報がありません。")
-        return
+    with st.expander(_traffic_label, expanded=degradation_level > 0):
+        # ---- デバイスセレクター ----
+        devices_with_interfaces = [
+            dev_id for dev_id, node in topology.items()
+            if get_node_attr(node, 'interfaces')
+        ]
+        if not devices_with_interfaces:
+            st.info("トポロジーにインターフェース情報がありません。")
+            return
 
-    if target_device_id and target_device_id in devices_with_interfaces:
-        selected_device = target_device_id
-    else:
-        selected_device = devices_with_interfaces[0]
+        if degradation_level > 0:
+            st.caption(f"劣化シナリオ: **{scenario_label}** — {scenario_desc}")
 
-    selected_device = st.selectbox(
-        "対象デバイス",
-        devices_with_interfaces,
-        index=devices_with_interfaces.index(selected_device),
-        key="_traffic_device_select",
-    )
-
-    node = topology.get(selected_device)
-    if not node:
-        return
-
-    interfaces = get_node_attr(node, 'interfaces', [])
-    md = get_metadata(node)
-    vendor = md.get('vendor', 'Unknown')
-    model = md.get('model', '')
-
-    st.caption(f"**{selected_device}** ({vendor} {model})")
-
-    # ---- 利用率シミュレーション ----
-    base_util = base_util_map.get(degradation_level, 35.0)
-
-    _seed = hash(f"traffic_{selected_device}_{degradation_level}")
-    rng = _rng.Random(_seed)
-
-    # ---- インターフェース帯域利用率 ----
-    st.markdown("##### インターフェース帯域利用率")
-
-    # 表示モード切替
-    _chart_mode = st.radio(
-        "表示モード",
-        ["棒グラフ（現在値）", "折れ線グラフ（時系列トレンド）"],
-        horizontal=True,
-        key="_traffic_chart_mode",
-        label_visibility="collapsed",
-    )
-
-    total_capacity = 0
-    total_used = 0
-    iface_data: List[Dict] = []
-
-    for iface in interfaces:
-        if not isinstance(iface, dict):
-            continue
-        name = iface.get('name', '?')
-        bw_mbps = iface.get('bandwidth_mbps', 100)
-        connected_to = iface.get('connected_to', '')
-        link_type = iface.get('link_type', 'copper')
-
-        jitter = rng.uniform(-15.0, 15.0)
-        util_pct = max(1.0, min(99.9, base_util + jitter))
-        used_mbps = bw_mbps * util_pct / 100.0
-
-        total_capacity += bw_mbps
-        total_used += used_mbps
-
-        if util_pct < 60:
-            color = "#4CAF50"
-            status = "正常"
-        elif util_pct < 80:
-            color = "#FF9800"
-            status = "混雑"
-        elif util_pct < 90:
-            color = "#FF5722"
-            status = "輻輳"
+        if target_device_id and target_device_id in devices_with_interfaces:
+            selected_device = target_device_id
         else:
-            color = "#D32F2F"
-            status = "飽和"
+            selected_device = devices_with_interfaces[0]
 
-        iface_data.append({
-            "name": name, "connected_to": connected_to,
-            "link_type": link_type, "bw_mbps": bw_mbps,
-            "util_pct": util_pct, "used_mbps": used_mbps,
-            "color": color, "status": status,
-        })
-
-    if _chart_mode == "棒グラフ（現在値）":
-        for d in iface_data:
-            link_icon = "🔗" if d["link_type"] == "fiber" else "🔌"
-            st.markdown(
-                f'<div style="margin:4px 0;padding:6px 10px;background:#f8f9fa;'
-                f'border-radius:6px;border-left:4px solid {d["color"]};">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;">'
-                f'<span><b>{d["name"]}</b> {link_icon} → {d["connected_to"]}</span>'
-                f'<span style="color:{d["color"]};font-weight:700;">{d["util_pct"]:.1f}% ({d["status"]})</span>'
-                f'</div>'
-                f'<div style="background:#e0e0e0;border-radius:3px;height:8px;margin-top:4px;">'
-                f'<div style="background:{d["color"]};width:{min(d["util_pct"], 100):.1f}%;'
-                f'height:100%;border-radius:3px;transition:width 0.3s;"></div>'
-                f'</div>'
-                f'<div style="font-size:11px;color:#888;margin-top:2px;">'
-                f'{d["used_mbps"]:.1f} / {d["bw_mbps"]} Mbps'
-                f'</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-        # 棒グラフモードでも副次メトリクス現在値を表示
-        if secondary and degradation_level > 0:
-            sec_val = secondary["values"].get(degradation_level, 0)
-            sec_color = secondary["color"]
-            st.markdown(
-                f'<div style="margin:8px 0;padding:8px 12px;background:{sec_color}10;'
-                f'border-radius:6px;border-left:4px solid {sec_color};">'
-                f'<span style="font-size:13px;color:{sec_color};font-weight:700;">'
-                f'{secondary["name"]}: {sec_val:.1f} {secondary["unit"]}'
-                f'</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-    else:
-        # ---- 折れ線グラフ（時系列トレンド）+ 副次メトリクス ----
-        _render_trend_chart(
-            selected_device, interfaces, base_util_map, degradation_level,
-            secondary=secondary if degradation_level > 0 else None,
+        selected_device = st.selectbox(
+            "対象デバイス",
+            devices_with_interfaces,
+            index=devices_with_interfaces.index(selected_device),
+            key="_traffic_device_select",
         )
 
-    # ---- サマリKPI ----
-    avg_util = (total_used / total_capacity * 100) if total_capacity > 0 else 0
+        node = topology.get(selected_device)
+        if not node:
+            return
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("平均利用率", f"{avg_util:.1f}%")
-    with col2:
-        st.metric("合計帯域", f"{total_capacity:,} Mbps")
-    with col3:
-        st.metric("使用帯域", f"{total_used:,.0f} Mbps")
+        interfaces = get_node_attr(node, 'interfaces', [])
+        md = get_metadata(node)
+        vendor = md.get('vendor', 'Unknown')
+        model_name = md.get('model', '')
 
-    # ---- 影響デバイス範囲（BFS下流）----
-    st.markdown("##### 影響デバイス範囲（BFS下流）")
+        st.caption(f"**{selected_device}** ({vendor} {model_name})")
 
-    children_map = build_children_map(topology)
-    downstream = get_downstream_devices(
-        topology, selected_device, children_map=children_map,
-    )
+        # ---- 利用率シミュレーション ----
+        base_util = base_util_map.get(degradation_level, 35.0)
 
-    if not downstream:
-        st.caption("下流デバイスはありません（末端ノード）。")
-    else:
-        # デバイス種別ごとに集計
-        _type_counts: Dict[str, List[str]] = {}
-        for dev_id in downstream:
-            node = topology.get(dev_id)
-            if not node:
+        _seed = hash(f"traffic_{selected_device}_{degradation_level}")
+        rng = _rng.Random(_seed)
+
+        # ---- インターフェース帯域利用率 ----
+        st.markdown("##### インターフェース帯域利用率")
+
+        # 表示モード切替
+        _chart_mode = st.radio(
+            "表示モード",
+            ["棒グラフ（現在値）", "折れ線グラフ（時系列トレンド）"],
+            horizontal=True,
+            key="_traffic_chart_mode",
+            label_visibility="collapsed",
+        )
+
+        total_capacity = 0
+        total_used = 0
+        iface_data: List[Dict] = []
+
+        for iface in interfaces:
+            if not isinstance(iface, dict):
                 continue
-            dev_type = get_node_attr(node, 'type', 'UNKNOWN')
-            _type_counts.setdefault(dev_type, []).append(dev_id)
+            name = iface.get('name', '?')
+            bw_mbps = iface.get('bandwidth_mbps', 100)
+            connected_to = iface.get('connected_to', '')
+            link_type = iface.get('link_type', 'copper')
+            direction = _classify_interface_direction(iface, selected_device, topology)
 
-        total_devices = len(downstream)
+            jitter = rng.uniform(-15.0, 15.0)
+            util_pct = max(1.0, min(99.9, base_util + jitter))
+            used_mbps = bw_mbps * util_pct / 100.0
 
-        # 影響レベル判定（帯域利用率ベース）
-        if avg_util >= 90:
-            impact_level = "深刻"
-            impact_color = "#D32F2F"
-            impact_desc = "帯域飽和により配下デバイス全体に影響"
-        elif avg_util >= 80:
-            impact_level = "重大"
-            impact_color = "#FF5722"
-            impact_desc = "帯域輻輳により遅延・パケットロスが頻発"
-        elif avg_util >= 60:
-            impact_level = "軽微"
-            impact_color = "#FF9800"
-            impact_desc = "一部の配下デバイスで速度低下の可能性"
+            total_capacity += bw_mbps
+            total_used += used_mbps
+
+            if util_pct < 60:
+                color = "#4CAF50"
+                status_label = "正常"
+            elif util_pct < 80:
+                color = "#FF9800"
+                status_label = "混雑"
+            elif util_pct < 90:
+                color = "#FF5722"
+                status_label = "輻輳"
+            else:
+                color = "#D32F2F"
+                status_label = "飽和"
+
+            iface_data.append({
+                "name": name, "connected_to": connected_to,
+                "link_type": link_type, "bw_mbps": bw_mbps,
+                "util_pct": util_pct, "used_mbps": used_mbps,
+                "color": color, "status": status_label,
+                "direction": direction,
+            })
+
+        if _chart_mode == "棒グラフ（現在値）":
+            # 方向別にグループ化して表示
+            _dir_order = {"uplink": 0, "downlink": 1, "ha_peer": 2, "unknown": 3}
+            _dir_labels = {"uplink": "⬆ Uplink", "downlink": "⬇ Downlink",
+                           "ha_peer": "⇔ HA Peer", "unknown": ""}
+            _sorted_iface = sorted(iface_data, key=lambda x: _dir_order.get(x["direction"], 3))
+            _prev_dir = None
+            for d in _sorted_iface:
+                if d["direction"] != _prev_dir:
+                    _dir_lbl = _dir_labels.get(d["direction"], "")
+                    if _dir_lbl:
+                        st.markdown(f"<div style='font-size:12px;color:#666;font-weight:600;"
+                                    f"margin:8px 0 2px;'>{_dir_lbl}</div>",
+                                    unsafe_allow_html=True)
+                    _prev_dir = d["direction"]
+                link_icon = "🔗" if d["link_type"] == "fiber" else "🔌"
+                st.markdown(
+                    f'<div style="margin:4px 0;padding:6px 10px;background:#f8f9fa;'
+                    f'border-radius:6px;border-left:4px solid {d["color"]};">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;">'
+                    f'<span><b>{d["name"]}</b> {link_icon} → {d["connected_to"]}</span>'
+                    f'<span style="color:{d["color"]};font-weight:700;">{d["util_pct"]:.1f}% ({d["status"]})</span>'
+                    f'</div>'
+                    f'<div style="background:#e0e0e0;border-radius:3px;height:8px;margin-top:4px;">'
+                    f'<div style="background:{d["color"]};width:{min(d["util_pct"], 100):.1f}%;'
+                    f'height:100%;border-radius:3px;transition:width 0.3s;"></div>'
+                    f'</div>'
+                    f'<div style="font-size:11px;color:#888;margin-top:2px;">'
+                    f'{d["used_mbps"]:.1f} / {d["bw_mbps"]} Mbps'
+                    f'</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # 棒グラフモードでも副次メトリクス現在値を表示
+            if secondary and degradation_level > 0:
+                sec_val = secondary["values"].get(degradation_level, 0)
+                sec_color = secondary["color"]
+                st.markdown(
+                    f'<div style="margin:8px 0;padding:8px 12px;background:{sec_color}10;'
+                    f'border-radius:6px;border-left:4px solid {sec_color};">'
+                    f'<span style="font-size:13px;color:{sec_color};font-weight:700;">'
+                    f'{secondary["name"]}: {sec_val:.1f} {secondary["unit"]}'
+                    f'</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
         else:
-            impact_level = "なし"
-            impact_color = "#4CAF50"
-            impact_desc = "通常のトラフィック状態"
+            # ---- 折れ線グラフ（時系列トレンド）+ 副次メトリクス ----
+            _render_trend_chart(
+                selected_device, interfaces, base_util_map, degradation_level,
+                secondary=secondary if degradation_level > 0 else None,
+                topology=topology,
+            )
 
-        # 種別サマリ文字列を生成  例: "FW×2, SW×3, AP×4"
-        _type_label_map = {
-            "ROUTER": "Router",
-            "FIREWALL": "FW",
-            "SWITCH": "SW",
-            "ACCESS_POINT": "AP",
-        }
-        _type_parts = []
-        for dtype, devs in sorted(_type_counts.items()):
-            label = _type_label_map.get(dtype, dtype)
-            _type_parts.append(f"{label}×{len(devs)}")
-        _type_summary = ", ".join(_type_parts)
+        # ---- サマリKPI ----
+        avg_util = (total_used / total_capacity * 100) if total_capacity > 0 else 0
 
-        st.markdown(
-            f'<div style="padding:10px;border-radius:8px;'
-            f'border:2px solid {impact_color};background:{impact_color}10;margin:6px 0;">'
-            f'<div style="font-size:14px;font-weight:700;color:{impact_color};">'
-            f'影響レベル: {impact_level}'
-            f'</div>'
-            f'<div style="font-size:13px;color:#555;margin-top:4px;">'
-            f'{impact_desc}'
-            f'</div>'
-            f'<div style="font-size:20px;font-weight:700;margin-top:6px;">'
-            f'影響範囲: {total_devices}台'
-            f'</div>'
-            f'<div style="font-size:12px;color:#888;margin-top:4px;">'
-            f'{_type_summary}'
-            f'</div>'
-            f'</div>',
-            unsafe_allow_html=True,
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("平均利用率", f"{avg_util:.1f}%")
+        with col2:
+            st.metric("合計帯域", f"{total_capacity:,} Mbps")
+        with col3:
+            st.metric("使用帯域", f"{total_used:,.0f} Mbps")
+
+        # ---- 影響デバイス範囲（BFS下流）----
+        st.markdown("##### 影響デバイス範囲（BFS下流）")
+
+        children_map = build_children_map(topology)
+        downstream = get_downstream_devices(
+            topology, selected_device, children_map=children_map,
         )
 
-        # デバイス一覧（折りたたみ）
-        with st.expander(f"📡 配下デバイス一覧 ({total_devices}台)", expanded=False):
+        if not downstream:
+            st.caption("下流デバイスはありません（末端ノード）。")
+        else:
+            # デバイス種別ごとに集計
+            _type_counts: Dict[str, List[str]] = {}
+            for dev_id in downstream:
+                _dn_node = topology.get(dev_id)
+                if not _dn_node:
+                    continue
+                dev_type = get_node_attr(_dn_node, 'type', 'UNKNOWN')
+                _type_counts.setdefault(dev_type, []).append(dev_id)
+
+            total_devices = len(downstream)
+
+            # 影響レベル判定（帯域利用率ベース）
+            if avg_util >= 90:
+                impact_level = "深刻"
+                impact_color = "#D32F2F"
+                impact_desc = "帯域飽和により配下デバイス全体に影響"
+            elif avg_util >= 80:
+                impact_level = "重大"
+                impact_color = "#FF5722"
+                impact_desc = "帯域輻輳により遅延・パケットロスが頻発"
+            elif avg_util >= 60:
+                impact_level = "軽微"
+                impact_color = "#FF9800"
+                impact_desc = "一部の配下デバイスで速度低下の可能性"
+            else:
+                impact_level = "なし"
+                impact_color = "#4CAF50"
+                impact_desc = "通常のトラフィック状態"
+
+            # 種別サマリ文字列を生成  例: "FW×2, SW×3, AP×4"
+            _type_label_map = {
+                "ROUTER": "Router",
+                "FIREWALL": "FW",
+                "SWITCH": "SW",
+                "ACCESS_POINT": "AP",
+            }
+            _type_parts = []
             for dtype, devs in sorted(_type_counts.items()):
-                label = _type_label_map.get(dtype, dtype)
-                dev_list = ", ".join(devs)
-                st.caption(f"**{label}** ({len(devs)}台): {dev_list}")
+                _type_lbl = _type_label_map.get(dtype, dtype)
+                _type_parts.append(f"{_type_lbl}×{len(devs)}")
+            _type_summary = ", ".join(_type_parts)
+
+            st.markdown(
+                f'<div style="padding:10px;border-radius:8px;'
+                f'border:2px solid {impact_color};background:{impact_color}10;margin:6px 0;">'
+                f'<div style="font-size:14px;font-weight:700;color:{impact_color};">'
+                f'影響レベル: {impact_level}'
+                f'</div>'
+                f'<div style="font-size:13px;color:#555;margin-top:4px;">'
+                f'{impact_desc}'
+                f'</div>'
+                f'<div style="font-size:20px;font-weight:700;margin-top:6px;">'
+                f'影響範囲: {total_devices}台'
+                f'</div>'
+                f'<div style="font-size:12px;color:#888;margin-top:4px;">'
+                f'{_type_summary}'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            # デバイス一覧（折りたたみ）
+            with st.expander(f"📡 配下デバイス一覧 ({total_devices}台)", expanded=False):
+                for dtype, devs in sorted(_type_counts.items()):
+                    _type_lbl = _type_label_map.get(dtype, dtype)
+                    dev_list = ", ".join(devs)
+                    st.caption(f"**{_type_lbl}** ({len(devs)}台): {dev_list}")

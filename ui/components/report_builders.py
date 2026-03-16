@@ -82,8 +82,8 @@ def build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
     if initial_triage_detail:
         parts.extend([
             "",
-            f"【★★★ ステップ①「初動トリアージ（推奨アクション）」の全内容 ★★★】",
-            f"以下は運用者の画面に既に表示済みの初動トリアージです。",
+            f"【★★★ ステップ①「初期確認（推奨アクション）」の全内容 ★★★】",
+            f"以下は運用者の画面に既に表示済みの初期確認です。",
             f"ステップ②では、これらの初動調査コマンドを「実行した後」の結果をどう読むかを解説してください。",
             "",
             initial_triage_detail,
@@ -91,7 +91,7 @@ def build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
     elif initial_triage_summary:
         parts.extend([
             "",
-            f"【ステップ①の初動トリアージ】",
+            f"【ステップ①の初期確認】",
             initial_triage_summary,
         ])
 
@@ -101,7 +101,7 @@ def build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
         parts.extend([
             "",
             "【★★★ トリアージコマンドの実行結果（実機出力）★★★】",
-            "運用者が初動トリアージのコマンドを実行した結果です。",
+            "運用者が初期確認のコマンドを実行した結果です。",
             "この実機出力を踏まえて、OK/NG判定と次のステップの診断手順を作成してください。",
             "",
             _triage_output,
@@ -110,7 +110,7 @@ def build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
     parts.extend([
         "",
         "【作成すべき内容（ステップ②: 確認手順書）】",
-        "これはステップ①「初動トリアージ」の次に実施する、より詳細な診断手順書です。",
+        "これはステップ①「初期確認」の次に実施する、より詳細な診断手順書です。",
         "★★★ 重要: ステップ①の内容を繰り返さないでください。ステップ①は完了済みとして扱い、その結果を踏まえた「次のステップ」を記載してください。★★★",
         "",
         "1. ステップ①の結果に対するOK/NG判定基準（表形式）",
@@ -126,7 +126,7 @@ def build_prediction_report_scenario(cand: dict, signal_count: int = 1) -> str:
         "   - エスカレーション先（ベンダーTAC、上位運用者等）と伝達すべき情報を明記",
         "",
         "★ 注意: config系（設定変更系）コマンドは含めないでください。それはステップ③で扱います。",
-        "★ 全体の構造: ①初動トリアージ→②確認手順書(本書)→③予防措置プラン(次ステップ)",
+        "★ 全体の構造: ①初期確認→②確認手順書(本書)→③予防措置プラン(次ステップ)",
     ])
 
     return "\n".join(parts)
@@ -186,7 +186,7 @@ def build_prevention_plan_scenario(cand: dict) -> str:
     if triage_summary:
         parts.extend([
             "",
-            f"【初動トリアージで実施済みの内容】",
+            f"【初期確認で実施済みの内容】",
             triage_summary,
         ])
 
@@ -196,7 +196,7 @@ def build_prevention_plan_scenario(cand: dict) -> str:
         parts.extend([
             "",
             "【★★★ トリアージコマンドの実行結果（実機出力）★★★】",
-            "運用者が初動トリアージのコマンドを実行した結果です。",
+            "運用者が初期確認のコマンドを実行した結果です。",
             "この実機出力の内容を考慮して、具体的な予防措置コマンドを作成してください。",
             "例: show interfaces で入力エラーが多い場合 → ケーブル交換手順を優先",
             "例: show environment で温度異常がある場合 → 冷却系の対処を含める",
@@ -213,7 +213,7 @@ def build_prevention_plan_scenario(cand: dict) -> str:
         "4. ロールバック手順（作業失敗時の復旧方法）",
         "5. 作業完了報告テンプレート",
         "",
-        "★ 全体の構造: ①初動トリアージ(完了)→②確認手順書(完了)→③予防措置プラン(本書)",
+        "★ 全体の構造: ①初期確認(完了)→②確認手順書(完了)→③予防措置プラン(本書)",
         "★ ①②は完了済みです。それらの結果を踏まえた具体的なメンテナンス手順を作成してください。",
     ])
 

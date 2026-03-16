@@ -68,9 +68,9 @@ def _generate_prediction_triage_lazy(pc: dict, topology: dict) -> list:
 
     _prompt = f"""あなたは熟練のネットワークAIOpsエンジニアです。
 現在、以下の【対象機器】で予兆シグナルを検知しました。
-運用者が【最初の5分以内】にCLIで実行すべき「初動トリアージ」コマンドを、重要度順に【最大3つまで】JSON形式で出力してください。
+運用者が【最初の5分以内】にCLIで実行すべき「初期確認」コマンドを、重要度順に【最大3つまで】JSON形式で出力してください。
 
-【★ 初動トリアージの定義（厳守）】
+【★ 初期確認の定義（厳守）】
 ・目的: 「現状の把握」のみ。状態確認（show系）コマンドだけを提示する
 ・禁止: config系コマンド（設定変更・復旧措置）は絶対に含めない
 ・禁止: 詳細な診断手順や判定基準の解説は不要（それは別レポートの役割）
@@ -111,7 +111,7 @@ def _generate_prediction_triage_lazy(pc: dict, topology: dict) -> list:
             return []
         _rl.record_request(model_id="gemma-3-4b-it")
 
-        with st.spinner(f"🔄 {_dev_id} の初動トリアージを生成中..."):
+        with st.spinner(f"🔄 {_dev_id} の初期確認を生成中..."):
             _response = _genai_model.generate_content(_prompt)
             _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
 
@@ -230,7 +230,7 @@ def _render_radar_fragment(prediction_candidates: List[dict], topology: dict):
         # ★ 高速化: ヘッダーHTMLを一括構築
         st_html(_build_prediction_header_html(pc))
 
-        # ★ 初動トリアージ: ボタン押下時にのみ LLM 呼出（描画パスから排除）
+        # ★ 初期確認: ボタン押下時にのみ LLM 呼出（描画パスから排除）
         rec_actions = pc.get('recommended_actions', [])
         if not rec_actions:
             # キャッシュ済みならそのまま使う（LLM呼出なし）
@@ -245,7 +245,7 @@ def _render_radar_fragment(prediction_candidates: List[dict], topology: dict):
         _stable_card_idx = f"pred_{_pred_device}"
 
         if rec_actions:
-            with st.expander("🛠 初動トリアージ（推奨アクション）", expanded=True):
+            with st.expander("🛠 初期確認（推奨アクション）", expanded=True):
                 st.caption(
                     "🕐 最初の5分: 状況把握のためのshowコマンドです。"
                     "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
@@ -256,7 +256,7 @@ def _render_radar_fragment(prediction_candidates: List[dict], topology: dict):
             # トリアージ未生成 → ボタンで生成（render中にLLMを呼ばない）
             _gen_key = f"_gen_triage_pred_{_pred_device}"
             if st.button(
-                f"🔍 {_pred_device} の初動トリアージを生成",
+                f"🔍 {_pred_device} の初期確認を生成",
                 key=_gen_key,
                 type="secondary",
             ):
@@ -275,7 +275,7 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
 
     st.markdown("### 🔮 AIOps Future Radar")
     with render_tier_gated(TIER_PHM, "予兆検知 (Future Radar)"), st.container(border=True):
-        # ★ 連続劣化モニタリング: 初動トリアージの上に配置
+        # ★ 連続劣化モニタリング: 初期確認の上に配置
         from ui.stream_dashboard import render_stream_dashboard, _get_simulator as _get_stream_sim
         _stream_sim = _get_stream_sim()
         if _stream_sim is not None and _stream_sim.is_started:
