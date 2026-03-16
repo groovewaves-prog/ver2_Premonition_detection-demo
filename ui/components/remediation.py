@@ -184,7 +184,7 @@ def _render_generate_fix_button(cand, topology, scenario, site_id, api_key, is_p
     # ★ トリアージ結果連携のステータス表示
     _has_triage = bool(format_triage_results_for_llm(cand.get("id", "")))
     if _has_triage:
-        st.caption("✅ 初動トリアージの実行結果を検出しました。復旧計画に自動反映されます。")
+        st.caption("✅ 初期確認の実行結果を検出しました。復旧計画に自動反映されます。")
 
     if st.button(fix_label):
         if st.session_state.generated_report is None:
@@ -203,8 +203,8 @@ def _render_generate_fix_button(cand, topology, scenario, site_id, api_key, is_p
             if _triage_ctx:
                 _analysis_with_triage = (
                     f"{_base_report}\n\n"
-                    f"【初動トリアージのコマンド実行結果（実機出力）】\n"
-                    f"以下は運用者が初動トリアージで実行したコマンドの結果です。\n"
+                    f"【初期確認のコマンド実行結果（実機出力）】\n"
+                    f"以下は運用者が初期確認で実行したコマンドの結果です。\n"
                     f"この情報を踏まえて復旧手順を最適化してください。\n\n"
                     f"{_triage_ctx}"
                 )

@@ -745,6 +745,31 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             _sim_scenario_display = st.session_state.get(SIM_SCENARIO_KEY, "")
             if _sim_scenario_display:
                 _scenario_key = scenario_display_to_key(_sim_scenario_display)
+
+            # ★ 障害シナリオ発動時: pred_level=0でも障害の深刻度に応じた
+            #   劣化レベルを自動反映する。シミュレーション未操作でもトラフィック影響を表示。
+            if _deg_level == 0 and scenario != "正常稼働":
+                _fault_dev = None
+                for a in alarms:
+                    if a.is_root_cause:
+                        _fault_dev = a.device_id
+                        break
+                if _fault_dev:
+                    _target_dev = _target_dev or _fault_dev
+                # 障害シナリオの深刻度マッピング
+                if "WAN全回線断" in scenario:
+                    _deg_level = 5
+                    _scenario_key = "optical"
+                elif "FW片系障害" in scenario:
+                    _deg_level = 3
+                    _scenario_key = "optical"
+                elif "L2SW" in scenario or "サイレント" in scenario:
+                    _deg_level = 2
+                    _scenario_key = "latency_jitter"
+                else:
+                    _deg_level = 4
+                    _scenario_key = "optical"
+
             render_traffic_monitor(
                 topology,
                 target_device_id=_target_dev,

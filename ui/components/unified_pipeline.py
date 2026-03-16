@@ -1,6 +1,6 @@
 # ui/components/unified_pipeline.py — 統合診断パイプライン ②→③→④
 #
-# ①初動トリアージ は root_cause_table.py が担当（ステップ①ラベル付き）
+# ①初期確認 は root_cause_table.py が担当（ステップ①ラベル付き）
 # 本コンポーネントは ②AI診断 → ③確認手順書 → ④予防措置プラン を
 # 1つのパネルに統合し、シーケンシャルに実行する。
 import json
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 def _step_status(cand: dict, device_id: str):
     """各ステップの完了状態を返す。"""
-    # ① 初動トリアージ
+    # ① 初期確認
     has_triage = bool(cand.get('recommended_actions'))
     if not has_triage:
         _triage_ck = f"_triage_incident_{device_id}_{hash(cand.get('label', '')[:200])}"
@@ -55,7 +55,7 @@ def _step_status(cand: dict, device_id: str):
 def _render_step_progress(has_triage, has_diag, has_report, has_prevention):
     """ステップ進行バーを描画する。"""
     steps = [
-        ("①", "初動トリアージ", has_triage),
+        ("①", "初期確認", has_triage),
         ("②", "AI診断", has_diag),
         ("③", "確認手順書", has_report),
         ("④", "予防措置プラン", has_prevention),
@@ -97,7 +97,7 @@ def render_unified_pipeline(
 ):
     """統合診断パイプライン: ②AI診断 → ③確認手順書 → ④予防措置プラン
 
-    ①初動トリアージ は root_cause_table.py が「ステップ①」として描画済み。
+    ①初期確認 は root_cause_table.py が「ステップ①」として描画済み。
     本関数は残りの②③④を順にガイドする。
     """
     st.subheader("📋 診断パイプライン")
@@ -431,7 +431,7 @@ def _render_step4_prevention(cand, topology, scenario, site_id, api_key, device_
         # トリアージ結果連携
         _has_triage_results = bool(format_triage_results_for_llm(device_id))
         if _has_triage_results:
-            st.caption("✅ 初動トリアージの実行結果を検出しました。プランに自動反映されます。")
+            st.caption("✅ 初期確認の実行結果を検出しました。プランに自動反映されます。")
 
         if not api_key:
             st.warning("APIキーが設定されていません。サイドバーからAPIキーを入力してください。")
@@ -457,8 +457,8 @@ def _generate_step4_prevention(cand, topology, scenario, site_id, api_key, devic
     if _triage_ctx:
         _analysis_with_triage = (
             f"{_base_report}\n\n"
-            f"【初動トリアージのコマンド実行結果（実機出力）】\n"
-            f"以下は運用者が初動トリアージで実行したコマンドの結果です。\n"
+            f"【初期確認のコマンド実行結果（実機出力）】\n"
+            f"以下は運用者が初期確認で実行したコマンドの結果です。\n"
             f"この情報を踏まえて復旧手順を最適化してください。\n\n"
             f"{_triage_ctx}"
         )

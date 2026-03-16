@@ -134,7 +134,7 @@ def render_root_cause_table(
         if _v.get('escalation_required') or _v.get('agreement') == 'divergent':
             _render_verification_detail(selected_incident_candidate)
 
-    # ★ 障害時初動トリアージ: フラグメント化でボタン操作を部分再描画に
+    # ★ 障害時初期確認: フラグメント化でボタン操作を部分再描画に
     if selected_incident_candidate:
         _is_pred = selected_incident_candidate.get('is_prediction', False)
         _rc_dev = selected_incident_candidate.get('id', '')
@@ -197,7 +197,7 @@ def _render_incident_triage(cand: dict, topology: dict):
         _rc_actions = st.session_state.get(_triage_ck, [])
 
     if _rc_actions:
-        with st.expander(f"🛠 初動トリアージ: {_rc_dev}", expanded=True):
+        with st.expander(f"🛠 初期確認: {_rc_dev}", expanded=True):
             st.caption(
                 "🕐 ステップ①: 最初の5分: 状況把握のためのshowコマンドです。"
                 "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
@@ -211,7 +211,7 @@ def _render_incident_triage(cand: dict, topology: dict):
             cand['recommended_actions'] = _rc_actions
             _auto_execute_incident_triage(_rc_actions, _rc_dev)
             # ★ st.rerun() を廃止し、その場で描画を完結させる
-            with st.expander(f"🛠 初動トリアージ: {_rc_dev}", expanded=True):
+            with st.expander(f"🛠 初期確認: {_rc_dev}", expanded=True):
                 st.caption(
                     "🕐 最初の5分: 状況把握のためのshowコマンドです。"
                     "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
@@ -278,9 +278,9 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
 
     _prompt = f"""あなたは熟練のネットワークAIOpsエンジニアです。
 現在、以下の【対象機器】で障害アラームが発報されました。
-運用者が【最初の5分以内】にCLIで実行すべき「初動トリアージ」コマンドを、重要度順に【最大3つまで】JSON形式で出力してください。
+運用者が【最初の5分以内】にCLIで実行すべき「初期確認」コマンドを、重要度順に【最大3つまで】JSON形式で出力してください。
 
-【★ 初動トリアージの定義（厳守）】
+【★ 初期確認の定義（厳守）】
 ・目的: 「現状の把握」のみ。状態確認（show系）コマンドだけを提示する
 ・禁止: config系コマンド（設定変更・復旧措置）は絶対に含めない
 ・禁止: 詳細な診断手順や判定基準の解説は不要（それは別レポートの役割）
@@ -321,7 +321,7 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
             return []
         _rl.record_request(model_id="gemma-3-4b-it")
 
-        with st.spinner(f"🔄 {_dev_id} の初動トリアージを生成中..."):
+        with st.spinner(f"🔄 {_dev_id} の初期確認を生成中..."):
             _response = _genai_model.generate_content(_prompt)
             _match = _re.search(r'\[\s*\{.*?\}\s*\]', _response.text, _re.DOTALL)
 
