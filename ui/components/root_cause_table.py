@@ -77,12 +77,27 @@ def render_root_cause_table(
             status_text = "⚪ 監視中"
             action = "👁️ 静観"
 
+        # ★ 相互検証ステータス
+        _v = cand.get('verification', {})
+        _v_agreement = _v.get('agreement', '')
+        if _v.get('escalation_required'):
+            verify_text = "⚠️ 要確認"
+        elif _v_agreement == 'consistent':
+            verify_text = "✅ 一致"
+        elif _v_agreement == 'divergent':
+            verify_text = "🔶 不一致"
+        elif _v_agreement == 'single_source':
+            verify_text = "—"
+        else:
+            verify_text = "—"
+
         df_data.append({
             "順位": rank,
             "ステータス": status_text,
             "デバイス": device_id,
             "原因": cand.get('label', ''),
             "確信度": f"{prob*100:.0f}%",
+            "検証": verify_text,
             "推奨アクション": action,
             "_id": device_id,
             "_prob": prob
@@ -94,7 +109,7 @@ def render_root_cause_table(
     # 候補データの構成が変わった際にUIを強制リセットするための動的キー
     _table_key = f"rc_table_{hash(str([c['id'] for c in root_cause_candidates]))}"
     event = st.dataframe(
-        df[["順位", "ステータス", "デバイス", "原因", "確信度", "推奨アクション"]],
+        df[["順位", "ステータス", "デバイス", "原因", "確信度", "検証", "推奨アクション"]],
         use_container_width=True,
         hide_index=True,
         selection_mode="single-row",
@@ -112,6 +127,12 @@ def render_root_cause_table(
     elif root_cause_candidates:
         selected_incident_candidate = root_cause_candidates[0]
         target_device_id = root_cause_candidates[0]['id']
+
+    # ★ 相互検証の詳細表示（エスカレーション対象の場合）
+    if selected_incident_candidate:
+        _v = selected_incident_candidate.get('verification', {})
+        if _v.get('escalation_required') or _v.get('agreement') == 'divergent':
+            _render_verification_detail(selected_incident_candidate)
 
     # ★ 障害時初動トリアージ: フラグメント化でボタン操作を部分再描画に
     if selected_incident_candidate:
@@ -314,5 +335,51 @@ def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:
         logger.warning(f"Incident triage lazy generation failed for {_dev_id}: {e}")
 
     return []
+
+
+def _render_verification_detail(cand: dict):
+    """相互検証の詳細を描画する。エージェント間で不一致がある場合に表示。"""
+    _v = cand.get('verification', {})
+    if not _v:
+        return
+
+    _dev_id = cand.get('id', '')
+    _agreement = _v.get('agreement', '')
+    _topo = _v.get('topology_score')
+    _embed = _v.get('embedding_score')
+    _gap = _v.get('confidence_gap', 0)
+    _escalation = _v.get('escalation_required', False)
+
+    if _escalation:
+        _border_color = "#D32F2F"
+        _bg_color = "#FFEBEE"
+        _icon = "⚠️"
+        _title = "エージェント間で大きな不一致 — 人間による確認を推奨"
+    else:
+        _border_color = "#F57C00"
+        _bg_color = "#FFF3E0"
+        _icon = "🔶"
+        _title = "エージェント間で不一致を検出"
+
+    _topo_str = f"{_topo*100:.0f}%" if _topo is not None else "N/A"
+    _embed_str = f"{_embed*100:.0f}%" if _embed is not None else "N/A"
+
+    with st.container(border=True):
+        st.markdown(
+            f"**{_icon} 相互検証: {_title}** — `{_dev_id}`"
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Agent 1 (BFS/トポロジー)", _topo_str)
+        with col2:
+            st.metric("Agent 2 (Embedding/LLM)", _embed_str)
+        with col3:
+            st.metric("スコア差", f"{_gap*100:.0f}%")
+        if _escalation:
+            st.warning(
+                "2つの独立した診断エージェントの評価が大きく乖離しています。"
+                "物理シミュレーションとパターン照合で異なる結論が出ているため、"
+                "人間による追加調査を推奨します。"
+            )
 
 

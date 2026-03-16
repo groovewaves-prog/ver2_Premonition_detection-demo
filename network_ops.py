@@ -503,25 +503,74 @@ def generate_analyst_report_streaming(
 """
     else:
         # ── 通常モード: 汎用の障害分析レポートフォーマット
+        # ★ トポロジー情報を構造化テキストへ変換
+        _topo_lines = []
+        if topology_context:
+            _tc_node = topology_context.get("node", {}) or {}
+            _tc_meta = _tc_node.get("metadata", {}) or {}
+            _tc_parent = topology_context.get("parent_id")
+            _tc_children = topology_context.get("children_ids", [])
+            if _tc_node.get("type"):
+                _topo_lines.append(f"・機器タイプ: {_tc_node['type']}")
+            if _tc_node.get("layer"):
+                _topo_lines.append(f"・ネットワーク層: {_tc_node['layer']}")
+            if _tc_meta.get("os"):
+                _topo_lines.append(f"・OS: {_tc_meta['os']}")
+            if _tc_meta.get("model"):
+                _topo_lines.append(f"・機種: {_tc_meta['model']}")
+            if _tc_parent:
+                _topo_lines.append(f"・上位接続先: {_tc_parent}")
+            if _tc_children:
+                _topo_lines.append(f"・配下機器: {', '.join(str(c) for c in _tc_children[:10])}"
+                                   + (f" 他{len(_tc_children)-10}台" if len(_tc_children) > 10 else ""))
+        _topo_text = "\n".join(_topo_lines) if _topo_lines else "情報なし"
+
+        # ★ デバイス設定情報をサニタイズ
+        _safe_conf = sanitize_for_llm(str(target_conf), max_length=800) if target_conf else "なし"
+
+        # ★ AI診断ログをサニタイズ
+        _safe_verification = sanitize_for_llm(str(verification_context), max_length=800) if verification_context else "特になし"
+
         prompt = f"""あなたはネットワーク障害の分析エキスパートです。
-以下の条件に従って、障害分析レポートを作成してください。
+以下の情報をすべて活用し、障害分析レポートを作成してください。
+このレポートは運用チームの初動判断だけでなく、お客様への障害報告書の原案としても使用されます。
 
 【指示（この部分は出力に含めないでください）】
 - これは障害発生直後の分析です。復旧作業はまだ実施されていません
 - 「復旧しました」「再確立しました」のような完了形は使用しないでください
-- 文体は「です、ます」調で記載してください
-- 下記のフォーマットに従って本文のみを出力してください
+- 文体は「です、ます」調の丁寧な報告文体で記載してください
+- 各セクションは具体的なデバイス名、インターフェース名、プロトコル名を含めてください
+- 推測には必ず「〜が疑われます」「〜の可能性があります」と明記してください
+- 下記のフォーマットに厳密に従って本文のみを出力してください
 
-【対象情報】
-シナリオ: {_safe_scenario}
+【障害シナリオ】
+{_safe_scenario}
+
+【対象デバイス】
 デバイス: {device_id} ({vendor})
+{_topo_text}
+
+【デバイス設定情報】
+{_safe_conf}
+
+【AI診断ログ・検証結果】
+{_safe_verification}
 
 【出力フォーマット（この見出しは出力せず、以下の内容のみ出力）】
 ## 障害概要
+（何が発生し、どのデバイスに集中しているか。影響の第一印象を簡潔に記載）
+
 ## 発生原因（推定）
+（デバイス設定情報・診断ログを根拠に、具体的な原因仮説を記載。物理層・データリンク層・ネットワーク層のどこに問題があるかを切り分けて記載）
+
 ## 影響範囲
+（配下機器・上位接続先の情報を基に、影響を受けているサービス・拠点・ユーザーを具体的に記載。影響台数も含める）
+
 ## 技術的根拠
+（診断ログの具体的な証拠を引用し、なぜその原因推定に至ったかを技術的に説明。該当するCLIコマンドの出力結果やログの所見を含める）
+
 ## 推奨対応
+（優先順位を付けた番号付きリストで、具体的な調査・復旧手順を記載。各手順にはCLIコマンド名や確認ポイントを含める）
 """
 
     # ★ストリーミング生成（バックエンド自動選択）

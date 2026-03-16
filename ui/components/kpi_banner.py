@@ -2,6 +2,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 from typing import List
+from cross_verification import get_verification_summary
 
 
 def render_kpi_banner(
@@ -91,6 +92,34 @@ def render_kpi_banner(
             f'</div>'
         )
 
+    # ★ 相互検証サマリーチップ
+    _verify_chip = ""
+    _v_summary = get_verification_summary(analysis_results)
+    if _v_summary["total"] > 0:
+        _v_rate = _v_summary["consistency_rate"]
+        if _v_summary["escalation_required"] > 0:
+            _v_color = "#D32F2F"
+            _v_bg = "#FFEBEE"
+            _v_border = "#FFCDD2"
+            _v_label = f'&#9888; {_v_summary["escalation_required"]} Escalation'
+        elif _v_summary["divergent"] > 0:
+            _v_color = "#F57C00"
+            _v_bg = "#FFF3E0"
+            _v_border = "#FFE0B2"
+            _v_label = f'&#9670; {_v_summary["consistent"]}/{_v_summary["total"]} Verified'
+        else:
+            _v_color = "#2E7D32"
+            _v_bg = "#E8F5E9"
+            _v_border = "#C8E6C9"
+            _v_label = f'&#10003; {_v_summary["consistent"]}/{_v_summary["total"]} Verified'
+        _verify_chip = (
+            f'<div style="display:inline-flex;align-items:center;gap:6px;background:{_v_bg};'
+            f'border:1px solid {_v_border};border-radius:16px;padding:4px 12px;'
+            f'font-size:12px;color:{_v_color};font-weight:600;">'
+            f'{_v_label}'
+            f'</div>'
+        )
+
     _kpi_full_html = f"""
 <html><head><style>
   * {{ margin:0; padding:0; box-sizing:border-box; }}
@@ -105,6 +134,7 @@ def render_kpi_banner(
       <div style="font-size:13px;color:#666;margin-top:2px;">{_banner_sub}</div>
     </div>
     {_prediction_chip}
+    {_verify_chip}
   </div>
   <div style="display:flex;padding:12px 20px;gap:0;background:#fff;">
     <div style="flex:1;text-align:center;border-right:1px solid #eee;">

@@ -9,6 +9,7 @@ import time
 from enum import Enum
 from typing import List, Dict, Any, Optional, Set
 from digital_twin_pkg.common import inject_downstream_symptoms, classify_device as _common_classify
+from cross_verification import cross_verify, get_verification_summary
 
 _logger = logging.getLogger(__name__)
 
@@ -700,17 +701,18 @@ class LogicalRCA:
         # ==========================================================
         # ★ Digital Twin: 予兆検知
         # ==========================================================
+        _dt_predictions: List[Dict[str, Any]] = []
         if self.digital_twin is not None:
             try:
-                predictions = self.digital_twin.predict(
+                _dt_predictions = self.digital_twin.predict(
                     analysis_results=results,
                     msg_map=msg_map,
                     alarms=alarms,
-                )
+                ) or []
 
-                if predictions:
+                if _dt_predictions:
                     existing_ids = {r["id"] for r in results}
-                    for pred in predictions:
+                    for pred in _dt_predictions:
                         if pred["id"] not in existing_ids:
                             results.append(pred)
                         else:
@@ -722,6 +724,30 @@ class LogicalRCA:
 
             except Exception as e:
                 print(f"[!] Digital Twin prediction error: {e}")
+
+        # ==========================================================
+        # ★ マルチエージェント相互検証 (Cross-Verification)
+        #   Agent 1 (BFS/Topology) と Agent 2 (Embedding) の診断結果を突合。
+        #   一致 → 確信度ボーナス、不一致 → エスカレーションフラグ
+        # ==========================================================
+        try:
+            cross_verify(
+                analysis_results=results,
+                predictions=_dt_predictions,
+                msg_map=msg_map,
+                digital_twin_engine=self.digital_twin,
+            )
+            _v_summary = get_verification_summary(results)
+            if _v_summary["divergent"] > 0:
+                _logger.info(
+                    "Cross-verification: %d consistent, %d divergent "
+                    "(escalation_required=%d)",
+                    _v_summary["consistent"],
+                    _v_summary["divergent"],
+                    _v_summary["escalation_required"],
+                )
+        except Exception as e:
+            _logger.warning(f"Cross-verification skipped: {e}")
 
         # ★ Phase 4: GrayScope メトリクス相関情報を結果に付加
         if _grayscope_result is not None:
