@@ -33,6 +33,12 @@ from .command_popup import (
     simulate_command_execution,
     format_triage_results_for_llm,
 )
+from .verifier import (
+    get_verification_session,
+    render_verification_panel,
+    render_rollback_button,
+    execute_rollback,
+)
 
 try:
     import google.generativeai as genai
