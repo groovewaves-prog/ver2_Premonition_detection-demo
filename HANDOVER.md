@@ -1,44 +1,30 @@
 # Session Handover
 
 ## 日付・ブランチ
-- **日付**: 2026-03-13
-- **ブランチ**: `claude/fix-triage-display-bug-EwNlo`
+- **日付**: 2026-03-16
+- **ブランチ**: `claude/fix-traffic-monitor-NWsNE`
 
 ## 完了したタスク（今回セッション）
 
-### サービスティア切替バグ3件の修正
+### トラフィックモニタ改善（4件）
 
-#### Bug 1: ティア切替後にインシデントデータが残留表示される
-- **ファイル**: `ui/async_inference.py` (get_rca_result)
-- **原因**: `if fallback_results:` が空リスト `[]` を falsy 扱い。正常稼働時（アラーム0件）のfallbackが空リストのため、旧シナリオのRCAキャッシュ結果（WAN全回線断等）が返却されていた
-- **修正**: `if fallback_results is not None:` に変更
+#### 1. 障害シナリオ発動時のトラフィック影響自動反映
+- **ファイル**: `ui/cockpit.py` (トラフィックモニタ呼出部)
+- **原因**: 障害シナリオ発動時に `pred_level`（シミュレーション用スライダー）が0のまま渡され、トラフィックモニタに障害影響が反映されなかった
+- **修正**: 障害シナリオ名から深刻度を自動マッピング（WAN全回線断→Level5, FW片系障害→Level3, L2SW系→Level2）、根本原因デバイスを自動ターゲット
 
-#### Bug 2: Full→Basic 切替で2度選択が必要
-- **ファイル**: `ui/sidebar.py` (サービスティアセクション)
-- **原因**: selectbox の `index` パラメータ（`_current_tier` から算出）とウィジェットキー `_service_tier_select` が競合。rerun 時に `index=2`(full) がユーザーの "basic" 選択を上書き
-- **修正**: `on_change` コールバック方式に変更し、`index` パラメータを排除
+#### 2. トラフィックモニタの折りたたみ対応
+- **ファイル**: `ui/components/traffic_monitor.py`
+- **修正**: `st.expander` で囲み、劣化レベル > 0 の場合は自動展開。ラベルにシナリオ名とレベルを表示
 
-#### Bug 3: ティア切替時のステートクリア未実装
-- **ファイル**: `ui/sidebar.py` (_on_tier_change コールバック)
-- **原因**: シナリオ切替時にはアラームキャッシュ等の包括的クリアが実行されるが、ティア切替時には `service_tier` の更新と `st.rerun()` のみだった
-- **修正**: ティア切替時にもシナリオ切替と同等のステートクリアを実行（アラームキャッシュ・レポートキャッシュ・dt_prediction_cache・generated_report・remediation_plan・messages・chat_session・live_result・verification_result）
+#### 3. Uplink/Downlink方向分類の追加
+- **ファイル**: `ui/components/traffic_monitor.py`
+- **修正**: トポロジーの親子関係からインターフェースの方向（Uplink/Downlink/HA Peer）を自動推定。棒グラフは方向別グループ表示、折れ線グラフはラベルに方向プレフィックス付与
+- **関数追加**: `_classify_interface_direction()` — connected_to と parent_id/redundancy_group から方向を判定
 
-### 過去セッションの完了タスク
-
-#### サービスティア段階的解放UI
-- `render_tier_section` コンテキストマネージャで未解放機能を折りたたみ表示
-- Future Radar / AI自律診断 / 自動復旧 / シミュレーション設定のティアゲーティング
-
-#### セーフティガード付き自動修復機能
-- Pre-Check→Snapshot→Execute→Post-Checkの4ステップフロー
-- ロールバック機能
-
-#### AIエージェント自律診断
-- autonomous_diagnostic.py: コマンド計画→実行→分析ループ
-- 思考ログの可視化
-
-#### パフォーマンス最適化
-- エンジン完全Singleton化 / タブ空回し排除 / グローバル推論結果キャッシュ / 非同期推論
+#### 4.「初動トリアージ」→「初期確認」リネーム
+- **対象ファイル**: 全9ファイル（unified_pipeline.py, root_cause_table.py, future_radar.py, report_builders.py, remediation.py, analyst_report.py, command_popup.py）
+- **修正**: UI表示ラベル、LLMプロンプト、コメントすべてを統一リネーム
 
 ## 未完了・保留タスク
 
@@ -52,12 +38,12 @@
 - 現状 session_state のみ（リロードで消失）
 
 ## 既知の問題・注意点
-- `_bg_store`（プロセスレベルシングルトン）はティア切替時にクリアされないが、`fallback_results is not None` の修正により fingerprint 不一致時は fallback が優先されるため実害なし
-- ティア切替時のステートクリアは全拠点分のアラームキャッシュを一括クリア（次回レンダリングで再生成、軽微なコスト）
-- `rate_limiter.py` の `GlobalRateLimiter` はシングルトン。既存インスタンスがある場合は再起動が必要
-- `maint_devices` / `maint_windows` は session_state のみで永続化されない
+- テストファイル（tests/test_digital_twin_v2.py, test_integration_v2.py）はパス不整合（`/home/claude/`参照）で実行不可。本セッションの変更とは無関係
+- トラフィックモニタの障害シナリオ→劣化レベルマッピングはハードコード。新シナリオ追加時はcockpit.pyの該当箇所を更新する必要あり
+- `_classify_interface_direction()` はトポロジーJSONに `parent_id` と `redundancy_group` フィールドが存在する前提
 
 ## 次セッションへの推奨アクション
-1. **ティア切替の動作確認テスト**: Full→Basic→Full の往復、各シナリオでの確認
-2. **ストリームシミュレーション実行中のティア切替テスト**
-3. **Streamlit 実行テスト**: `streamlit run app.py` で全機能の動作確認
+1. **Streamlit動作確認**: `streamlit run app.py` で障害シナリオ発動→トラフィックモニタの表示を確認
+2. **折りたたみの動作確認**: 正常時は折りたたまれ、障害時は展開されることを確認
+3. **方向分類の検証**: 各デバイスでUplink/Downlinkが正しく分類されているか確認
+4. **「初期確認」表示の確認**: パイプラインのステップ①ラベルが正しく表示されるか
