@@ -71,6 +71,50 @@ def _load_zones_for_site(topology: dict) -> dict:
     return zones
 
 
+def _compute_fixed_positions(zones: dict) -> dict:
+    """zones の rows/grid 定義からノードの固定座標を算出する。
+
+    レイアウト規則:
+      - 各ゾーンは grid=[col, row, colspan, rowspan] でゾーングリッド上に配置
+      - rows=[[node_ids], ...] でゾーン内のノード配列を行単位で定義
+      - _grid 設定で列幅・行高・ノード間隔を制御
+    定義がなければ空辞書を返す（→ vis.js 自動レイアウトへフォールバック）。
+    """
+    has_layout = any(
+        isinstance(v, dict) and "rows" in v
+        for k, v in zones.items() if not k.startswith("_")
+    )
+    if not has_layout:
+        return {}
+
+    cfg = zones.get("_grid", {})
+    COL_W = cfg.get("col_width", 340)
+    ROW_H = cfg.get("row_height", 340)
+    H_GAP = cfg.get("node_h_gap", 150)
+    V_GAP = cfg.get("node_v_gap", 100)
+
+    positions = {}
+    for zk, zv in zones.items():
+        if zk.startswith("_") or not isinstance(zv, dict):
+            continue
+        rows = zv.get("rows")
+        if not rows:
+            continue
+        g = zv.get("grid", [0, 0, 1, 1])
+        gc, gr = g[0], g[1]
+        colspan = g[2] if len(g) > 2 else 1
+        cx = gc * COL_W + colspan * COL_W / 2
+        sy = gr * ROW_H + 50
+
+        for ri, row in enumerate(rows):
+            for ci, nid in enumerate(row):
+                x = cx + (ci - (len(row) - 1) / 2) * H_GAP
+                y = sy + ri * V_GAP
+                positions[nid] = {"x": x, "y": y}
+
+    return positions
+
+
 def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results: List[dict]):
     """
     vis.js でインタラクティブなトポロジーグラフを描画し、
@@ -131,6 +175,11 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 
     # --- 各状態の使用有無を追跡（凡例表示用） ---
     used_states = set()
+
+    # --- ゾーン定義の読み込み & 固定座標の計算 ---
+    zones = _load_zones_for_site(topology)
+    fixed_positions = _compute_fixed_positions(zones)
+    _use_fixed = bool(fixed_positions)
 
     # --- ノード生成 ---
     _n_nodes = len(topology)
@@ -302,9 +351,13 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             "shape": shape,
             "borderWidth": border_width,
             "font": font_config,
-            "widthConstraint": {"minimum": 120, "maximum": 180},
+            "widthConstraint": {"minimum": 110, "maximum": 165} if _use_fixed else {"minimum": 120, "maximum": 180},
             "heightConstraint": {"minimum": 40},
         }
+        if node_id in fixed_positions:
+            node_obj["x"] = fixed_positions[node_id]["x"]
+            node_obj["y"] = fixed_positions[node_id]["y"]
+            node_obj["fixed"] = {"x": True, "y": True}
         nodes.append(node_obj)
 
     # --- 冗長グループインデックスを事前構築 O(n) ---
@@ -342,19 +395,37 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                                 })
                                 added_edges.add(edge_key2)
 
-    # --- ノード数に応じた動的スペーシング ---
-    if _n_nodes > 14:
-        _level_sep, _node_sp, _tree_sp = 100, 130, 130
-        _canvas_h = 820
-    elif _n_nodes > 10:
-        _level_sep, _node_sp, _tree_sp = 110, 150, 150
-        _canvas_h = 740
+    # --- レイアウト設定（固定座標 or vis.js 自動階層） ---
+    if _use_fixed:
+        _max_y = max(p["y"] for p in fixed_positions.values())
+        _canvas_h = int(_max_y + 200)
     else:
-        _level_sep, _node_sp, _tree_sp = 130, 180, 180
-        _canvas_h = 700
+        if _n_nodes > 14:
+            _level_sep, _node_sp, _tree_sp = 100, 130, 130
+            _canvas_h = 820
+        elif _n_nodes > 10:
+            _level_sep, _node_sp, _tree_sp = 110, 150, 150
+            _canvas_h = 740
+        else:
+            _level_sep, _node_sp, _tree_sp = 130, 180, 180
+            _canvas_h = 700
 
-    # --- ゾーン定義の読み込み ---
-    zones = _load_zones_for_site(topology)
+    # --- vis.js レイアウトオプション組み立て ---
+    if _use_fixed:
+        _layout_js = "layout: { hierarchical: false }"
+        _edge_smooth_js = ("smooth: { type: 'cubicBezier', "
+                           "forceDirection: 'vertical', roundness: 0.15 }")
+        _pad_x, _pad_top, _pad_bottom = 85, 55, 65
+    else:
+        _layout_js = (
+            f"layout: {{ hierarchical: {{ enabled: true, direction: 'UD', "
+            f"sortMethod: 'directed', levelSeparation: {_level_sep}, "
+            f"nodeSpacing: {_node_sp}, treeSpacing: {_tree_sp}, "
+            f"blockShifting: true, edgeMinimization: true, "
+            f"parentCentralization: true }} }}"
+        )
+        _edge_smooth_js = "smooth: false"
+        _pad_x, _pad_top, _pad_bottom = 60, 40, 30
 
     # --- vis.js HTML (凡例はキャンバス内にオーバーレイ表示) ---
     nodes_json = json.dumps(nodes, ensure_ascii=False)
@@ -407,19 +478,7 @@ var edges = new vis.DataSet({edges_json});
 var zones = {zones_json};
 var data = {{ nodes: nodes, edges: edges }};
 var options = {{
-    layout: {{
-        hierarchical: {{
-            enabled: true,
-            direction: "UD",
-            sortMethod: "directed",
-            levelSeparation: {_level_sep},
-            nodeSpacing: {_node_sp},
-            treeSpacing: {_tree_sp},
-            blockShifting: true,
-            edgeMinimization: true,
-            parentCentralization: true
-        }}
-    }},
+    {_layout_js},
     physics: {{ enabled: false }},
     interaction: {{
         hover: true,
@@ -434,7 +493,7 @@ var options = {{
         shapeProperties: {{ borderRadius: 8 }}
     }},
     edges: {{
-        smooth: false
+        {_edge_smooth_js}
     }}
 }};
 var network = new vis.Network(document.getElementById('mynetwork'), data, options);
@@ -442,8 +501,9 @@ var network = new vis.Network(document.getElementById('mynetwork'), data, option
 /* ── ゾーンボックス描画 (beforeDrawing) ── */
 network.on('beforeDrawing', function(ctx) {{
   var positions = network.getPositions();
-  var PAD_X = 60, PAD_TOP = 40, PAD_BOTTOM = 30;
+  var PAD_X = {_pad_x}, PAD_TOP = {_pad_top}, PAD_BOTTOM = {_pad_bottom};
   for (var zk in zones) {{
+    if (zk.charAt(0) === '_') continue;
     var z = zones[zk];
     var memberNodes = z.nodes || [];
     var xs = [], ys = [];
