@@ -278,7 +278,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 
     # --- ノード生成 ---
     _n_nodes = len(topology)
-    _font_size = 12 if _n_nodes > 14 else 14
+    _font_size = 12
     nodes = []
     for node_id, node in topology.items():
         if isinstance(node, dict):
@@ -446,7 +446,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             "shape": shape,
             "borderWidth": border_width,
             "font": font_config,
-            "widthConstraint": {"minimum": 110, "maximum": 165} if _use_fixed else {"minimum": 120, "maximum": 180},
+            "widthConstraint": {"minimum": 110, "maximum": 180},
             "heightConstraint": {"minimum": 40},
         }
         if node_id in fixed_positions:
@@ -490,20 +490,15 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                                 })
                                 added_edges.add(edge_key2)
 
-    # --- レイアウト設定（固定座標 or vis.js 自動階層） ---
+    # --- レイアウト設定 ---
+    # 初期レイアウトのパラメータ（リフローが最終調整するため、大まかな値で十分）
+    _level_sep, _node_sp, _tree_sp = 200, 150, 150
     if _use_fixed:
         _max_y = max(p["y"] for p in fixed_positions.values())
-        _canvas_h = int(_max_y + 200)
+        _canvas_h = int(_max_y + 250)
     else:
-        if _n_nodes > 14:
-            _level_sep, _node_sp, _tree_sp = 100, 130, 130
-            _canvas_h = 820
-        elif _n_nodes > 10:
-            _level_sep, _node_sp, _tree_sp = 110, 150, 150
-            _canvas_h = 740
-        else:
-            _level_sep, _node_sp, _tree_sp = 130, 180, 180
-            _canvas_h = 700
+        # キャンバス高さはリフロー後に network.fit() で自動調整される
+        _canvas_h = max(700, _n_nodes * 80)
 
     # --- vis.js レイアウトオプション組み立て ---
     if _use_fixed:
@@ -553,8 +548,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     transition:background 0.2s;
   }}
   #fs-btn:hover {{ background:#e3f2fd; border-color:#90caf9; }}
-  :fullscreen #topo-wrap,
-  :-webkit-full-screen #topo-wrap {{
+  #topo-wrap:fullscreen,
+  #topo-wrap:-webkit-full-screen {{
     width:100vw; height:100vh; background:#fff;
   }}
 </style>
@@ -656,7 +651,172 @@ network.on('beforeDrawing', function(ctx) {{
   }}
 }});
 
-network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation: false }}); }});
+/* ══════════════════════════════════════════════════════════════
+ * Universal Measure & Reflow — 全拠点共通レイアウトアルゴリズム
+ * ──────────────────────────────────────────────────────────────
+ * 学術的基盤:
+ *   Sugiyama et al. (1981) — 階層グラフ描画フレームワーク
+ *   Brandes & Köpf (2001)  — 座標割り当てアルゴリズム (dagre で採用)
+ *
+ * dagre との違い:
+ *   dagre: 描画前にサイズを推定 → レイアウト計算 → 描画
+ *   本実装: 描画 → 実サイズ測定 → リフロー（ブラウザ layout engine と同原理）
+ *   利点: 推定誤差ゼロ。形状変化（ROOT CAUSE ellipse 等）にも自動対応。
+ *
+ * アルゴリズム:
+ *   Phase 1: vis.js 初期描画（hierarchical or fixed positions）
+ *   Phase 2: getBoundingBox() で全ノードの実サイズを測定
+ *   Phase 3: BFS でレベルツリーを構築（Y近接フォールバック付き）
+ *   Phase 4: レベル単位で Y 座標を再計算（非対称エクステント使用）
+ *   Phase 5: 同一レベル内の水平重なりを解消
+ *   Phase 6: 座標適用 & fit
+ * ══════════════════════════════════════════════════════════════ */
+network.once('afterDrawing', function() {{
+  var allIds = nodes.getIds();
+  if (allIds.length === 0) {{ network.fit({{padding:50}}); return; }}
+
+  /* ── Phase 2: 実サイズ測定 ── */
+  var pos = network.getPositions();
+  var bb = {{}};
+  allIds.forEach(function(id) {{
+    try {{ bb[id] = network.getBoundingBox(id); }} catch(e) {{}}
+  }});
+
+  /* ── Phase 3: BFS レベル検出 ── */
+  var children = {{}};
+  var inDeg = {{}};
+  allIds.forEach(function(id) {{ children[id] = []; inDeg[id] = 0; }});
+  edges.forEach(function(e) {{
+    if (children[e.from]) children[e.from].push(e.to);
+    inDeg[e.to] = (inDeg[e.to] || 0) + 1;
+  }});
+  var levels = {{}};
+  var queue = [];
+  allIds.forEach(function(id) {{
+    if (!inDeg[id] || inDeg[id] === 0) {{ levels[id] = 0; queue.push(id); }}
+  }});
+  var head = 0;
+  while (head < queue.length) {{
+    var cur = queue[head++];
+    children[cur].forEach(function(ch) {{
+      var nl = levels[cur] + 1;
+      if (levels[ch] === undefined || levels[ch] < nl) {{
+        levels[ch] = nl;
+        queue.push(ch);
+      }}
+    }});
+  }}
+  /* 孤立ノード: レベル 0 に割り当て */
+  allIds.forEach(function(id) {{
+    if (levels[id] === undefined) levels[id] = 0;
+  }});
+
+  /* レベル → ノードリスト（X座標順でソート） */
+  var lvGroups = {{}};
+  allIds.forEach(function(id) {{
+    var lv = levels[id];
+    if (!lvGroups[lv]) lvGroups[lv] = [];
+    lvGroups[lv].push(id);
+  }});
+  var sortedLvs = Object.keys(lvGroups).map(Number).sort(function(a,b){{return a-b;}});
+  sortedLvs.forEach(function(lv) {{
+    lvGroups[lv].sort(function(a,b){{ return pos[a].x - pos[b].x; }});
+  }});
+
+  /* ── Y近接フォールバック ──
+   * 固定座標レイアウト（ゾーングリッド）では BFS レベルと
+   * 視覚的な行が一致しない場合がある（例: AWS_DX は BFS level 1
+   * だがゾーン内では最上行）。初期 Y が大きく異なるノードが
+   * 同一 BFS レベルに入る場合は Y 近接で再分割する。 */
+  var finalRows = [];
+  sortedLvs.forEach(function(lv) {{
+    var grp = lvGroups[lv];
+    grp.sort(function(a,b){{ return pos[a].y - pos[b].y; }});
+    var subRow = [grp[0]];
+    for (var i = 1; i < grp.length; i++) {{
+      if (Math.abs(pos[grp[i]].y - pos[subRow[0]].y) < 50) {{
+        subRow.push(grp[i]);
+      }} else {{
+        finalRows.push(subRow);
+        subRow = [grp[i]];
+      }}
+    }}
+    finalRows.push(subRow);
+  }});
+  /* Y の昇順でソート */
+  finalRows.sort(function(a,b) {{
+    var ya = 0, yb = 0;
+    a.forEach(function(id){{ ya += pos[id].y; }});
+    b.forEach(function(id){{ yb += pos[id].y; }});
+    return ya/a.length - yb/b.length;
+  }});
+
+  /* ── Phase 4: 縦方向リフロー（レベル単位、非対称エクステント） ── */
+  var MIN_V_GAP = 40;
+  var rd = finalRows.map(function(row) {{
+    var cy = 0;
+    row.forEach(function(id){{ cy += pos[id].y; }});
+    cy /= row.length;
+    var mxA = 0, mxB = 0;
+    row.forEach(function(id) {{
+      var b = bb[id];
+      if (b) {{
+        mxA = Math.max(mxA, pos[id].y - b.top);
+        mxB = Math.max(mxB, b.bottom - pos[id].y);
+      }}
+    }});
+    return {{row:row, cy:cy, above:Math.max(mxA,20), below:Math.max(mxB,20)}};
+  }});
+
+  var newCY = [rd[0].cy];
+  for (var r = 1; r < rd.length; r++) {{
+    var needed = newCY[r-1] + rd[r-1].below + MIN_V_GAP + rd[r].above;
+    newCY.push(Math.max(needed, rd[r].cy));
+  }}
+
+  /* ── Phase 5: 横方向リフロー（重なり部分のみ拡張） ──
+   * dagre の Brandes-Köpf と異なり、vis.js の初期 X 順序を尊重しつつ
+   * 実測幅に基づき重なりノード間のみギャップを確保する。
+   * 行全体の再センタリングは親子アラインメントを壊すため行わない。 */
+  var MIN_H_GAP = 20;
+  var xNew = {{}};
+  finalRows.forEach(function(row) {{
+    if (row.length < 2) return;
+    row.sort(function(a,b){{ return pos[a].x - pos[b].x; }});
+    /* 左→右に走査し、重なりがあれば右側を押し出す */
+    var shifts = new Array(row.length);
+    shifts[0] = 0;
+    for (var j = 1; j < row.length; j++) {{
+      var prevId = row[j-1], currId = row[j];
+      var prevRight = (bb[prevId] ? bb[prevId].right : pos[prevId].x + 80) + shifts[j-1];
+      var currLeft = bb[currId] ? bb[currId].left : pos[currId].x - 80;
+      var overlap = prevRight + MIN_H_GAP - currLeft;
+      shifts[j] = (overlap > 0) ? shifts[j-1] + overlap : shifts[j-1];
+    }}
+    /* 総シフト量の半分を左方向に戻す（行の重心を保持） */
+    var totalShift = shifts[row.length-1];
+    if (totalShift > 0) {{
+      var halfShift = totalShift / 2;
+      for (var j = 0; j < row.length; j++) {{
+        var dx = shifts[j] - halfShift;
+        if (Math.abs(dx) > 1) xNew[row[j]] = pos[row[j]].x + dx;
+      }}
+    }}
+  }});
+
+  /* ── Phase 6: 座標適用 ── */
+  for (var r = 0; r < finalRows.length; r++) {{
+    var dy = newCY[r] - rd[r].cy;
+    finalRows[r].forEach(function(id) {{
+      var nx = (xNew[id] !== undefined) ? xNew[id] : pos[id].x;
+      var ny = pos[id].y + dy;
+      if (Math.abs(ny - pos[id].y) > 1 || Math.abs(nx - pos[id].x) > 1) {{
+        network.moveNode(id, nx, ny);
+      }}
+    }});
+  }}
+  setTimeout(function(){{ network.fit({{padding:50, animation:false}}); }}, 100);
+}});
 
 /* ── 全画面トグル ── */
 var fsBtn = document.getElementById('fs-btn');
