@@ -97,8 +97,19 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     PAD_TOP = 55
     PAD_BOTTOM = 65
 
+    # vis.js の形状のうち、ラベルを図形の「下」に描画するもの
+    # (box/ellipse/database は内部描画 → テキスト高さのみで済む)
+    _LABEL_BELOW_SHAPES = frozenset({
+        "hexagon", "diamond", "star", "triangle",
+        "triangleDown", "dot", "square",
+    })
+
     def _est_height(nid: str) -> float:
-        """ノードのラベル行数からバウンディングボックス高さをピクセル推定。"""
+        """ノードのラベル行数 + 形状タイプからバウンディングボックス高さをピクセル推定。
+
+        vis.js は hexagon/diamond/star 等の形状ではラベルを図形の「下」に描画する。
+        この場合、全体高さ = 図形本体(~55px) + テキスト高さ となる。
+        """
         node = topology.get(nid) if topology else None
         if not isinstance(node, dict):
             node = {}
@@ -111,7 +122,16 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
                 n_lines += 1
         n_lines += 1  # ステータスタグ行を保守的に考慮
         line_h = FONT_SZ + 5
-        return max(48, n_lines * line_h + 24)
+        text_h = n_lines * line_h + 24
+
+        # 形状チェック: hexagon/diamond/star 等はラベルが図形の下に描画される
+        node_type = node.get("type", "UNKNOWN")
+        visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
+        shape = visual.get("shape", "box")
+        if shape in _LABEL_BELOW_SHAPES:
+            text_h += 55  # 図形本体の高さ (~25px radius → ~50px + gap)
+
+        return max(48, text_h)
 
     # --- Pass 1: 各ゾーンの行高さ & 内部全高を計算 ---
     zone_info = {}
