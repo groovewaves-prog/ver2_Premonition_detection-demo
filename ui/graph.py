@@ -75,10 +75,11 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     """zones の rows/grid 定義 + トポロジーのラベル行数から固定座標を算出する。
 
     レイアウト規則:
-      1. 各ノードのラベル行数からピクセル高さを推定
-      2. ゾーン内の各行は、最大ノード高さ + edge_gap でY座標を累積計算
+      1. 各ノードの上方向・下方向エクステントを非対称に推定
+         - box/ellipse: (x,y) = ノード全体の中心 → 上下対称
+         - hexagon/diamond/star: (x,y) = 図形の中心、ラベルは下 → 非対称
+      2. ゾーン内の各行は、前行の下端 + edge_gap + 次行の上端 で累積計算
       3. ゾーングリッドの行オフセットは、同一行の最大ゾーン高さから算出
-      → テキスト高さを考慮した重なりのないレイアウト
     定義がなければ空辞書を返す（→ vis.js 自動レイアウトへフォールバック）。
     """
     has_layout = any(
@@ -98,17 +99,20 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     PAD_BOTTOM = 65
 
     # vis.js の形状のうち、ラベルを図形の「下」に描画するもの
-    # (box/ellipse/database は内部描画 → テキスト高さのみで済む)
+    # (box/ellipse/database は内部描画 → 上下対称)
     _LABEL_BELOW_SHAPES = frozenset({
         "hexagon", "diamond", "star", "triangle",
         "triangleDown", "dot", "square",
     })
+    _SHAPE_RADIUS = 30   # vis.js デフォルト size=25 + margin
+    _SHAPE_LABEL_GAP = 8  # 図形とラベル間の隙間
 
-    def _est_height(nid: str) -> float:
-        """ノードのラベル行数 + 形状タイプからバウンディングボックス高さをピクセル推定。
+    def _est_extents(nid: str):
+        """ノードの (x,y) からの上方向・下方向エクステントを推定。
 
-        vis.js は hexagon/diamond/star 等の形状ではラベルを図形の「下」に描画する。
-        この場合、全体高さ = 図形本体(~55px) + テキスト高さ となる。
+        vis.js は hexagon/diamond/star で (x,y) = 図形中心にラベルを下に描画。
+        box/ellipse は (x,y) = ノード全体の中心にラベルを内部描画。
+        Returns: (above, below) — y座標からの上方向・下方向の広がり(px)
         """
         node = topology.get(nid) if topology else None
         if not isinstance(node, dict):
@@ -124,16 +128,23 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
         line_h = FONT_SZ + 5
         text_h = n_lines * line_h + 24
 
-        # 形状チェック: hexagon/diamond/star 等はラベルが図形の下に描画される
         node_type = node.get("type", "UNKNOWN")
         visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
         shape = visual.get("shape", "box")
+
         if shape in _LABEL_BELOW_SHAPES:
-            text_h += 55  # 図形本体の高さ (~25px radius → ~50px + gap)
+            # (x,y) = 図形中心。上方向は図形半径、下方向は図形半径+gap+テキスト全高
+            above = _SHAPE_RADIUS
+            below = _SHAPE_RADIUS + _SHAPE_LABEL_GAP + text_h
+        else:
+            # (x,y) = ノード全体の中心。上下対称
+            h = max(48, text_h)
+            above = h / 2
+            below = h / 2
 
-        return max(48, text_h)
+        return above, below
 
-    # --- Pass 1: 各ゾーンの行高さ & 内部全高を計算 ---
+    # --- Pass 1: 各ゾーンの行エクステント & 内部全高を計算 ---
     zone_info = {}
     for zk, zv in zones.items():
         if zk.startswith("_") or not isinstance(zv, dict):
@@ -146,17 +157,22 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
         colspan = g[2] if len(g) > 2 else 1
         rowspan = g[3] if len(g) > 3 else 1
 
-        row_heights = []
+        row_aboves = []
+        row_belows = []
         for row in rows:
-            max_h = max((_est_height(nid) for nid in row), default=48)
-            row_heights.append(max_h)
+            extents = [_est_extents(nid) for nid in row]
+            row_aboves.append(max(a for a, _ in extents))
+            row_belows.append(max(b for _, b in extents))
 
-        internal_h = (sum(row_heights)
-                      + EDGE_GAP * max(0, len(row_heights) - 1))
+        # 内部全高 = 最初行の above + 各行間距離 + 最終行の below
+        internal_h = row_aboves[0] + row_belows[-1]
+        for ri in range(len(rows) - 1):
+            internal_h += row_belows[ri] + EDGE_GAP + row_aboves[ri + 1]
 
         zone_info[zk] = {
             "gc": gc, "gr": gr, "colspan": colspan, "rowspan": rowspan,
-            "rows": rows, "row_heights": row_heights,
+            "rows": rows,
+            "row_aboves": row_aboves, "row_belows": row_belows,
             "internal_h": internal_h,
             "cx": gc * COL_W + colspan * COL_W / 2,
         }
@@ -175,19 +191,19 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
         grid_row_y[r] = y_cursor
         y_cursor += grid_row_max[r] + ZONE_GAP
 
-    # --- Pass 3: 各ノードの (x, y) を算出 ---
+    # --- Pass 3: 各ノードの (x, y) を算出（非対称エクステント使用） ---
     positions = {}
     for zi in zone_info.values():
         zone_y0 = grid_row_y[zi["gr"]] + PAD_TOP
-        y = zone_y0 + zi["row_heights"][0] / 2
+        y = zone_y0 + zi["row_aboves"][0]
         for ri, row in enumerate(zi["rows"]):
             for ci, nid in enumerate(row):
                 x = zi["cx"] + (ci - (len(row) - 1) / 2) * H_GAP
                 positions[nid] = {"x": x, "y": y}
             if ri < len(zi["rows"]) - 1:
-                y += (zi["row_heights"][ri] / 2
+                y += (zi["row_belows"][ri]
                       + EDGE_GAP
-                      + zi["row_heights"][ri + 1] / 2)
+                      + zi["row_aboves"][ri + 1])
 
     return positions
 
