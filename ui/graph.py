@@ -586,10 +586,21 @@ var options = {{
 }};
 var network = new vis.Network(document.getElementById('mynetwork'), data, options);
 
-/* ── ゾーンボックス描画 (beforeDrawing) ── */
+/* ── ゾーンボックス描画 (beforeDrawing) ──
+ * 全拠点共通アルゴリズム:
+ *   1. 各ゾーンのメンバーノード getBoundingBox から矩形を算出
+ *   2. パディング適用後、隣接ゾーン間の重なりを検出・解消
+ *   3. 重なり解消は中間点スナップ（両者均等に譲り合い）
+ *   4. 調整済み矩形で描画
+ * ─────────────────────────────────────── */
 network.on('beforeDrawing', function(ctx) {{
   var ZONE_PAD = 25;
   var ZONE_PAD_TOP = 30;
+  var ZONE_MIN_GAP = 6;  /* ゾーン間の最小ギャップ */
+
+  /* ── 第1パス: 全ゾーン矩形を算出 ── */
+  var zoneRects = [];
+  var zoneKeys = [];
   for (var zk in zones) {{
     if (zk.charAt(0) === '_') continue;
     var z = zones[zk];
@@ -620,23 +631,76 @@ network.on('beforeDrawing', function(ctx) {{
       }}
     }}
     if (!found) continue;
-    minX -= ZONE_PAD; maxX += ZONE_PAD;
-    minY -= ZONE_PAD_TOP; maxY += ZONE_PAD;
-    /* 背景ボックス */
+    zoneRects.push({{
+      key: zk, zone: z,
+      x1: minX - ZONE_PAD, y1: minY - ZONE_PAD_TOP,
+      x2: maxX + ZONE_PAD, y2: maxY + ZONE_PAD
+    }});
+    zoneKeys.push(zk);
+  }}
+
+  /* ── 第2パス: ゾーン間の重なり解消 ──
+   * 水平・垂直それぞれで、重なりがあれば中間点にスナップ。
+   * Y範囲が重なるゾーン対のみ水平チェック（逆も同様）。 */
+  for (var i = 0; i < zoneRects.length; i++) {{
+    for (var j = i + 1; j < zoneRects.length; j++) {{
+      var a = zoneRects[i], b = zoneRects[j];
+      /* 垂直範囲が重なるか */
+      var yOverlap = a.y1 < b.y2 && b.y1 < a.y2;
+      /* 水平範囲が重なるか */
+      var xOverlap = a.x1 < b.x2 && b.x1 < a.x2;
+
+      if (yOverlap) {{
+        /* 水平方向の重なり解消 */
+        if (a.x2 > b.x1 && a.x1 < b.x1) {{
+          /* a が左、b が右 — a.x2 と b.x1 が重なっている */
+          var mid = (a.x2 + b.x1) / 2;
+          a.x2 = mid - ZONE_MIN_GAP / 2;
+          b.x1 = mid + ZONE_MIN_GAP / 2;
+        }} else if (b.x2 > a.x1 && b.x1 < a.x1) {{
+          /* b が左、a が右 */
+          var mid = (b.x2 + a.x1) / 2;
+          b.x2 = mid - ZONE_MIN_GAP / 2;
+          a.x1 = mid + ZONE_MIN_GAP / 2;
+        }}
+      }}
+
+      if (xOverlap) {{
+        /* 垂直方向の重なり解消 */
+        if (a.y2 > b.y1 && a.y1 < b.y1) {{
+          /* a が上、b が下 */
+          var mid = (a.y2 + b.y1) / 2;
+          a.y2 = mid - ZONE_MIN_GAP / 2;
+          b.y1 = mid + ZONE_MIN_GAP / 2;
+        }} else if (b.y2 > a.y1 && b.y1 < a.y1) {{
+          /* b が上、a が下 */
+          var mid = (b.y2 + a.y1) / 2;
+          b.y2 = mid - ZONE_MIN_GAP / 2;
+          a.y1 = mid + ZONE_MIN_GAP / 2;
+        }}
+      }}
+    }}
+  }}
+
+  /* ── 第3パス: 調整済み矩形で描画 ── */
+  for (var i = 0; i < zoneRects.length; i++) {{
+    var zr = zoneRects[i];
+    var z = zr.zone;
+    /* 背景ボックス（角丸） */
     ctx.fillStyle = z.color || 'rgba(200,200,200,0.15)';
     ctx.strokeStyle = z.border || '#ccc';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     var r = 8;
-    ctx.moveTo(minX + r, minY);
-    ctx.lineTo(maxX - r, minY);
-    ctx.arcTo(maxX, minY, maxX, minY + r, r);
-    ctx.lineTo(maxX, maxY - r);
-    ctx.arcTo(maxX, maxY, maxX - r, maxY, r);
-    ctx.lineTo(minX + r, maxY);
-    ctx.arcTo(minX, maxY, minX, maxY - r, r);
-    ctx.lineTo(minX, minY + r);
-    ctx.arcTo(minX, minY, minX + r, minY, r);
+    ctx.moveTo(zr.x1 + r, zr.y1);
+    ctx.lineTo(zr.x2 - r, zr.y1);
+    ctx.arcTo(zr.x2, zr.y1, zr.x2, zr.y1 + r, r);
+    ctx.lineTo(zr.x2, zr.y2 - r);
+    ctx.arcTo(zr.x2, zr.y2, zr.x2 - r, zr.y2, r);
+    ctx.lineTo(zr.x1 + r, zr.y2);
+    ctx.arcTo(zr.x1, zr.y2, zr.x1, zr.y2 - r, r);
+    ctx.lineTo(zr.x1, zr.y1 + r);
+    ctx.arcTo(zr.x1, zr.y1, zr.x1 + r, zr.y1, r);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
@@ -646,7 +710,7 @@ network.on('beforeDrawing', function(ctx) {{
       ctx.fillStyle = z.border || '#888';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(z.label, minX + 8, minY - 4);
+      ctx.fillText(z.label, zr.x1 + 8, zr.y1 - 4);
     }}
   }}
 }});
