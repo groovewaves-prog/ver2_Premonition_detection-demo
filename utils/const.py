@@ -29,8 +29,11 @@ SCENARIO_IMPACT_MAP = {
     "[WAN] メモリリーク": ImpactLevel.DEGRADED_MID,
     "[FW] メモリリーク": ImpactLevel.DEGRADED_MID,
     "[L2SW] メモリリーク": ImpactLevel.DEGRADED_MID,
-    "[WAN] 複合障害：電源＆FAN": ImpactLevel.DEGRADED_HIGH,
-    "[Complex] 同時多発：FW & AP": ImpactLevel.DEGRADED_HIGH,
+    # サーバー障害
+    "[SRV] CPU過負荷": ImpactLevel.DEGRADED_HIGH,
+    "[SRV] メモリ枯渇（OOM Kill）": ImpactLevel.CRITICAL,
+    "[SRV] ディスク容量逼迫": ImpactLevel.DEGRADED_MID,
+    "[SRV] ディスクI/O遅延": ImpactLevel.DEGRADED_HIGH,
 }
 
 # シナリオカテゴリ
@@ -60,8 +63,10 @@ SCENARIO_MAP = {
         "15. [L2SW] FAN故障",
         "16. [L2SW] メモリリーク"
     ],
-    "複合・その他": [
-        "17. [WAN] 複合障害：電源＆FAN",
-        "18. [Complex] 同時多発：FW & AP"
+    "サーバー": [
+        "17. [SRV] CPU過負荷",
+        "18. [SRV] メモリ枯渇（OOM Kill）",
+        "19. [SRV] ディスク容量逼迫",
+        "20. [SRV] ディスクI/O遅延"
     ]
 }

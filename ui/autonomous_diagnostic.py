@@ -178,50 +178,12 @@ _DIAGNOSTIC_COMMAND_MAP = {
     ],
 }
 
-# デバイスタイプ → デフォルト診断コマンド（キーワード不一致時のフォールバック）
+# デバイスタイプ → デフォルト診断コマンド（configs/device_types.json から取得）
 # Google SRE "Four Golden Signals" に基づき、デバイス種別ごとに
 # Latency/Traffic/Errors/Saturation の観点で標準コマンドを定義
-_DEVICE_TYPE_DIAGNOSTIC_MAP = {
-    "ROUTER": [
-        ("show ip route summary", "ルーティングテーブルの全体概要を確認"),
-        ("show ip interface brief", "全インターフェースのup/down状態を一覧確認"),
-        ("show logging", "直近のシステムログからエラーイベントを確認"),
-        ("show processes cpu", "CPU使用率を確認"),
-    ],
-    "FIREWALL": [
-        ("show interfaces", "インターフェースの状態とカウンタを確認"),
-        ("show high-availability", "HA状態（Active/Standby）を確認"),
-        ("show logging", "直近のシステムログからエラーイベントを確認"),
-        ("show processes cpu", "CPU使用率を確認"),
-    ],
-    "SWITCH": [
-        ("show mac address-table", "MACアドレステーブルの状態を確認"),
-        ("show spanning-tree", "STPトポロジーとポート状態を確認"),
-        ("show interfaces counters errors", "全ポートのエラーカウンタを確認"),
-        ("show vlan brief", "VLAN設定とポート割当を確認"),
-    ],
-    "ACCESS_POINT": [
-        ("show ip interface brief", "管理インターフェースの状態を確認"),
-        ("show logging", "直近のシステムログを確認"),
-        ("ping 8.8.8.8 repeat 5", "上位ネットワークへの疎通を確認"),
-    ],
-    "SERVER": [
-        ("uptime", "サーバ稼働時間とロードアベレージを確認"),
-        ("top -bn1 | head -20", "CPU・メモリ使用率とプロセス状況を確認"),
-        ("df -h", "ディスク使用率を確認"),
-        ("dmesg -T | tail -20", "直近のカーネルメッセージからハードウェア障害を確認"),
-    ],
-    "CLOUD_GATEWAY": [
-        ("aws directconnect describe-connections", "Direct Connect 接続状態を確認"),
-        ("aws ec2 describe-transit-gateway-attachments", "Transit Gateway アタッチメント状態を確認"),
-        ("aws cloudwatch get-metric-statistics --namespace AWS/DX", "DX リンクメトリクスを確認"),
-    ],
-    "CLOUD_RESOURCE": [
-        ("aws elbv2 describe-target-health", "ターゲットグループのヘルスチェック状態を確認"),
-        ("aws rds describe-db-instances", "RDS インスタンスの状態を確認"),
-        ("aws cloudwatch get-metric-statistics", "CloudWatch メトリクスを確認"),
-    ],
-}
+from configs.device_registry import get_all_diagnostics as _get_all_diagnostics, get_diagnostics as _get_diagnostics
+
+_DEVICE_TYPE_DIAGNOSTIC_MAP = _get_all_diagnostics()
 
 
 def plan_diagnostic_commands(

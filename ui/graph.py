@@ -7,18 +7,68 @@ from alarm_generator import NodeColor, Alarm
 from typing import List, Dict, Any, Tuple
 
 
-# デバイスタイプ別のデフォルト形状・色定義
+# デバイスタイプ別のデフォルト形状・色定義（configs/device_types.json から取得）
 # アラーム状態（赤/黄/アンバー等）はこれを上書きする
-_DEVICE_TYPE_VISUALS = {
-    "ROUTER":         {"shape": "ellipse",  "bg": "#e8f5e9", "border": "#6B9E72", "icon": "\U0001F310"},
-    "FIREWALL":       {"shape": "hexagon",  "bg": "#e8f5e9", "border": "#6B9E72", "icon": "\U0001F6E1"},
-    "SWITCH":         {"shape": "box",      "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
-    "ACCESS_POINT":   {"shape": "triangle", "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
-    "SERVER":         {"shape": "database", "bg": "#e3f2fd", "border": "#5B8DB8", "icon": "\U0001F5A5"},
-    "CLOUD_GATEWAY":  {"shape": "diamond",  "bg": "#ede7f6", "border": "#7E57C2", "icon": "\u2601"},
-    "CLOUD_RESOURCE": {"shape": "star",     "bg": "#ede7f6", "border": "#7E57C2", "icon": "\u2601"},
-    "_default":       {"shape": "box",      "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
-}
+from configs.device_registry import get_all_visuals as _get_all_visuals, get_visual as _get_visual
+
+_DEVICE_TYPE_VISUALS = _get_all_visuals()
+
+
+_ZONE_AUTO_PALETTE = [
+    {"color": "rgba(200,230,201,0.18)", "border": "#a5d6a7"},
+    {"color": "rgba(187,222,251,0.18)", "border": "#90caf9"},
+    {"color": "rgba(255,224,178,0.18)", "border": "#ffcc80"},
+    {"color": "rgba(225,190,231,0.18)", "border": "#ce93d8"},
+    {"color": "rgba(255,205,210,0.18)", "border": "#ef9a9a"},
+    {"color": "rgba(178,235,242,0.18)", "border": "#80deea"},
+    {"color": "rgba(237,231,246,0.22)", "border": "#b39ddb"},
+    {"color": "rgba(220,237,200,0.18)", "border": "#aed581"},
+]
+
+
+def _load_zones_for_site(topology: dict) -> dict:
+    """現在のサイトのトポロジーJSONから _zones を読み込む。
+    _zones が未定義の場合は metadata.location からゾーンを自動生成する。
+    """
+    from pathlib import Path
+    site_id = st.session_state.get("active_site", "A")
+    topo_path = Path(__file__).parent.parent / "topologies" / f"topology_{site_id.lower()}.json"
+    if not topo_path.exists():
+        return {}
+    try:
+        import json as _json
+        with open(topo_path, 'r', encoding='utf-8') as f:
+            raw = _json.load(f)
+    except Exception:
+        return {}
+
+    # 明示的 _zones 定義があればそれを使用
+    if "_zones" in raw:
+        return raw["_zones"]
+
+    # metadata.location からゾーンを自動生成
+    location_groups: dict = {}
+    for node_id, node_data in topology.items():
+        if not isinstance(node_data, dict):
+            continue
+        metadata = node_data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            continue
+        loc = metadata.get("location")
+        if loc:
+            location_groups.setdefault(loc, []).append(node_id)
+
+    zones = {}
+    for i, (loc, node_ids) in enumerate(location_groups.items()):
+        palette = _ZONE_AUTO_PALETTE[i % len(_ZONE_AUTO_PALETTE)]
+        zone_key = f"auto_{i}"
+        zones[zone_key] = {
+            "label": loc,
+            "color": palette["color"],
+            "border": palette["border"],
+            "nodes": node_ids,
+        }
+    return zones
 
 
 def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results: List[dict]):
@@ -41,7 +91,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _analysis_sig = tuple(sorted((r.get("id", ""), r.get("status", ""), r.get("prob", 0)) for r in analysis_results))
     _maint_sig = tuple(sorted(st.session_state.get("maint_devices", {}).get(
         st.session_state.get("active_site", ""), set())))
-    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology), _maint_sig))
+    _zone_sig = tuple(sorted(st.session_state.get("active_site", "A")))
+    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology), _maint_sig, _zone_sig))
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
         # キャッシュヒット: HTML描画のみ（凡例はHTML内に含まれる）
@@ -102,7 +153,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                  else getattr(metadata, 'role', None))
 
         # デフォルト（正常）— デバイスタイプ別の形状・色
-        _type_visual = _DEVICE_TYPE_VISUALS.get(node_type, _DEVICE_TYPE_VISUALS["_default"])
+        _type_visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
         bg_color = _type_visual["bg"]
         border_color = _type_visual["border"]
         border_width = 3
@@ -301,9 +352,13 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         _level_sep, _node_sp, _tree_sp = 130, 180, 180
         _canvas_h = 700
 
+    # --- ゾーン定義の読み込み ---
+    zones = _load_zones_for_site(topology)
+
     # --- vis.js HTML (凡例はキャンバス内にオーバーレイ表示) ---
     nodes_json = json.dumps(nodes, ensure_ascii=False)
     edges_json = json.dumps(edges, ensure_ascii=False)
+    zones_json = json.dumps(zones, ensure_ascii=False)
     legend_html = _build_legend_html(used_states)
 
     html = f"""
@@ -325,16 +380,30 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     vertical-align:middle; margin-right:5px;
   }}
   .lg-item {{ margin-right:14px; white-space:nowrap; }}
+  #fs-btn {{
+    position:absolute; top:8px; right:8px; z-index:20;
+    background:rgba(255,255,255,0.92); border:1px solid #ccc;
+    border-radius:6px; padding:6px 12px;
+    font:13px/1 Arial,sans-serif; color:#444; cursor:pointer;
+    transition:background 0.2s;
+  }}
+  #fs-btn:hover {{ background:#e3f2fd; border-color:#90caf9; }}
+  :fullscreen #topo-wrap,
+  :-webkit-full-screen #topo-wrap {{
+    width:100vw; height:100vh; background:#fff;
+  }}
 </style>
 </head>
 <body>
 <div id="topo-wrap">
+  <button id="fs-btn" title="全画面表示 / 戻る">&#x26F6; 全画面</button>
   <div id="mynetwork"></div>
   <div id="legend-bar">{legend_html}</div>
 </div>
 <script>
 var nodes = new vis.DataSet({nodes_json});
 var edges = new vis.DataSet({edges_json});
+var zones = {zones_json};
 var data = {{ nodes: nodes, edges: edges }};
 var options = {{
     layout: {{
@@ -364,11 +433,76 @@ var options = {{
         shapeProperties: {{ borderRadius: 8 }}
     }},
     edges: {{
-        smooth: {{ type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 }}
+        smooth: false
     }}
 }};
 var network = new vis.Network(document.getElementById('mynetwork'), data, options);
+
+/* ── ゾーンボックス描画 (beforeDrawing) ── */
+network.on('beforeDrawing', function(ctx) {{
+  var positions = network.getPositions();
+  var PAD_X = 60, PAD_TOP = 40, PAD_BOTTOM = 30;
+  for (var zk in zones) {{
+    var z = zones[zk];
+    var memberNodes = z.nodes || [];
+    var xs = [], ys = [];
+    for (var i = 0; i < memberNodes.length; i++) {{
+      var p = positions[memberNodes[i]];
+      if (p) {{ xs.push(p.x); ys.push(p.y); }}
+    }}
+    if (xs.length === 0) continue;
+    var minX = Math.min.apply(null, xs) - PAD_X;
+    var maxX = Math.max.apply(null, xs) + PAD_X;
+    var minY = Math.min.apply(null, ys) - PAD_TOP;
+    var maxY = Math.max.apply(null, ys) + PAD_BOTTOM;
+    /* 背景ボックス */
+    ctx.fillStyle = z.color || 'rgba(200,200,200,0.15)';
+    ctx.strokeStyle = z.border || '#ccc';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    var r = 8;
+    ctx.moveTo(minX + r, minY);
+    ctx.lineTo(maxX - r, minY);
+    ctx.arcTo(maxX, minY, maxX, minY + r, r);
+    ctx.lineTo(maxX, maxY - r);
+    ctx.arcTo(maxX, maxY, maxX - r, maxY, r);
+    ctx.lineTo(minX + r, maxY);
+    ctx.arcTo(minX, maxY, minX, maxY - r, r);
+    ctx.lineTo(minX, minY + r);
+    ctx.arcTo(minX, minY, minX + r, minY, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    /* ゾーンラベル（ボックス上部） */
+    if (z.label) {{
+      ctx.font = '11px Arial, sans-serif';
+      ctx.fillStyle = z.border || '#888';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(z.label, minX + 8, minY - 4);
+    }}
+  }}
+}});
+
 network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation: false }}); }});
+
+/* ── 全画面トグル ── */
+var fsBtn = document.getElementById('fs-btn');
+fsBtn.addEventListener('click', function() {{
+  var wrap = document.documentElement;
+  if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
+    (wrap.requestFullscreen || wrap.webkitRequestFullscreen).call(wrap);
+  }} else {{
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }}
+}});
+function onFsChange() {{
+  var isFull = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  fsBtn.innerHTML = isFull ? '&#x2716; 戻る' : '&#x26F6; 全画面';
+  setTimeout(function() {{ network.fit({{ padding: 40, animation: true }}); }}, 200);
+}}
+document.addEventListener('fullscreenchange', onFsChange);
+document.addEventListener('webkitfullscreenchange', onFsChange);
 </script></body></html>
 """
     # ★ キャッシュに保存（次回rerunで再利用）
