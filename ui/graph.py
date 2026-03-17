@@ -106,12 +106,14 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     })
     _SHAPE_RADIUS = 30   # vis.js デフォルト size=25 + margin
     _SHAPE_LABEL_GAP = 8  # 図形とラベル間の隙間
+    _VIS_MARGIN = 8       # vis.js nodes.margin (top/bottom) — graph.py options で設定
 
     def _est_extents(nid: str):
         """ノードの (x,y) からの上方向・下方向エクステントを推定。
 
         vis.js は hexagon/diamond/star で (x,y) = 図形中心にラベルを下に描画。
         box/ellipse は (x,y) = ノード全体の中心にラベルを内部描画。
+        いずれもノード margin (8px top/bottom) が描画に加算されるため考慮する。
         Returns: (above, below) — y座標からの上方向・下方向の広がり(px)
         """
         node = topology.get(nid) if topology else None
@@ -134,11 +136,11 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
 
         if shape in _LABEL_BELOW_SHAPES:
             # (x,y) = 図形中心。上方向は図形半径、下方向は図形半径+gap+テキスト全高
-            above = _SHAPE_RADIUS
-            below = _SHAPE_RADIUS + _SHAPE_LABEL_GAP + text_h
+            above = _SHAPE_RADIUS + _VIS_MARGIN
+            below = _SHAPE_RADIUS + _SHAPE_LABEL_GAP + text_h + _VIS_MARGIN
         else:
             # (x,y) = ノード全体の中心。上下対称
-            h = max(48, text_h)
+            h = max(48, text_h) + _VIS_MARGIN * 2
             above = h / 2
             below = h / 2
 
@@ -508,7 +510,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         _layout_js = "layout: { hierarchical: false }"
         _edge_smooth_js = ("smooth: { type: 'cubicBezier', "
                            "forceDirection: 'vertical', roundness: 0.15 }")
-        _pad_x, _pad_top, _pad_bottom = 85, 55, 65
+        _pad_x, _pad_top, _pad_bottom = 85, 55, 160
     else:
         _layout_js = (
             f"layout: {{ hierarchical: {{ enabled: true, direction: 'UD', "
