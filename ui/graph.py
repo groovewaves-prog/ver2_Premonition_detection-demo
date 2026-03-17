@@ -751,27 +751,42 @@ network.once('afterDrawing', function() {{
     return ya/a.length - yb/b.length;
   }});
 
-  /* ── Phase 4: 縦方向リフロー（レベル単位、非対称エクステント） ── */
+  /* ── Phase 4: 縦方向リフロー（レベル単位、非対称エクステント） ──
+   * 水平方向に重ならない行間（例: dc_core と aws_cloud）には
+   * 縦ギャップを強制しない。重なりのある直近の先行行を探索して
+   * そこからのギャップのみ確保する（ゾーン間の不要な引き延ばしを防止）。 */
   var MIN_V_GAP = 40;
   var rd = finalRows.map(function(row) {{
     var cy = 0;
     row.forEach(function(id){{ cy += pos[id].y; }});
     cy /= row.length;
     var mxA = 0, mxB = 0;
+    var xL = Infinity, xR = -Infinity;
     row.forEach(function(id) {{
       var b = bb[id];
       if (b) {{
         mxA = Math.max(mxA, pos[id].y - b.top);
         mxB = Math.max(mxB, b.bottom - pos[id].y);
+        if (b.left < xL) xL = b.left;
+        if (b.right > xR) xR = b.right;
       }}
     }});
-    return {{row:row, cy:cy, above:Math.max(mxA,20), below:Math.max(mxB,20)}};
+    return {{row:row, cy:cy, above:Math.max(mxA,20), below:Math.max(mxB,20), xL:xL, xR:xR}};
   }});
 
   var newCY = [rd[0].cy];
   for (var r = 1; r < rd.length; r++) {{
-    var needed = newCY[r-1] + rd[r-1].below + MIN_V_GAP + rd[r].above;
-    newCY.push(Math.max(needed, rd[r].cy));
+    /* 水平方向に重なりのある直近の先行行を探索 */
+    var bestNeeded = rd[r].cy;
+    for (var p = r - 1; p >= 0; p--) {{
+      /* X範囲が重なるか判定（20pxマージン） */
+      if (rd[p].xR + 20 > rd[r].xL && rd[r].xR + 20 > rd[p].xL) {{
+        var needed = newCY[p] + rd[p].below + MIN_V_GAP + rd[r].above;
+        bestNeeded = Math.max(bestNeeded, needed);
+        break;
+      }}
+    }}
+    newCY.push(bestNeeded);
   }}
 
   /* ── Phase 5: 横方向リフロー（重なり部分のみ拡張） ──
