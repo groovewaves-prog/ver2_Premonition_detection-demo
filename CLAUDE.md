@@ -65,6 +65,114 @@ streamlit run app.py
 - **右メイン画面（監視・運用タスク領域）**: 「今起きている事象の分析」と「それに対する運用者のアクション」を配置。実運用におけるタスクフローはすべて右側メイン画面内で完結させる
   - 例: インシデントのプレビュー（What-If操作）、予兆ステータス履歴（Inbox）の処理（「対応」「静観」ボタン等）、AIエージェントとのチャット、自動復旧（Remediation）の実行ボタン
 
+## 将来の設計方針（Future Architecture Decisions）
+
+以下はまだ実装されていない将来のリファクタリング方針。
+要望時に別途設計ドキュメント（例: `docs/design-*.md`）へ展開可能。
+
+---
+
+### FAD-1: デバイスタイプレジストリ — 未知機器への対応
+
+**背景:** 現在、デバイスタイプ（ROUTER, SERVER, CLOUD_GATEWAY 等）の表示定義は
+4ファイルにハードコードされており、新タイプ追加に毎回コード修正が必要。
+フィジカルAI（エッジ推論機器、自律ロボット等）のように CLI を持たず
+REST API / gRPC / MQTT で監視する機器は、現在の前提と根本的に合わない。
+
+**方針:** `configs/device_types.json` に全タイプ定義を集約し、コード修正ゼロで
+新デバイスタイプを追加可能にする。
+
+**移行対象（現在のハードコード箇所）:**
+
+| 現在のファイル | ハードコード内容 | 移行先キー |
+|---|---|---|
+| `ui/graph.py` → `_DEVICE_TYPE_VISUALS` | vis.js 形状・色 | `visual` |
+| `ui/autonomous_diagnostic.py` → `_DEVICE_TYPE_DIAGNOSTIC_MAP` | 診断コマンド | `diagnostics` |
+| `ui/components/traffic_monitor.py` → `_type_label_map` | ラベル短縮名 | `label` |
+| `digital_twin_pkg/engine.py` → if/elif chain | デバイスID推定 | `id_patterns` |
+
+**レジストリフォーマット案:**
+```json
+{
+  "EDGE_AI": {
+    "label": "Edge AI",
+    "shape": "star",
+    "bg": "#fff3e0",
+    "border": "#E65100",
+    "icon": "🤖",
+    "protocol": "rest_api",
+    "diagnostics": [
+      ["GET /health", "ヘルスチェック"],
+      ["GET /metrics/gpu", "GPU温度・利用率"]
+    ],
+    "id_patterns": ["EDGE_AI", "JETSON", "CORAL"]
+  },
+  "_unknown": {
+    "label": "?",
+    "shape": "box",
+    "bg": "#fafafa",
+    "diagnostics": []
+  }
+}
+```
+
+**フィジカルAI特有の考慮事項:**
+
+| 観点 | 従来のネットワーク機器 | フィジカルAI機器 |
+|---|---|---|
+| 診断プロトコル | CLI (`show` commands) | REST API / gRPC / MQTT |
+| 主要メトリクス | 帯域利用率 | GPU温度、推論レイテンシ、モデル精度 |
+| 障害モード | リンクダウン、パケットロス | モデルドリフト、GPU OOM、推論タイムアウト |
+| トポロジー | 親子階層 | メッシュ / エッジクラスタの可能性 |
+
+**対応フロー（実装時）:**
+1. `configs/device_types.json` を作成
+2. 各ハードコード箇所をレジストリ参照に置換
+3. 未登録タイプは `_unknown` にフォールバック（描画は崩れない）
+
+---
+
+### FAD-2: トポロジーマップのゾーン表示 — エリア別グルーピング
+
+**背景:** C拠点（18ノード）のようにサーバ・クラウドを含む大規模トポロジーでは、
+ノードがどの物理エリア（データセンター、ラック列、クラウドリージョン等）に
+属するかを視覚的に把握する必要がある。
+
+**方針:** トポロジーJSONに `_zones` メタデータを定義し、vis.js の
+`beforeDrawing` イベントで半透明の背景ボックスを描画する。
+
+**準備済み（実装途中）:**
+- `topologies/topology_c.json` に `_zones` 定義を追加済み
+- `registry.py` で `_` 始まりキーをスキップするガード追加済み
+- `ui/graph.py` に `_load_zones_for_site()` ヘルパー追加済み
+
+**残作業:**
+- vis.js の `beforeDrawing` コールバックでゾーンボックスを描画
+- エッジを直線化（`smooth: false`）し、視認性向上
+- ゾーンラベルをボックス上部に表示
+
+**`_zones` フォーマット（topology JSON 内）:**
+```json
+{
+  "_zones": {
+    "dc_core": {
+      "label": "DC Core (Network Infrastructure)",
+      "color": "rgba(200,230,201,0.18)",
+      "border": "#a5d6a7",
+      "nodes": ["DC_ROUTER_C01", "FW_C01_PRIMARY", ...]
+    },
+    "aws_cloud": {
+      "label": "AWS Cloud (ap-northeast-1)",
+      "color": "rgba(237,231,246,0.22)",
+      "border": "#b39ddb",
+      "nodes": ["AWS_DX_C01", "AWS_TGW_C01", ...]
+    }
+  }
+}
+```
+
+---
+
 ## Session Handover Rule
 セッション終了時（ユーザーが作業完了を伝えた時、またはpush完了時）に、
 HANDOVER.md を以下のフォーマットで作成・更新し、コミットすること。

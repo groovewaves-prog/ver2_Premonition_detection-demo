@@ -210,6 +210,8 @@ class SiteRegistry:
                     raw_data = json.load(f)
                 
                 for node_id, node_data in raw_data.items():
+                    if node_id.startswith('_'):
+                        continue
                     topology[node_id] = NetworkNode(
                         id=node_id,
                         layer=node_data.get("layer", 99),
@@ -287,6 +289,8 @@ def load_topology(topology_path) -> Dict[str, NetworkNode]:
                     raw_data = json.load(f)
                 topology = {}
                 for node_id, node_data in raw_data.items():
+                    if node_id.startswith('_'):
+                        continue
                     topology[node_id] = NetworkNode(
                         id=node_id,
                         layer=node_data.get("layer", 99),

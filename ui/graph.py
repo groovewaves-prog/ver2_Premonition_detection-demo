@@ -21,6 +21,23 @@ _DEVICE_TYPE_VISUALS = {
 }
 
 
+def _load_zones_for_site() -> dict:
+    """現在のサイトのトポロジーJSONから _zones 定義を読み込む。"""
+    import os
+    from pathlib import Path
+    site_id = st.session_state.get("active_site", "A")
+    topo_path = Path(__file__).parent.parent / "topologies" / f"topology_{site_id.lower()}.json"
+    if topo_path.exists():
+        try:
+            import json as _json
+            with open(topo_path, 'r', encoding='utf-8') as f:
+                raw = _json.load(f)
+            return raw.get("_zones", {})
+        except Exception:
+            pass
+    return {}
+
+
 def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results: List[dict]):
     """
     vis.js でインタラクティブなトポロジーグラフを描画し、
