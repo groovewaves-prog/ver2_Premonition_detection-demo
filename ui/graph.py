@@ -510,7 +510,6 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         _layout_js = "layout: { hierarchical: false }"
         _edge_smooth_js = ("smooth: { type: 'cubicBezier', "
                            "forceDirection: 'vertical', roundness: 0.15 }")
-        _pad_x, _pad_top, _pad_bottom = 85, 55, 160
     else:
         _layout_js = (
             f"layout: {{ hierarchical: {{ enabled: true, direction: 'UD', "
@@ -520,7 +519,6 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             f"parentCentralization: true }} }}"
         )
         _edge_smooth_js = "smooth: false"
-        _pad_x, _pad_top, _pad_bottom = 60, 40, 30
 
     # --- vis.js HTML (凡例はキャンバス内にオーバーレイ表示) ---
     nodes_json = json.dumps(nodes, ensure_ascii=False)
@@ -595,22 +593,40 @@ var network = new vis.Network(document.getElementById('mynetwork'), data, option
 
 /* ── ゾーンボックス描画 (beforeDrawing) ── */
 network.on('beforeDrawing', function(ctx) {{
-  var positions = network.getPositions();
-  var PAD_X = {_pad_x}, PAD_TOP = {_pad_top}, PAD_BOTTOM = {_pad_bottom};
+  var ZONE_PAD = 25;
+  var ZONE_PAD_TOP = 30;
   for (var zk in zones) {{
     if (zk.charAt(0) === '_') continue;
     var z = zones[zk];
     var memberNodes = z.nodes || [];
-    var xs = [], ys = [];
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    var found = false;
     for (var i = 0; i < memberNodes.length; i++) {{
-      var p = positions[memberNodes[i]];
-      if (p) {{ xs.push(p.x); ys.push(p.y); }}
+      var nid = memberNodes[i];
+      try {{
+        var bb = network.getBoundingBox(nid);
+        if (bb) {{
+          if (bb.left < minX) minX = bb.left;
+          if (bb.right > maxX) maxX = bb.right;
+          if (bb.top < minY) minY = bb.top;
+          if (bb.bottom > maxY) maxY = bb.bottom;
+          found = true;
+        }}
+      }} catch(e) {{
+        var pp = network.getPositions([nid]);
+        if (pp[nid]) {{
+          var px = pp[nid].x, py = pp[nid].y;
+          if (px - 80 < minX) minX = px - 80;
+          if (px + 80 > maxX) maxX = px + 80;
+          if (py - 80 < minY) minY = py - 80;
+          if (py + 80 > maxY) maxY = py + 80;
+          found = true;
+        }}
+      }}
     }}
-    if (xs.length === 0) continue;
-    var minX = Math.min.apply(null, xs) - PAD_X;
-    var maxX = Math.max.apply(null, xs) + PAD_X;
-    var minY = Math.min.apply(null, ys) - PAD_TOP;
-    var maxY = Math.max.apply(null, ys) + PAD_BOTTOM;
+    if (!found) continue;
+    minX -= ZONE_PAD; maxX += ZONE_PAD;
+    minY -= ZONE_PAD_TOP; maxY += ZONE_PAD;
     /* 背景ボックス */
     ctx.fillStyle = z.color || 'rgba(200,200,200,0.15)';
     ctx.strokeStyle = z.border || '#ccc';
@@ -644,10 +660,10 @@ network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation
 
 /* ── 全画面トグル ── */
 var fsBtn = document.getElementById('fs-btn');
+var topoWrap = document.getElementById('topo-wrap');
 fsBtn.addEventListener('click', function() {{
-  var wrap = document.documentElement;
   if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
-    (wrap.requestFullscreen || wrap.webkitRequestFullscreen).call(wrap);
+    (topoWrap.requestFullscreen || topoWrap.webkitRequestFullscreen).call(topoWrap);
   }} else {{
     (document.exitFullscreen || document.webkitExitFullscreen).call(document);
   }}
@@ -655,7 +671,10 @@ fsBtn.addEventListener('click', function() {{
 function onFsChange() {{
   var isFull = !!(document.fullscreenElement || document.webkitFullscreenElement);
   fsBtn.innerHTML = isFull ? '&#x2716; 戻る' : '&#x26F6; 全画面';
-  setTimeout(function() {{ network.fit({{ padding: 40, animation: true }}); }}, 200);
+  setTimeout(function() {{
+    network.redraw();
+    network.fit({{ padding: 40, animation: true }});
+  }}, 300);
 }}
 document.addEventListener('fullscreenchange', onFsChange);
 document.addEventListener('webkitfullscreenchange', onFsChange);
