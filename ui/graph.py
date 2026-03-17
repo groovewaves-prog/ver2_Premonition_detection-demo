@@ -658,7 +658,104 @@ network.on('beforeDrawing', function(ctx) {{
   }}
 }});
 
-network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation: false }}); }});
+/* ── Two-pass layout: Measure & Reflow ──
+ * Pass 1 は vis.js の初期描画（hierarchical or fixed）。
+ * Pass 2（以下）で getBoundingBox() から実測サイズを取得し、
+ * 重なりがあればノードを自動的にリフローする。
+ * Python 側のサイズ推定に依存しないため、形状変化にも自動対応。
+ */
+network.once('afterDrawing', function() {{
+  var allIds = nodes.getIds();
+  if (allIds.length === 0) {{ network.fit({{padding:50}}); return; }}
+  var pos = network.getPositions();
+  var bb = {{}};
+  allIds.forEach(function(id) {{
+    try {{ bb[id] = network.getBoundingBox(id); }} catch(e) {{}}
+  }});
+
+  /* ── 行グルーピング: Y座標が近いノードを同一行にまとめる ── */
+  var sorted = allIds.slice().sort(function(a,b){{ return pos[a].y - pos[b].y; }});
+  var rows = [[sorted[0]]];
+  for (var i = 1; i < sorted.length; i++) {{
+    if (Math.abs(pos[sorted[i]].y - pos[rows[rows.length-1][0]].y) < 35) {{
+      rows[rows.length-1].push(sorted[i]);
+    }} else {{
+      rows.push([sorted[i]]);
+    }}
+  }}
+
+  /* ── 各行の実測エクステント（above/below）を計算 ── */
+  var rd = rows.map(function(row) {{
+    var cy = 0;
+    row.forEach(function(id){{ cy += pos[id].y; }});
+    cy /= row.length;
+    var mxA = 0, mxB = 0;
+    row.forEach(function(id) {{
+      var b = bb[id];
+      if (b) {{
+        mxA = Math.max(mxA, pos[id].y - b.top);
+        mxB = Math.max(mxB, b.bottom - pos[id].y);
+      }}
+    }});
+    return {{row:row, cy:cy, above:mxA, below:mxB}};
+  }});
+
+  /* ── 縦方向リフロー: 行間に最低 MIN_V_GAP を確保 ── */
+  var MIN_V_GAP = 40;
+  var newCY = [rd[0].cy];
+  for (var r = 1; r < rd.length; r++) {{
+    var needed = newCY[r-1] + rd[r-1].below + MIN_V_GAP + rd[r].above;
+    newCY.push(Math.max(needed, rd[r].cy));
+  }}
+
+  /* ── 横方向リフロー: 同一行内の重なりを解消 ── */
+  var MIN_H_GAP = 25;
+  var xNew = {{}};
+  rows.forEach(function(row) {{
+    if (row.length < 2) return;
+    row.sort(function(a,b){{ return pos[a].x - pos[b].x; }});
+    /* 重なり検出 */
+    var hasOverlap = false;
+    for (var j = 1; j < row.length; j++) {{
+      var pR = bb[row[j-1]] ? bb[row[j-1]].right : pos[row[j-1]].x + 80;
+      var cL = bb[row[j]] ? bb[row[j]].left : pos[row[j]].x - 80;
+      if (pR + MIN_H_GAP > cL) {{ hasOverlap = true; break; }}
+    }}
+    if (!hasOverlap) return;
+    /* 各ノードの描画幅を実測 */
+    var widths = row.map(function(id) {{
+      var b = bb[id];
+      return b ? (b.right - b.left) : 160;
+    }});
+    var totalW = 0;
+    widths.forEach(function(w){{ totalW += w; }});
+    totalW += MIN_H_GAP * (row.length - 1);
+    /* 行中心を保持したまま均等再配置 */
+    var cenX = 0;
+    row.forEach(function(id){{ cenX += pos[id].x; }});
+    cenX /= row.length;
+    var x = cenX - totalW / 2;
+    row.forEach(function(id, idx) {{
+      xNew[id] = x + widths[idx] / 2;
+      x += widths[idx] + MIN_H_GAP;
+    }});
+  }});
+
+  /* ── 座標適用 ── */
+  var moved = false;
+  for (var r = 0; r < rows.length; r++) {{
+    var dy = newCY[r] - rd[r].cy;
+    rows[r].forEach(function(id) {{
+      var nx = (xNew[id] !== undefined) ? xNew[id] : pos[id].x;
+      var ny = pos[id].y + dy;
+      if (Math.abs(ny - pos[id].y) > 1 || Math.abs(nx - pos[id].x) > 1) {{
+        moved = true;
+        network.moveNode(id, nx, ny);
+      }}
+    }});
+  }}
+  setTimeout(function(){{ network.fit({{padding:50, animation:false}}); }}, 50);
+}});
 
 /* ── 全画面トグル ── */
 var fsBtn = document.getElementById('fs-btn');
