@@ -783,20 +783,19 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         topology=topology,
     )
 
-    # 4. 2カラムレイアウト
-    col_map, col_chat = st.columns([1.2, 1])
+    # 4. Network Topology — 画面横幅いっぱいに表示
+    render_topology_panel(
+        topology, alarms, analysis_results,
+        selected_incident_candidate, target_device_id,
+        dt_engine, engine, scenario, api_key,
+        symptom_devices=symptom_devices,
+    )
 
-    # 左カラム: トポロジー + 影響伝搬 + AI学習ルール
-    with col_map:
-        render_topology_panel(
-            topology, alarms, analysis_results,
-            selected_incident_candidate, target_device_id,
-            dt_engine, engine, scenario, api_key,
-            symptom_devices=symptom_devices,
-        )
+    # 5. 運用パネル — 2カラムレイアウト
+    col_ops, col_inbox = st.columns([1.2, 1])
 
-    # 右カラム: 統合診断パイプライン + 自動復旧 + Chat
-    with col_chat:
+    # 左カラム: 診断パイプライン + 自動復旧 + Chat
+    with col_ops:
         # ★ 統合診断パイプライン: ②AI診断 → ③確認手順書 → ④予防措置プラン
         with render_tier_section(
             TIER_PHM_RUL, "診断パイプライン", icon="📋",
@@ -823,7 +822,6 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             topology, api_key,
         )
 
-        # =====================================================
-        # ★ 予兆ステータス履歴 (Inbox) パネル — 統合版
-        # =====================================================
+    # 右カラム: 予兆ステータス履歴 (Inbox)
+    with col_inbox:
         _render_inbox_panel(dt_engine)
