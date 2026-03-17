@@ -1,0 +1,466 @@
+{
+  "DC_ROUTER_C01": {
+    "layer": 1,
+    "type": "ROUTER",
+    "parent_id": null,
+    "redundancy_group": null,
+    "interfaces": [
+      {"name": "Te0/0/0", "bandwidth_mbps": 10000, "connected_to": "WAN_UPLINK", "link_type": "fiber"},
+      {"name": "Te0/0/1", "bandwidth_mbps": 10000, "connected_to": "FW_C01_PRIMARY", "link_type": "fiber"},
+      {"name": "Te0/0/2", "bandwidth_mbps": 10000, "connected_to": "FW_C01_SECONDARY", "link_type": "fiber"},
+      {"name": "Te0/1/0", "bandwidth_mbps": 10000, "connected_to": "AWS_DX_C01", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "redundancy_type": "PSU",
+      "vendor": "Cisco",
+      "os": "IOS-XR",
+      "model": "ASR 9001",
+      "hw_inventory": {
+        "psu_count": 2,
+        "fan_count": 4
+      },
+      "last_change": {
+        "timestamp": "2025-12-10 04:15",
+        "description": "BGP ピアリング設定追加（IX接続）",
+        "changed_by": "dc-ops",
+        "change_id": "CHG00301"
+      }
+    }
+  },
+  "FW_C01_PRIMARY": {
+    "layer": 2,
+    "type": "FIREWALL",
+    "parent_id": "DC_ROUTER_C01",
+    "redundancy_group": "FW_C_HA_GROUP",
+    "interfaces": [
+      {"name": "ethernet1/1", "bandwidth_mbps": 10000, "connected_to": "DC_ROUTER_C01", "link_type": "fiber"},
+      {"name": "ethernet1/2", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C01", "link_type": "fiber"},
+      {"name": "ethernet1/3", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C02", "link_type": "fiber"},
+      {"name": "ha1", "bandwidth_mbps": 10000, "connected_to": "FW_C01_SECONDARY", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "redundancy_type": "PSU",
+      "role": "Active",
+      "vendor": "Palo Alto Networks",
+      "os": "PAN-OS",
+      "model": "PA-5220",
+      "hw_inventory": {
+        "psu_count": 2
+      },
+      "last_change": {
+        "timestamp": "2026-01-08 03:00",
+        "description": "マイクロセグメンテーション ACL 適用",
+        "changed_by": "security-ops",
+        "change_id": "CHG00312"
+      }
+    }
+  },
+  "FW_C01_SECONDARY": {
+    "layer": 2,
+    "type": "FIREWALL",
+    "parent_id": "DC_ROUTER_C01",
+    "redundancy_group": "FW_C_HA_GROUP",
+    "interfaces": [
+      {"name": "ethernet1/1", "bandwidth_mbps": 10000, "connected_to": "DC_ROUTER_C01", "link_type": "fiber"},
+      {"name": "ethernet1/2", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C01", "link_type": "fiber"},
+      {"name": "ethernet1/3", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C02", "link_type": "fiber"},
+      {"name": "ha1", "bandwidth_mbps": 10000, "connected_to": "FW_C01_PRIMARY", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "redundancy_type": "PSU",
+      "role": "Standby",
+      "vendor": "Palo Alto Networks",
+      "os": "PAN-OS",
+      "model": "PA-5220",
+      "hw_inventory": {
+        "psu_count": 2
+      }
+    }
+  },
+  "SPINE_SW_C01": {
+    "layer": 3,
+    "type": "SWITCH",
+    "parent_id": "FW_C01_PRIMARY",
+    "redundancy_group": "SPINE_C_PAIR",
+    "interfaces": [
+      {"name": "Ethernet1/1", "bandwidth_mbps": 10000, "connected_to": "FW_C01_PRIMARY", "link_type": "fiber"},
+      {"name": "Ethernet1/2", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C01", "link_type": "fiber"},
+      {"name": "Ethernet1/3", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C02", "link_type": "fiber"},
+      {"name": "Ethernet1/4", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C03", "link_type": "fiber"},
+      {"name": "Ethernet49", "bandwidth_mbps": 40000, "connected_to": "SPINE_SW_C02", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "redundancy_type": "PSU",
+      "vendor": "Arista",
+      "os": "EOS",
+      "model": "7280SR3",
+      "hw_inventory": {
+        "psu_count": 2,
+        "fan_count": 5
+      },
+      "last_change": {
+        "timestamp": "2026-02-18 02:00",
+        "description": "EVPN/VXLAN ファブリック初期構築",
+        "changed_by": "dc-ops",
+        "change_id": "CHG00350"
+      }
+    }
+  },
+  "SPINE_SW_C02": {
+    "layer": 3,
+    "type": "SWITCH",
+    "parent_id": "FW_C01_PRIMARY",
+    "redundancy_group": "SPINE_C_PAIR",
+    "interfaces": [
+      {"name": "Ethernet1/1", "bandwidth_mbps": 10000, "connected_to": "FW_C01_PRIMARY", "link_type": "fiber"},
+      {"name": "Ethernet1/2", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C01", "link_type": "fiber"},
+      {"name": "Ethernet1/3", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C02", "link_type": "fiber"},
+      {"name": "Ethernet1/4", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C03", "link_type": "fiber"},
+      {"name": "Ethernet49", "bandwidth_mbps": 40000, "connected_to": "SPINE_SW_C01", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "redundancy_type": "PSU",
+      "vendor": "Arista",
+      "os": "EOS",
+      "model": "7280SR3",
+      "hw_inventory": {
+        "psu_count": 2,
+        "fan_count": 5
+      }
+    }
+  },
+  "LEAF_SW_C01": {
+    "layer": 4,
+    "type": "SWITCH",
+    "parent_id": "SPINE_SW_C01",
+    "redundancy_group": null,
+    "interfaces": [
+      {"name": "Ethernet1/1", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C01", "link_type": "fiber"},
+      {"name": "Ethernet1/2", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C02", "link_type": "fiber"},
+      {"name": "Ethernet2/1", "bandwidth_mbps": 10000, "connected_to": "SRV_WEB_01", "link_type": "fiber"},
+      {"name": "Ethernet2/2", "bandwidth_mbps": 10000, "connected_to": "SRV_WEB_02", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "redundancy_type": "PSU",
+      "location": "DC Rack Row-A",
+      "vendor": "Arista",
+      "os": "EOS",
+      "model": "7050SX3",
+      "hw_inventory": {
+        "psu_count": 2
+      }
+    }
+  },
+  "LEAF_SW_C02": {
+    "layer": 4,
+    "type": "SWITCH",
+    "parent_id": "SPINE_SW_C01",
+    "redundancy_group": null,
+    "interfaces": [
+      {"name": "Ethernet1/1", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C01", "link_type": "fiber"},
+      {"name": "Ethernet1/2", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C02", "link_type": "fiber"},
+      {"name": "Ethernet2/1", "bandwidth_mbps": 10000, "connected_to": "SRV_APP_01", "link_type": "fiber"},
+      {"name": "Ethernet2/2", "bandwidth_mbps": 10000, "connected_to": "SRV_APP_02", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "redundancy_type": "PSU",
+      "location": "DC Rack Row-B",
+      "vendor": "Arista",
+      "os": "EOS",
+      "model": "7050SX3",
+      "hw_inventory": {
+        "psu_count": 2
+      }
+    }
+  },
+  "LEAF_SW_C03": {
+    "layer": 4,
+    "type": "SWITCH",
+    "parent_id": "SPINE_SW_C01",
+    "redundancy_group": null,
+    "interfaces": [
+      {"name": "Ethernet1/1", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C01", "link_type": "fiber"},
+      {"name": "Ethernet1/2", "bandwidth_mbps": 10000, "connected_to": "SPINE_SW_C02", "link_type": "fiber"},
+      {"name": "Ethernet2/1", "bandwidth_mbps": 10000, "connected_to": "SRV_DB_01", "link_type": "fiber"},
+      {"name": "Ethernet2/2", "bandwidth_mbps": 10000, "connected_to": "SRV_DB_02", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "redundancy_type": "PSU",
+      "location": "DC Rack Row-C",
+      "vendor": "Arista",
+      "os": "EOS",
+      "model": "7050SX3",
+      "hw_inventory": {
+        "psu_count": 2
+      }
+    }
+  },
+  "SRV_WEB_01": {
+    "layer": 5,
+    "type": "SERVER",
+    "parent_id": "LEAF_SW_C01",
+    "redundancy_group": "WEB_CLUSTER",
+    "interfaces": [
+      {"name": "ens1f0", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C01", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "location": "DC Rack A-01",
+      "vendor": "Dell",
+      "os": "RHEL 9.3",
+      "model": "PowerEdge R660",
+      "role": "Web Frontend (Nginx)",
+      "hw_inventory": {
+        "psu_count": 2,
+        "cpu_sockets": 2,
+        "ram_gb": 128,
+        "disk_type": "NVMe SSD",
+        "disk_count": 2,
+        "disk_total_gb": 960
+      },
+      "services": ["nginx", "node-exporter", "filebeat"],
+      "last_change": {
+        "timestamp": "2026-03-01 22:00",
+        "description": "Nginx バージョンアップ (1.24→1.26)",
+        "changed_by": "app-ops",
+        "change_id": "CHG00402"
+      }
+    }
+  },
+  "SRV_WEB_02": {
+    "layer": 5,
+    "type": "SERVER",
+    "parent_id": "LEAF_SW_C01",
+    "redundancy_group": "WEB_CLUSTER",
+    "interfaces": [
+      {"name": "ens1f0", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C01", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "location": "DC Rack A-02",
+      "vendor": "Dell",
+      "os": "RHEL 9.3",
+      "model": "PowerEdge R660",
+      "role": "Web Frontend (Nginx)",
+      "hw_inventory": {
+        "psu_count": 2,
+        "cpu_sockets": 2,
+        "ram_gb": 128,
+        "disk_type": "NVMe SSD",
+        "disk_count": 2,
+        "disk_total_gb": 960
+      },
+      "services": ["nginx", "node-exporter", "filebeat"]
+    }
+  },
+  "SRV_APP_01": {
+    "layer": 5,
+    "type": "SERVER",
+    "parent_id": "LEAF_SW_C02",
+    "redundancy_group": "APP_CLUSTER",
+    "interfaces": [
+      {"name": "ens1f0", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C02", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "location": "DC Rack B-01",
+      "vendor": "HPE",
+      "os": "Ubuntu 22.04 LTS",
+      "model": "ProLiant DL380 Gen11",
+      "role": "Application Server (Spring Boot)",
+      "hw_inventory": {
+        "psu_count": 2,
+        "cpu_sockets": 2,
+        "ram_gb": 256,
+        "disk_type": "NVMe SSD",
+        "disk_count": 4,
+        "disk_total_gb": 3840
+      },
+      "services": ["java", "spring-boot", "node-exporter", "filebeat"],
+      "last_change": {
+        "timestamp": "2026-02-25 03:30",
+        "description": "JVM ヒープサイズ調整 (32G→48G)",
+        "changed_by": "app-ops",
+        "change_id": "CHG00398"
+      }
+    }
+  },
+  "SRV_APP_02": {
+    "layer": 5,
+    "type": "SERVER",
+    "parent_id": "LEAF_SW_C02",
+    "redundancy_group": "APP_CLUSTER",
+    "interfaces": [
+      {"name": "ens1f0", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C02", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "location": "DC Rack B-02",
+      "vendor": "HPE",
+      "os": "Ubuntu 22.04 LTS",
+      "model": "ProLiant DL380 Gen11",
+      "role": "Application Server (Spring Boot)",
+      "hw_inventory": {
+        "psu_count": 2,
+        "cpu_sockets": 2,
+        "ram_gb": 256,
+        "disk_type": "NVMe SSD",
+        "disk_count": 4,
+        "disk_total_gb": 3840
+      },
+      "services": ["java", "spring-boot", "node-exporter", "filebeat"]
+    }
+  },
+  "SRV_DB_01": {
+    "layer": 5,
+    "type": "SERVER",
+    "parent_id": "LEAF_SW_C03",
+    "redundancy_group": "DB_CLUSTER",
+    "interfaces": [
+      {"name": "ens1f0", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C03", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "location": "DC Rack C-01",
+      "vendor": "Dell",
+      "os": "RHEL 9.3",
+      "model": "PowerEdge R760",
+      "role": "Database Primary (PostgreSQL 16)",
+      "hw_inventory": {
+        "psu_count": 2,
+        "cpu_sockets": 2,
+        "ram_gb": 512,
+        "disk_type": "NVMe SSD",
+        "disk_count": 8,
+        "disk_total_gb": 15360
+      },
+      "services": ["postgresql", "patroni", "node-exporter", "pg-exporter"],
+      "last_change": {
+        "timestamp": "2026-03-10 01:00",
+        "description": "PostgreSQL 16.2 マイナーバージョンアップ",
+        "changed_by": "dba-ops",
+        "change_id": "CHG00415"
+      }
+    }
+  },
+  "SRV_DB_02": {
+    "layer": 5,
+    "type": "SERVER",
+    "parent_id": "LEAF_SW_C03",
+    "redundancy_group": "DB_CLUSTER",
+    "interfaces": [
+      {"name": "ens1f0", "bandwidth_mbps": 10000, "connected_to": "LEAF_SW_C03", "link_type": "fiber"}
+    ],
+    "metadata": {
+      "location": "DC Rack C-02",
+      "vendor": "Dell",
+      "os": "RHEL 9.3",
+      "model": "PowerEdge R760",
+      "role": "Database Replica (PostgreSQL 16)",
+      "hw_inventory": {
+        "psu_count": 2,
+        "cpu_sockets": 2,
+        "ram_gb": 512,
+        "disk_type": "NVMe SSD",
+        "disk_count": 8,
+        "disk_total_gb": 15360
+      },
+      "services": ["postgresql", "patroni", "node-exporter", "pg-exporter"]
+    }
+  },
+  "AWS_DX_C01": {
+    "layer": 2,
+    "type": "CLOUD_GATEWAY",
+    "parent_id": "DC_ROUTER_C01",
+    "redundancy_group": null,
+    "interfaces": [
+      {"name": "dxcon-01", "bandwidth_mbps": 10000, "connected_to": "DC_ROUTER_C01", "link_type": "fiber"},
+      {"name": "dxvif-01", "bandwidth_mbps": 10000, "connected_to": "AWS_TGW_C01", "link_type": "virtual"}
+    ],
+    "metadata": {
+      "vendor": "AWS",
+      "os": "Direct Connect",
+      "model": "DX Connection (10Gbps)",
+      "location": "ap-northeast-1 (Tokyo)",
+      "hw_inventory": {
+        "psu_count": 0
+      },
+      "last_change": {
+        "timestamp": "2025-11-20 10:00",
+        "description": "Direct Connect 10Gbps 専用線開通",
+        "changed_by": "cloud-ops",
+        "change_id": "CHG00290"
+      }
+    }
+  },
+  "AWS_TGW_C01": {
+    "layer": 3,
+    "type": "CLOUD_GATEWAY",
+    "parent_id": "AWS_DX_C01",
+    "redundancy_group": null,
+    "interfaces": [
+      {"name": "dx-attach", "bandwidth_mbps": 10000, "connected_to": "AWS_DX_C01", "link_type": "virtual"},
+      {"name": "vpc-attach-web", "bandwidth_mbps": 10000, "connected_to": "AWS_ALB_C01", "link_type": "virtual"},
+      {"name": "vpc-attach-data", "bandwidth_mbps": 10000, "connected_to": "AWS_RDS_C01", "link_type": "virtual"}
+    ],
+    "metadata": {
+      "vendor": "AWS",
+      "os": "Transit Gateway",
+      "model": "tgw-0c1a2b3d4e5f (ap-northeast-1)",
+      "location": "ap-northeast-1 (Tokyo)",
+      "hw_inventory": {
+        "psu_count": 0
+      }
+    }
+  },
+  "AWS_ALB_C01": {
+    "layer": 4,
+    "type": "CLOUD_RESOURCE",
+    "parent_id": "AWS_TGW_C01",
+    "redundancy_group": null,
+    "interfaces": [
+      {"name": "eni-alb", "bandwidth_mbps": 10000, "connected_to": "AWS_TGW_C01", "link_type": "virtual"}
+    ],
+    "metadata": {
+      "vendor": "AWS",
+      "os": "ALB (Application Load Balancer)",
+      "model": "alb-prod-web-01",
+      "role": "Cloud Web Frontend (ALB → ECS Fargate)",
+      "location": "ap-northeast-1a/1c (Multi-AZ)",
+      "services": ["ecs-fargate", "cloudwatch", "waf"],
+      "hw_inventory": {
+        "psu_count": 0
+      },
+      "last_change": {
+        "timestamp": "2026-03-05 14:00",
+        "description": "WAF ルール更新（Bot対策強化）",
+        "changed_by": "cloud-ops",
+        "change_id": "CHG00410"
+      }
+    }
+  },
+  "AWS_RDS_C01": {
+    "layer": 4,
+    "type": "CLOUD_RESOURCE",
+    "parent_id": "AWS_TGW_C01",
+    "redundancy_group": null,
+    "interfaces": [
+      {"name": "eni-rds", "bandwidth_mbps": 10000, "connected_to": "AWS_TGW_C01", "link_type": "virtual"}
+    ],
+    "metadata": {
+      "vendor": "AWS",
+      "os": "RDS (Aurora PostgreSQL 16)",
+      "model": "db.r6g.2xlarge (Multi-AZ)",
+      "role": "Cloud Database (Aurora PostgreSQL)",
+      "location": "ap-northeast-1a/1c (Multi-AZ)",
+      "services": ["aurora-postgresql", "cloudwatch", "performance-insights"],
+      "hw_inventory": {
+        "psu_count": 0,
+        "ram_gb": 64,
+        "disk_type": "Aurora Storage",
+        "disk_total_gb": 500
+      },
+      "last_change": {
+        "timestamp": "2026-02-28 02:00",
+        "description": "Aurora PostgreSQL エンジンバージョン更新",
+        "changed_by": "dba-ops",
+        "change_id": "CHG00400"
+      }
+    }
+  }
+}

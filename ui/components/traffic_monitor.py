@@ -685,6 +685,9 @@ def render_traffic_monitor(
                 "FIREWALL": "FW",
                 "SWITCH": "SW",
                 "ACCESS_POINT": "AP",
+                "SERVER": "Srv",
+                "CLOUD_GATEWAY": "Cloud GW",
+                "CLOUD_RESOURCE": "Cloud",
             }
             _type_parts = []
             for dtype, devs in sorted(_type_counts.items()):

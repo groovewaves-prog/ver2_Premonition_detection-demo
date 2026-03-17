@@ -205,6 +205,22 @@ _DEVICE_TYPE_DIAGNOSTIC_MAP = {
         ("show logging", "直近のシステムログを確認"),
         ("ping 8.8.8.8 repeat 5", "上位ネットワークへの疎通を確認"),
     ],
+    "SERVER": [
+        ("uptime", "サーバ稼働時間とロードアベレージを確認"),
+        ("top -bn1 | head -20", "CPU・メモリ使用率とプロセス状況を確認"),
+        ("df -h", "ディスク使用率を確認"),
+        ("dmesg -T | tail -20", "直近のカーネルメッセージからハードウェア障害を確認"),
+    ],
+    "CLOUD_GATEWAY": [
+        ("aws directconnect describe-connections", "Direct Connect 接続状態を確認"),
+        ("aws ec2 describe-transit-gateway-attachments", "Transit Gateway アタッチメント状態を確認"),
+        ("aws cloudwatch get-metric-statistics --namespace AWS/DX", "DX リンクメトリクスを確認"),
+    ],
+    "CLOUD_RESOURCE": [
+        ("aws elbv2 describe-target-health", "ターゲットグループのヘルスチェック状態を確認"),
+        ("aws rds describe-db-instances", "RDS インスタンスの状態を確認"),
+        ("aws cloudwatch get-metric-statistics", "CloudWatch メトリクスを確認"),
+    ],
 }
 
 
