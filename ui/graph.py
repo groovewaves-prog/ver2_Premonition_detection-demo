@@ -495,15 +495,17 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         _max_y = max(p["y"] for p in fixed_positions.values())
         _canvas_h = int(_max_y + 200)
     else:
+        # hexagon/triangle 等のラベル下置き形状を考慮した levelSeparation
+        # (hexagon below=155px + box above=62px → 最低217px 必要)
         if _n_nodes > 14:
-            _level_sep, _node_sp, _tree_sp = 100, 130, 130
-            _canvas_h = 820
+            _level_sep, _node_sp, _tree_sp = 220, 160, 160
+            _canvas_h = 1300
         elif _n_nodes > 10:
-            _level_sep, _node_sp, _tree_sp = 110, 150, 150
-            _canvas_h = 740
+            _level_sep, _node_sp, _tree_sp = 220, 170, 170
+            _canvas_h = 1200
         else:
-            _level_sep, _node_sp, _tree_sp = 130, 180, 180
-            _canvas_h = 700
+            _level_sep, _node_sp, _tree_sp = 220, 200, 200
+            _canvas_h = 1100
 
     # --- vis.js レイアウトオプション組み立て ---
     if _use_fixed:
@@ -553,8 +555,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     transition:background 0.2s;
   }}
   #fs-btn:hover {{ background:#e3f2fd; border-color:#90caf9; }}
-  :fullscreen #topo-wrap,
-  :-webkit-full-screen #topo-wrap {{
+  #topo-wrap:fullscreen,
+  #topo-wrap:-webkit-full-screen {{
     width:100vw; height:100vh; background:#fff;
   }}
 </style>
