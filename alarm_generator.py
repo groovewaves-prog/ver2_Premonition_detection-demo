@@ -141,40 +141,55 @@ def generate_alarms_for_scenario(topology: dict, scenario: str) -> List[Alarm]:
     alarms = []
     
     # =====================================================
-    # 複合シナリオ（先にチェック）
+    # サーバー障害シナリオ（先にチェック — [SRV] プレフィックス）
     # =====================================================
-    if "[Complex]" in scenario or "同時多発" in scenario:
-        # FW & AP 同時多発障害
-        fw_ids = _find_nodes_by_type(topology, "FIREWALL")
-        
-        # FW片系障害（根本原因1）- 片系なので配下影響なし
-        if fw_ids:
-            alarms.append(Alarm(fw_ids[0], "HA State: Degraded", "WARNING", is_root_cause=True))
-        
-        # L2SWサイレント障害（根本原因2）
-        switch_id = _find_node_by_type(topology, "SWITCH", layer=4)
-        if switch_id:
-            alarms.append(Alarm(switch_id, "Silent Failure Suspected", "WARNING", is_root_cause=True, is_silent_suspect=True))
-            
-            # このスイッチの直接配下のAPのみがConnection Lost
-            for node_id, node in topology.items():
-                pid = node.parent_id if hasattr(node, 'parent_id') else node.get('parent_id')
-                ntype = node.type if hasattr(node, 'type') else node.get('type', '')
-                if pid == switch_id and ntype == "ACCESS_POINT":
-                    alarms.append(Alarm(node_id, "Connection Lost", "WARNING", is_root_cause=False))
-        
-        return alarms
-    
-    # =====================================================
-    # WAN複合障害（電源＆FAN）- 冗長性低下、配下影響なし
-    # =====================================================
-    if "[WAN]" in scenario and "複合" in scenario:
-        router_id = _find_node_by_type(topology, "ROUTER")
-        if router_id:
-            alarms.extend([
-                Alarm(router_id, "Power Supply 1 Failed", "WARNING", is_root_cause=True),
-                Alarm(router_id, "Fan Fail", "WARNING", is_root_cause=True),
-            ])
+    if "[SRV]" in scenario:
+        server_ids = _find_nodes_by_type(topology, "SERVER")
+        if not server_ids:
+            return alarms
+
+        if "CPU過負荷" in scenario:
+            # CPU過負荷: 全APPサーバが影響、クラスタ内の1台が根本原因
+            app_servers = [s for s in server_ids if "APP" in s.upper()]
+            target = app_servers[0] if app_servers else server_ids[0]
+            alarms.append(Alarm(target, "CPU Usage Critical: 98% (load avg 48.2)", "CRITICAL", is_root_cause=True))
+            # 同一冗長グループの他サーバも高負荷（トラフィック流入）
+            rg = _get_redundancy_group(topology, target)
+            if rg:
+                for peer_id in _find_redundancy_group_members(topology, rg):
+                    if peer_id != target:
+                        alarms.append(Alarm(peer_id, "CPU Usage Warning: 85% (spillover traffic)", "WARNING", is_root_cause=False))
+
+        elif "メモリ枯渇" in scenario or "OOM" in scenario:
+            # OOM Kill: DBサーバでPostgreSQLがOOM Killされる
+            db_servers = [s for s in server_ids if "DB" in s.upper()]
+            target = db_servers[0] if db_servers else server_ids[0]
+            alarms.append(Alarm(target, "OOM Kill: postgresql (PID 4521) killed, Memory 99.2%", "CRITICAL", is_root_cause=True))
+            # DB接続に依存するAPPサーバも影響
+            app_servers = [s for s in server_ids if "APP" in s.upper()]
+            for app_id in app_servers:
+                alarms.append(Alarm(app_id, "Connection refused: postgresql:5432 (upstream down)", "WARNING", is_root_cause=False))
+            # Webサーバにもエラー波及
+            web_servers = [s for s in server_ids if "WEB" in s.upper()]
+            for web_id in web_servers:
+                alarms.append(Alarm(web_id, "HTTP 502 Bad Gateway rate: 45%", "WARNING", is_root_cause=False))
+
+        elif "ディスク容量" in scenario:
+            # ディスク逼迫: DBサーバのWALログ肥大化
+            db_servers = [s for s in server_ids if "DB" in s.upper()]
+            target = db_servers[0] if db_servers else server_ids[0]
+            alarms.append(Alarm(target, "Disk Usage Critical: /var/lib/postgresql 95% (WAL accumulation)", "WARNING", is_root_cause=True))
+
+        elif "ディスクI/O" in scenario or "I/O遅延" in scenario:
+            # Disk I/O遅延: DBサーバでNVMe SSDの書き込みレイテンシ急増
+            db_servers = [s for s in server_ids if "DB" in s.upper()]
+            target = db_servers[0] if db_servers else server_ids[0]
+            alarms.append(Alarm(target, "Disk I/O Latency Critical: write_await 250ms (NVMe degradation)", "CRITICAL", is_root_cause=True))
+            # クエリタイムアウトがAPPサーバに波及
+            app_servers = [s for s in server_ids if "APP" in s.upper()]
+            for app_id in app_servers:
+                alarms.append(Alarm(app_id, "Query Timeout: avg response 12.5s (normal: 50ms)", "WARNING", is_root_cause=False))
+
         return alarms
     
     # =====================================================

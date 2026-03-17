@@ -325,10 +325,23 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     vertical-align:middle; margin-right:5px;
   }}
   .lg-item {{ margin-right:14px; white-space:nowrap; }}
+  #fs-btn {{
+    position:absolute; top:8px; right:8px; z-index:20;
+    background:rgba(255,255,255,0.92); border:1px solid #ccc;
+    border-radius:6px; padding:6px 12px;
+    font:13px/1 Arial,sans-serif; color:#444; cursor:pointer;
+    transition:background 0.2s;
+  }}
+  #fs-btn:hover {{ background:#e3f2fd; border-color:#90caf9; }}
+  :fullscreen #topo-wrap,
+  :-webkit-full-screen #topo-wrap {{
+    width:100vw; height:100vh; background:#fff;
+  }}
 </style>
 </head>
 <body>
 <div id="topo-wrap">
+  <button id="fs-btn" title="全画面表示 / 戻る">&#x26F6; 全画面</button>
   <div id="mynetwork"></div>
   <div id="legend-bar">{legend_html}</div>
 </div>
@@ -369,6 +382,24 @@ var options = {{
 }};
 var network = new vis.Network(document.getElementById('mynetwork'), data, options);
 network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation: false }}); }});
+
+/* ── 全画面トグル ── */
+var fsBtn = document.getElementById('fs-btn');
+fsBtn.addEventListener('click', function() {{
+  var wrap = document.documentElement;
+  if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
+    (wrap.requestFullscreen || wrap.webkitRequestFullscreen).call(wrap);
+  }} else {{
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }}
+}});
+function onFsChange() {{
+  var isFull = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  fsBtn.innerHTML = isFull ? '&#x2716; 戻る' : '&#x26F6; 全画面';
+  setTimeout(function() {{ network.fit({{ padding: 40, animation: true }}); }}, 200);
+}}
+document.addEventListener('fullscreenchange', onFsChange);
+document.addEventListener('webkitfullscreenchange', onFsChange);
 </script></body></html>
 """
     # ★ キャッシュに保存（次回rerunで再利用）
