@@ -65,7 +65,7 @@
   "SERVER": {
     "label": "Srv",
     "visual": {
-      "shape": "database",
+      "shape": "box",
       "bg": "#e3f2fd",
       "border": "#5B8DB8",
       "icon": "\ud83d\udda5"

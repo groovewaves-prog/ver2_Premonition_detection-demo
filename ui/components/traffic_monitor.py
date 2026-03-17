@@ -709,6 +709,6 @@ def render_traffic_monitor(
             # デバイス一覧（折りたたみ）
             with st.expander(f"📡 配下デバイス一覧 ({total_devices}台)", expanded=False):
                 for dtype, devs in sorted(_type_counts.items()):
-                    _type_lbl = _type_label_map.get(dtype, dtype)
+                    _type_lbl = _get_dev_label(dtype)
                     dev_list = ", ".join(devs)
                     st.caption(f"**{_type_lbl}** ({len(devs)}台): {dev_list}")
