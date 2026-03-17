@@ -7,18 +7,11 @@ from alarm_generator import NodeColor, Alarm
 from typing import List, Dict, Any, Tuple
 
 
-# デバイスタイプ別のデフォルト形状・色定義
+# デバイスタイプ別のデフォルト形状・色定義（configs/device_types.json から取得）
 # アラーム状態（赤/黄/アンバー等）はこれを上書きする
-_DEVICE_TYPE_VISUALS = {
-    "ROUTER":         {"shape": "ellipse",  "bg": "#e8f5e9", "border": "#6B9E72", "icon": "\U0001F310"},
-    "FIREWALL":       {"shape": "hexagon",  "bg": "#e8f5e9", "border": "#6B9E72", "icon": "\U0001F6E1"},
-    "SWITCH":         {"shape": "box",      "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
-    "ACCESS_POINT":   {"shape": "triangle", "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
-    "SERVER":         {"shape": "database", "bg": "#e3f2fd", "border": "#5B8DB8", "icon": "\U0001F5A5"},
-    "CLOUD_GATEWAY":  {"shape": "diamond",  "bg": "#ede7f6", "border": "#7E57C2", "icon": "\u2601"},
-    "CLOUD_RESOURCE": {"shape": "star",     "bg": "#ede7f6", "border": "#7E57C2", "icon": "\u2601"},
-    "_default":       {"shape": "box",      "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
-}
+from configs.device_registry import get_all_visuals as _get_all_visuals, get_visual as _get_visual
+
+_DEVICE_TYPE_VISUALS = _get_all_visuals()
 
 
 _ZONE_AUTO_PALETTE = [
@@ -160,7 +153,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                  else getattr(metadata, 'role', None))
 
         # デフォルト（正常）— デバイスタイプ別の形状・色
-        _type_visual = _DEVICE_TYPE_VISUALS.get(node_type, _DEVICE_TYPE_VISUALS["_default"])
+        _type_visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
         bg_color = _type_visual["bg"]
         border_color = _type_visual["border"]
         border_width = 3

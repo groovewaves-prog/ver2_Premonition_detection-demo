@@ -680,18 +680,10 @@ def render_traffic_monitor(
                 impact_desc = "通常のトラフィック状態"
 
             # 種別サマリ文字列を生成  例: "FW×2, SW×3, AP×4"
-            _type_label_map = {
-                "ROUTER": "Router",
-                "FIREWALL": "FW",
-                "SWITCH": "SW",
-                "ACCESS_POINT": "AP",
-                "SERVER": "Srv",
-                "CLOUD_GATEWAY": "Cloud GW",
-                "CLOUD_RESOURCE": "Cloud",
-            }
+            from configs.device_registry import get_label as _get_dev_label
             _type_parts = []
             for dtype, devs in sorted(_type_counts.items()):
-                _type_lbl = _type_label_map.get(dtype, dtype)
+                _type_lbl = _get_dev_label(dtype)
                 _type_parts.append(f"{_type_lbl}×{len(devs)}")
             _type_summary = ", ".join(_type_parts)
 

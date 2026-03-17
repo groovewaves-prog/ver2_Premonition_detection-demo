@@ -585,19 +585,9 @@ class DigitalTwinEngine:
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel('gemma-3-12b-it')
             
-            # デバイスタイプの推定（一般化）
-            device_type = "Network Device"
-            _did_upper = device_id.upper()
-            if "ROUTER" in _did_upper:
-                device_type = "Router"
-            elif "SWITCH" in _did_upper or "SPINE" in _did_upper or "LEAF" in _did_upper:
-                device_type = "Switch"
-            elif "FIREWALL" in _did_upper or "FW_" in _did_upper:
-                device_type = "Firewall"
-            elif "SRV_" in _did_upper or "SERVER" in _did_upper:
-                device_type = "Server"
-            elif "AWS_" in _did_upper:
-                device_type = "Cloud Resource"
+            # デバイスタイプの推定（configs/device_types.json レジストリから）
+            from configs.device_registry import detect_device_type as _detect_device_type
+            device_type = _detect_device_type(device_id)
             
             # ★ プロンプトの生成（全アラームメッセージを分析させる）
             prompt = f"""あなたは20年以上の経験を持つネットワーク機器の障害対応エキスパートです。
