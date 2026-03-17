@@ -21,21 +21,61 @@ _DEVICE_TYPE_VISUALS = {
 }
 
 
-def _load_zones_for_site() -> dict:
-    """現在のサイトのトポロジーJSONから _zones 定義を読み込む。"""
-    import os
+_ZONE_AUTO_PALETTE = [
+    {"color": "rgba(200,230,201,0.18)", "border": "#a5d6a7"},
+    {"color": "rgba(187,222,251,0.18)", "border": "#90caf9"},
+    {"color": "rgba(255,224,178,0.18)", "border": "#ffcc80"},
+    {"color": "rgba(225,190,231,0.18)", "border": "#ce93d8"},
+    {"color": "rgba(255,205,210,0.18)", "border": "#ef9a9a"},
+    {"color": "rgba(178,235,242,0.18)", "border": "#80deea"},
+    {"color": "rgba(237,231,246,0.22)", "border": "#b39ddb"},
+    {"color": "rgba(220,237,200,0.18)", "border": "#aed581"},
+]
+
+
+def _load_zones_for_site(topology: dict) -> dict:
+    """現在のサイトのトポロジーJSONから _zones を読み込む。
+    _zones が未定義の場合は metadata.location からゾーンを自動生成する。
+    """
     from pathlib import Path
     site_id = st.session_state.get("active_site", "A")
     topo_path = Path(__file__).parent.parent / "topologies" / f"topology_{site_id.lower()}.json"
-    if topo_path.exists():
-        try:
-            import json as _json
-            with open(topo_path, 'r', encoding='utf-8') as f:
-                raw = _json.load(f)
-            return raw.get("_zones", {})
-        except Exception:
-            pass
-    return {}
+    if not topo_path.exists():
+        return {}
+    try:
+        import json as _json
+        with open(topo_path, 'r', encoding='utf-8') as f:
+            raw = _json.load(f)
+    except Exception:
+        return {}
+
+    # 明示的 _zones 定義があればそれを使用
+    if "_zones" in raw:
+        return raw["_zones"]
+
+    # metadata.location からゾーンを自動生成
+    location_groups: dict = {}
+    for node_id, node_data in topology.items():
+        if not isinstance(node_data, dict):
+            continue
+        metadata = node_data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            continue
+        loc = metadata.get("location")
+        if loc:
+            location_groups.setdefault(loc, []).append(node_id)
+
+    zones = {}
+    for i, (loc, node_ids) in enumerate(location_groups.items()):
+        palette = _ZONE_AUTO_PALETTE[i % len(_ZONE_AUTO_PALETTE)]
+        zone_key = f"auto_{i}"
+        zones[zone_key] = {
+            "label": loc,
+            "color": palette["color"],
+            "border": palette["border"],
+            "nodes": node_ids,
+        }
+    return zones
 
 
 def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results: List[dict]):
@@ -58,7 +98,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _analysis_sig = tuple(sorted((r.get("id", ""), r.get("status", ""), r.get("prob", 0)) for r in analysis_results))
     _maint_sig = tuple(sorted(st.session_state.get("maint_devices", {}).get(
         st.session_state.get("active_site", ""), set())))
-    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology), _maint_sig))
+    _zone_sig = tuple(sorted(st.session_state.get("active_site", "A")))
+    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology), _maint_sig, _zone_sig))
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
         # キャッシュヒット: HTML描画のみ（凡例はHTML内に含まれる）
@@ -318,9 +359,13 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         _level_sep, _node_sp, _tree_sp = 130, 180, 180
         _canvas_h = 700
 
+    # --- ゾーン定義の読み込み ---
+    zones = _load_zones_for_site(topology)
+
     # --- vis.js HTML (凡例はキャンバス内にオーバーレイ表示) ---
     nodes_json = json.dumps(nodes, ensure_ascii=False)
     edges_json = json.dumps(edges, ensure_ascii=False)
+    zones_json = json.dumps(zones, ensure_ascii=False)
     legend_html = _build_legend_html(used_states)
 
     html = f"""
@@ -365,6 +410,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 <script>
 var nodes = new vis.DataSet({nodes_json});
 var edges = new vis.DataSet({edges_json});
+var zones = {zones_json};
 var data = {{ nodes: nodes, edges: edges }};
 var options = {{
     layout: {{
@@ -394,10 +440,57 @@ var options = {{
         shapeProperties: {{ borderRadius: 8 }}
     }},
     edges: {{
-        smooth: {{ type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 }}
+        smooth: false
     }}
 }};
 var network = new vis.Network(document.getElementById('mynetwork'), data, options);
+
+/* ── ゾーンボックス描画 (beforeDrawing) ── */
+network.on('beforeDrawing', function(ctx) {{
+  var positions = network.getPositions();
+  var PAD_X = 60, PAD_TOP = 40, PAD_BOTTOM = 30;
+  for (var zk in zones) {{
+    var z = zones[zk];
+    var memberNodes = z.nodes || [];
+    var xs = [], ys = [];
+    for (var i = 0; i < memberNodes.length; i++) {{
+      var p = positions[memberNodes[i]];
+      if (p) {{ xs.push(p.x); ys.push(p.y); }}
+    }}
+    if (xs.length === 0) continue;
+    var minX = Math.min.apply(null, xs) - PAD_X;
+    var maxX = Math.max.apply(null, xs) + PAD_X;
+    var minY = Math.min.apply(null, ys) - PAD_TOP;
+    var maxY = Math.max.apply(null, ys) + PAD_BOTTOM;
+    /* 背景ボックス */
+    ctx.fillStyle = z.color || 'rgba(200,200,200,0.15)';
+    ctx.strokeStyle = z.border || '#ccc';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    var r = 8;
+    ctx.moveTo(minX + r, minY);
+    ctx.lineTo(maxX - r, minY);
+    ctx.arcTo(maxX, minY, maxX, minY + r, r);
+    ctx.lineTo(maxX, maxY - r);
+    ctx.arcTo(maxX, maxY, maxX - r, maxY, r);
+    ctx.lineTo(minX + r, maxY);
+    ctx.arcTo(minX, maxY, minX, maxY - r, r);
+    ctx.lineTo(minX, minY + r);
+    ctx.arcTo(minX, minY, minX + r, minY, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    /* ゾーンラベル（ボックス上部） */
+    if (z.label) {{
+      ctx.font = '11px Arial, sans-serif';
+      ctx.fillStyle = z.border || '#888';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(z.label, minX + 8, minY - 4);
+    }}
+  }}
+}});
+
 network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation: false }}); }});
 
 /* ── 全画面トグル ── */
