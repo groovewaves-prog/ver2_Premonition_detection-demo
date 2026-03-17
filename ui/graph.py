@@ -7,6 +7,20 @@ from alarm_generator import NodeColor, Alarm
 from typing import List, Dict, Any, Tuple
 
 
+# デバイスタイプ別のデフォルト形状・色定義
+# アラーム状態（赤/黄/アンバー等）はこれを上書きする
+_DEVICE_TYPE_VISUALS = {
+    "ROUTER":         {"shape": "ellipse",  "bg": "#e8f5e9", "border": "#6B9E72", "icon": "\U0001F310"},
+    "FIREWALL":       {"shape": "hexagon",  "bg": "#e8f5e9", "border": "#6B9E72", "icon": "\U0001F6E1"},
+    "SWITCH":         {"shape": "box",      "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
+    "ACCESS_POINT":   {"shape": "triangle", "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
+    "SERVER":         {"shape": "database", "bg": "#e3f2fd", "border": "#5B8DB8", "icon": "\U0001F5A5"},
+    "CLOUD_GATEWAY":  {"shape": "diamond",  "bg": "#ede7f6", "border": "#7E57C2", "icon": "\u2601"},
+    "CLOUD_RESOURCE": {"shape": "star",     "bg": "#ede7f6", "border": "#7E57C2", "icon": "\u2601"},
+    "_default":       {"shape": "box",      "bg": "#e8f5e9", "border": "#6B9E72", "icon": ""},
+}
+
+
 def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results: List[dict]):
     """
     vis.js でインタラクティブなトポロジーグラフを描画し、
@@ -31,7 +45,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
         # キャッシュヒット: HTML描画のみ（凡例はHTML内に含まれる）
-        components.html(_cached["html"], height=720)
+        components.html(_cached["html"], height=_cached.get("canvas_h", 720))
         return
 
     # --- アラーム情報をデバイスIDでマッピング ---
@@ -84,15 +98,26 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             vendor = (metadata.get('vendor')
                       if isinstance(metadata, dict)
                       else getattr(metadata, 'vendor', None))
+        _role = (metadata.get('role') if isinstance(metadata, dict)
+                 else getattr(metadata, 'role', None))
 
-        # デフォルト（正常）— ミュートトーン
-        bg_color = NodeColor.NORMAL
-        border_color = "#6B9E72"
+        # デフォルト（正常）— デバイスタイプ別の形状・色
+        _type_visual = _DEVICE_TYPE_VISUALS.get(node_type, _DEVICE_TYPE_VISUALS["_default"])
+        bg_color = _type_visual["bg"]
+        border_color = _type_visual["border"]
         border_width = 3
         font_color = "#333"
-        shape = "box"
+        shape = _type_visual["shape"]
         font_bg = None
-        label_parts = [node_id, f"({node_type})"]
+        _type_icon = _type_visual.get("icon", "")
+        # SERVER/CLOUD はロール情報を優先表示
+        if _role and node_type in ("SERVER", "CLOUD_GATEWAY", "CLOUD_RESOURCE"):
+            _type_display = _role.split("(")[0].strip()  # e.g. "Web Frontend"
+            label_parts = [f"{_type_icon} {node_id}" if _type_icon else node_id,
+                           f"({_type_display})"]
+        else:
+            label_parts = [f"{_type_icon} {node_id}" if _type_icon else node_id,
+                           f"({node_type})"]
         status_tag = ""
         state_key = "normal"
 
@@ -264,6 +289,18 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                                 })
                                 added_edges.add(edge_key2)
 
+    # --- ノード数に応じた動的スペーシング ---
+    _n_nodes = len(nodes)
+    if _n_nodes > 14:
+        _level_sep, _node_sp, _tree_sp = 120, 160, 160
+        _canvas_h = 800
+    elif _n_nodes > 10:
+        _level_sep, _node_sp, _tree_sp = 130, 180, 180
+        _canvas_h = 720
+    else:
+        _level_sep, _node_sp, _tree_sp = 130, 180, 180
+        _canvas_h = 700
+
     # --- vis.js HTML (凡例はキャンバス内にオーバーレイ表示) ---
     nodes_json = json.dumps(nodes, ensure_ascii=False)
     edges_json = json.dumps(edges, ensure_ascii=False)
@@ -274,7 +311,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 <script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
 <style>
   body {{ margin:0; padding:0; overflow:hidden; }}
-  #topo-wrap {{ position:relative; width:100%; height:700px; }}
+  #topo-wrap {{ position:relative; width:100%; height:{_canvas_h}px; }}
   #mynetwork {{ width:100%; height:100%; border:1px solid #e0e0e0; border-radius:4px; }}
   #legend-bar {{
     position:absolute; bottom:6px; left:6px; right:6px;
@@ -305,9 +342,9 @@ var options = {{
             enabled: true,
             direction: "UD",
             sortMethod: "directed",
-            levelSeparation: 130,
-            nodeSpacing: 180,
-            treeSpacing: 180,
+            levelSeparation: {_level_sep},
+            nodeSpacing: {_node_sp},
+            treeSpacing: {_tree_sp},
             blockShifting: true,
             edgeMinimization: true,
             parentCentralization: true
@@ -335,8 +372,8 @@ network.once('afterDrawing', function() {{ network.fit({{ padding: 50, animation
 </script></body></html>
 """
     # ★ キャッシュに保存（次回rerunで再利用）
-    st.session_state[_topo_cache_key] = {"sig": _cache_sig, "html": html, "used_states": used_states}
-    components.html(html, height=720)
+    st.session_state[_topo_cache_key] = {"sig": _cache_sig, "html": html, "used_states": used_states, "canvas_h": _canvas_h}
+    components.html(html, height=_canvas_h)
 
 
 def _build_legend_html(used_states: set) -> str:
