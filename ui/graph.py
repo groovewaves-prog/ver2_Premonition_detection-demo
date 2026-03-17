@@ -133,6 +133,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     used_states = set()
 
     # --- ノード生成 ---
+    _n_nodes = len(topology)
+    _font_size = 12 if _n_nodes > 14 else 14
     nodes = []
     for node_id, node in topology.items():
         if isinstance(node, dict):
@@ -286,7 +288,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 
         font_config = {
             "color": font_color,
-            "size": 14,
+            "size": _font_size,
             "face": "Arial, sans-serif",
             "bold": status_tag in ("ROOT CAUSE", "PREDICTION"),
         }
@@ -300,8 +302,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             "shape": shape,
             "borderWidth": border_width,
             "font": font_config,
-            "widthConstraint": {"minimum": 150, "maximum": 220},
-            "heightConstraint": {"minimum": 50},
+            "widthConstraint": {"minimum": 120, "maximum": 180},
+            "heightConstraint": {"minimum": 40},
         }
         nodes.append(node_obj)
 
@@ -341,13 +343,12 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                                 added_edges.add(edge_key2)
 
     # --- ノード数に応じた動的スペーシング ---
-    _n_nodes = len(nodes)
     if _n_nodes > 14:
-        _level_sep, _node_sp, _tree_sp = 120, 160, 160
-        _canvas_h = 800
+        _level_sep, _node_sp, _tree_sp = 100, 130, 130
+        _canvas_h = 820
     elif _n_nodes > 10:
-        _level_sep, _node_sp, _tree_sp = 130, 180, 180
-        _canvas_h = 720
+        _level_sep, _node_sp, _tree_sp = 110, 150, 150
+        _canvas_h = 740
     else:
         _level_sep, _node_sp, _tree_sp = 130, 180, 180
         _canvas_h = 700
@@ -428,8 +429,8 @@ var options = {{
         dragNodes: false
     }},
     nodes: {{
-        font: {{ size: 14, face: 'Arial, sans-serif', multi: false }},
-        margin: {{ top: 10, bottom: 10, left: 14, right: 14 }},
+        font: {{ size: {_font_size}, face: 'Arial, sans-serif', multi: false }},
+        margin: {{ top: 8, bottom: 8, left: 10, right: 10 }},
         shapeProperties: {{ borderRadius: 8 }}
     }},
     edges: {{
