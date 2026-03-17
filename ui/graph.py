@@ -71,13 +71,14 @@ def _load_zones_for_site(topology: dict) -> dict:
     return zones
 
 
-def _compute_fixed_positions(zones: dict) -> dict:
-    """zones の rows/grid 定義からノードの固定座標を算出する。
+def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
+    """zones の rows/grid 定義 + トポロジーのラベル行数から固定座標を算出する。
 
     レイアウト規則:
-      - 各ゾーンは grid=[col, row, colspan, rowspan] でゾーングリッド上に配置
-      - rows=[[node_ids], ...] でゾーン内のノード配列を行単位で定義
-      - _grid 設定で列幅・行高・ノード間隔を制御
+      1. 各ノードのラベル行数からピクセル高さを推定
+      2. ゾーン内の各行は、最大ノード高さ + edge_gap でY座標を累積計算
+      3. ゾーングリッドの行オフセットは、同一行の最大ゾーン高さから算出
+      → テキスト高さを考慮した重なりのないレイアウト
     定義がなければ空辞書を返す（→ vis.js 自動レイアウトへフォールバック）。
     """
     has_layout = any(
@@ -89,11 +90,31 @@ def _compute_fixed_positions(zones: dict) -> dict:
 
     cfg = zones.get("_grid", {})
     COL_W = cfg.get("col_width", 340)
-    ROW_H = cfg.get("row_height", 340)
     H_GAP = cfg.get("node_h_gap", 150)
-    V_GAP = cfg.get("node_v_gap", 100)
+    FONT_SZ = cfg.get("font_size", 12)
+    EDGE_GAP = cfg.get("edge_gap", 22)
+    ZONE_GAP = cfg.get("zone_gap", 30)
+    PAD_TOP = 55
+    PAD_BOTTOM = 65
 
-    positions = {}
+    def _est_height(nid: str) -> float:
+        """ノードのラベル行数からバウンディングボックス高さをピクセル推定。"""
+        node = topology.get(nid) if topology else None
+        if not isinstance(node, dict):
+            node = {}
+        n_lines = 2  # ID行 + (type/role)行
+        meta = node.get("metadata", {})
+        if isinstance(meta, dict):
+            if meta.get("redundancy_type"):
+                n_lines += 1
+            if meta.get("vendor"):
+                n_lines += 1
+        n_lines += 1  # ステータスタグ行を保守的に考慮
+        line_h = FONT_SZ + 5
+        return max(48, n_lines * line_h + 24)
+
+    # --- Pass 1: 各ゾーンの行高さ & 内部全高を計算 ---
+    zone_info = {}
     for zk, zv in zones.items():
         if zk.startswith("_") or not isinstance(zv, dict):
             continue
@@ -103,14 +124,50 @@ def _compute_fixed_positions(zones: dict) -> dict:
         g = zv.get("grid", [0, 0, 1, 1])
         gc, gr = g[0], g[1]
         colspan = g[2] if len(g) > 2 else 1
-        cx = gc * COL_W + colspan * COL_W / 2
-        sy = gr * ROW_H + 50
+        rowspan = g[3] if len(g) > 3 else 1
 
-        for ri, row in enumerate(rows):
+        row_heights = []
+        for row in rows:
+            max_h = max((_est_height(nid) for nid in row), default=48)
+            row_heights.append(max_h)
+
+        internal_h = (sum(row_heights)
+                      + EDGE_GAP * max(0, len(row_heights) - 1))
+
+        zone_info[zk] = {
+            "gc": gc, "gr": gr, "colspan": colspan, "rowspan": rowspan,
+            "rows": rows, "row_heights": row_heights,
+            "internal_h": internal_h,
+            "cx": gc * COL_W + colspan * COL_W / 2,
+        }
+
+    # --- Pass 2: ゾーングリッドの行ごとの最大高さ → Y オフセット ---
+    grid_row_max: dict = {}
+    for zi in zone_info.values():
+        total_h = zi["internal_h"] + PAD_TOP + PAD_BOTTOM
+        per_row = total_h / zi["rowspan"]
+        for r in range(zi["gr"], zi["gr"] + zi["rowspan"]):
+            grid_row_max[r] = max(grid_row_max.get(r, 0), per_row)
+
+    grid_row_y: dict = {}
+    y_cursor = 0.0
+    for r in sorted(grid_row_max.keys()):
+        grid_row_y[r] = y_cursor
+        y_cursor += grid_row_max[r] + ZONE_GAP
+
+    # --- Pass 3: 各ノードの (x, y) を算出 ---
+    positions = {}
+    for zi in zone_info.values():
+        zone_y0 = grid_row_y[zi["gr"]] + PAD_TOP
+        y = zone_y0 + zi["row_heights"][0] / 2
+        for ri, row in enumerate(zi["rows"]):
             for ci, nid in enumerate(row):
-                x = cx + (ci - (len(row) - 1) / 2) * H_GAP
-                y = sy + ri * V_GAP
+                x = zi["cx"] + (ci - (len(row) - 1) / 2) * H_GAP
                 positions[nid] = {"x": x, "y": y}
+            if ri < len(zi["rows"]) - 1:
+                y += (zi["row_heights"][ri] / 2
+                      + EDGE_GAP
+                      + zi["row_heights"][ri + 1] / 2)
 
     return positions
 
@@ -178,7 +235,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 
     # --- ゾーン定義の読み込み & 固定座標の計算 ---
     zones = _load_zones_for_site(topology)
-    fixed_positions = _compute_fixed_positions(zones)
+    fixed_positions = _compute_fixed_positions(zones, topology)
     _use_fixed = bool(fixed_positions)
 
     # --- ノード生成 ---

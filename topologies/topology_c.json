@@ -1,6 +1,6 @@
 {
   "_zones": {
-    "_grid": {"col_width": 340, "row_height": 340, "node_h_gap": 150, "node_v_gap": 100},
+    "_grid": {"col_width": 340, "node_h_gap": 150, "font_size": 12, "edge_gap": 22, "zone_gap": 30},
     "dc_core": {
       "label": "DC Core (Network Infrastructure)",
       "color": "rgba(200,230,201,0.18)",
