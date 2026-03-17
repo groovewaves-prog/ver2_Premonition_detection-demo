@@ -207,17 +207,81 @@ def _render_incident_triage(cand: dict, topology: dict):
     else:
         # ★ 障害時は即座にトリアージを自動生成（ボタン待ち不要）
         _rc_actions = _generate_incident_triage_lazy(cand, topology)
+        if not _rc_actions:
+            # LLM が利用不可の場合、静的フォールバックトリアージを提供
+            _rc_actions = _get_fallback_triage_actions(cand, topology)
         if _rc_actions:
             cand['recommended_actions'] = _rc_actions
             _auto_execute_incident_triage(_rc_actions, _rc_dev)
             # ★ st.rerun() を廃止し、その場で描画を完結させる
             with st.expander(f"🛠 初期確認: {_rc_dev}", expanded=True):
                 st.caption(
-                    "🕐 最初の5分: 状況把握のためのshowコマンドです。"
+                    "🕐 ステップ①: 最初の5分: 状況把握のためのshowコマンドです。"
                     "「▶ 全コマンド一括実行」で全 show を一度に実行できます。"
                     "🔧マークは人手作業です。"
                 )
                 render_triage_cards(_rc_actions, _rc_dev, card_idx=f"incident_{_rc_dev}")
+
+
+def _get_fallback_triage_actions(cand: dict, topology: dict) -> list:
+    """LLM が利用不可の場合に使用する静的フォールバックトリアージ。
+
+    デバイスのベンダー情報からプラットフォームに適したshowコマンドを返す。
+    """
+    from .helpers import build_ci_context_for_chat
+    _dev_id = cand.get('id', '')
+    ci = build_ci_context_for_chat(topology, _dev_id)
+    vendor = ci.get("vendor", "Unknown").lower()
+
+    if "juniper" in vendor:
+        return [
+            {
+                "title": "インターフェース状態の確認",
+                "effect": "全インターフェースのリンク状態・エラーカウンタを一覧表示",
+                "priority": "high",
+                "rationale": "障害範囲を最初に特定するため",
+                "steps": "show interfaces terse\nshow interfaces detail | match \"error|drop\"",
+            },
+            {
+                "title": "ログの確認",
+                "effect": "直近のシステムイベント・障害メッセージを確認",
+                "priority": "high",
+                "rationale": "障害発生時刻とトリガーを特定するため",
+                "steps": "show log messages | last 20",
+            },
+            {
+                "title": "ルーティング・隣接状態の確認",
+                "effect": "BGP/OSPF ネイバーの状態を確認",
+                "priority": "medium",
+                "rationale": "プロトコルレベルの断を検出するため",
+                "steps": "show bgp summary\nshow ospf neighbor",
+            },
+        ]
+    else:
+        # Cisco IOS/IOS-XE デフォルト
+        return [
+            {
+                "title": "インターフェース状態の確認",
+                "effect": "全インターフェースのリンク状態・エラーカウンタを一覧表示",
+                "priority": "high",
+                "rationale": "障害範囲を最初に特定するため",
+                "steps": "show ip interface brief\nshow interfaces | include errors|drops",
+            },
+            {
+                "title": "ログの確認",
+                "effect": "直近のシステムイベント・障害メッセージを確認",
+                "priority": "high",
+                "rationale": "障害発生時刻とトリガーを特定するため",
+                "steps": "show logging | last 20",
+            },
+            {
+                "title": "ルーティング・隣接状態の確認",
+                "effect": "BGP/OSPF ネイバーの状態を確認",
+                "priority": "medium",
+                "rationale": "プロトコルレベルの断を検出するため",
+                "steps": "show ip bgp summary\nshow ip ospf neighbor",
+            },
+        ]
 
 
 def _auto_execute_incident_triage(rec_actions: list, device_id: str):

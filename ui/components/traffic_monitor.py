@@ -148,9 +148,10 @@ def _render_trend_chart(
     secondary: Optional[dict] = None,
     topology: Optional[dict] = None,
 ):
-    """過去24時間の帯域利用率トレンドを折れ線グラフで描画する。
-    secondary が指定されている場合、副次メトリクスを独立グラフで表示。
-    topology が指定されている場合、Uplink/Downlink方向を分類表示。
+    """過去24時間の帯域利用率トレンドを Uplink/Downlink 方向別に描画する。
+
+    方向ごとに独立したチャートを生成し、利用率のスケールを分けることで
+    どのリンクがボトルネックかを方向別に把握可能にする。
     """
     import altair as alt
     import pandas as pd
@@ -158,92 +159,200 @@ def _render_trend_chart(
     now = _dt.datetime.now()
     n_points = 48
     interval_min = 30
-    timestamps = [now - _dt.timedelta(minutes=interval_min * (n_points - 1 - i)) for i in range(n_points)]
+    timestamps = [now - _dt.timedelta(minutes=interval_min * (n_points - 1 - i))
+                  for i in range(n_points)]
 
-    rows = []
-    sec_rows = []
-
+    # ── インターフェースを方向別に分類 ──
+    _dir_groups: Dict[str, list] = {"uplink": [], "downlink": [], "ha_peer": []}
     for iface in interfaces:
         if not isinstance(iface, dict):
             continue
-        iface_name = iface.get('name', '?')
-        connected_to = iface.get('connected_to', '')
         direction = _classify_interface_direction(iface, device_id, topology)
-        dir_label = {"uplink": "↑Up", "downlink": "↓Down", "ha_peer": "⇔HA"}.get(direction, "")
-        label = f"{iface_name} → {connected_to}"
-        if dir_label:
-            label = f"[{dir_label}] {label}"
+        _dir_groups.get(direction, _dir_groups["uplink"]).append(iface)
 
-        for ti, ts in enumerate(timestamps):
-            progress = ti / max(n_points - 1, 1)
-            effective_level = current_level * progress
+    _dir_configs = {
+        "uplink": {
+            "title": "⬆ Uplink（上流方向）",
+            "subtitle": "WAN・上位機器への接続 — 障害時に最初に飽和する傾向",
+            "util_scale": 1.0,
+            "colors": ["#1565C0", "#0277BD", "#00838F", "#2E7D32"],
+        },
+        "downlink": {
+            "title": "⬇ Downlink（下流方向）",
+            "subtitle": "配下機器への接続 — 上流障害の波及度を示す",
+            "util_scale": 0.72,
+            "colors": ["#C62828", "#D84315", "#E65100", "#BF360C"],
+        },
+        "ha_peer": {
+            "title": "⇔ HA Peer（冗長リンク）",
+            "subtitle": "冗長ペア間のハートビート・同期リンク",
+            "util_scale": 0.25,
+            "colors": ["#6A1B9A", "#4A148C"],
+        },
+    }
 
-            # 帯域利用率
-            base_val = _interpolate_level(base_util_map, effective_level)
-            _ts_seed = hash(f"trend_{device_id}_{iface_name}_{ti}")
-            _rng_t = _rng.Random(_ts_seed)
-            jitter = _rng_t.uniform(-8.0, 8.0)
-            util = max(1.0, min(99.9, base_val + jitter))
-
-            rows.append({
-                "時刻": ts,
-                "利用率 (%)": round(util, 1),
-                "インターフェース": label,
-                "方向": direction,
-            })
-
-            # 副次メトリクス（インターフェース共通の1本線）
-            if secondary and iface == interfaces[0]:
-                sec_val = _interpolate_level(secondary["values"], effective_level)
-                sec_jitter = _rng_t.uniform(-0.03, 0.03) * abs(sec_val) if sec_val != 0 else 0
-                sec_rows.append({
-                    "時刻": ts,
-                    "value": round(sec_val + sec_jitter, 2),
-                })
-
-    df = pd.DataFrame(rows)
-
-    # 閾値ライン
+    # 閾値定義（全チャート共通）
     thresholds = pd.DataFrame([
         {"利用率 (%)": 60, "label": "混雑 (60%)"},
         {"利用率 (%)": 80, "label": "輻輳 (80%)"},
         {"利用率 (%)": 90, "label": "飽和 (90%)"},
     ])
 
-    line = alt.Chart(df).mark_line(strokeWidth=2).encode(
-        x=alt.X("時刻:T", title="時刻", axis=alt.Axis(format="%H:%M")),
-        y=alt.Y("利用率 (%):Q", scale=alt.Scale(domain=[0, 100]), title="利用率 (%)"),
-        color=alt.Color("インターフェース:N", title="インターフェース"),
-        tooltip=["時刻:T", "インターフェース:N", "利用率 (%):Q"],
-    )
+    # ── 方向別サマリ（ヘッダー）──
+    _dir_peaks: Dict[str, float] = {}
+    _any_rendered = False
+    sec_rows: list = []
 
-    rules = alt.Chart(thresholds).mark_rule(strokeDash=[4, 4], opacity=0.5).encode(
-        y="利用率 (%):Q",
-        color=alt.value("#FF9800"),
-    )
+    for dir_key in ["uplink", "downlink", "ha_peer"]:
+        iface_list = _dir_groups[dir_key]
+        if not iface_list:
+            continue
+        cfg = _dir_configs[dir_key]
+        _any_rendered = True
 
-    rule_labels = alt.Chart(thresholds).mark_text(
-        align="right", dx=-4, dy=-6, fontSize=10, color="#888",
-    ).encode(
-        y="利用率 (%):Q",
-        text="label:N",
-    )
+        # ── 時系列データ生成 ──
+        rows: list = []
+        for idx, iface in enumerate(iface_list):
+            iface_name = iface.get('name', '?')
+            connected_to = iface.get('connected_to', '')
+            bw_mbps = iface.get('bandwidth_mbps', 100)
+            label = f"{iface_name} → {connected_to}"
 
-    chart = (line + rules + rule_labels).properties(
-        height=280,
-    ).configure_legend(
-        orient="bottom",
-    )
+            # インターフェースごとの固有オフセット（線の重なり防止）
+            _iface_hash = hash(f"offset_{device_id}_{iface_name}")
+            _offset = ((_iface_hash % 17) - 8) * 1.2  # ±~10%
 
-    st.altair_chart(chart, use_container_width=True)
+            for ti, ts in enumerate(timestamps):
+                progress = ti / max(n_points - 1, 1)
+                effective_level = current_level * progress
+                base_val = _interpolate_level(base_util_map, effective_level)
 
-    # ---- 副次メトリクス（独立グラフ）----
-    if secondary and sec_rows:
+                # 方向スケール + インターフェース固有オフセット
+                scaled_val = base_val * cfg["util_scale"] + _offset
+
+                _ts_seed = hash(f"trend_{device_id}_{iface_name}_{ti}")
+                _rng_t = _rng.Random(_ts_seed)
+                jitter = _rng_t.uniform(-5.0, 5.0)
+                util = max(1.0, min(99.9, scaled_val + jitter))
+
+                rows.append({
+                    "時刻": ts,
+                    "利用率 (%)": round(util, 1),
+                    "インターフェース": label,
+                    "帯域": f"{bw_mbps} Mbps",
+                })
+
+                # 副次メトリクス（Uplink 先頭インターフェースのみ）
+                if secondary and dir_key == "uplink" and idx == 0:
+                    sec_val = _interpolate_level(secondary["values"], effective_level)
+                    sec_jitter = (_rng_t.uniform(-0.03, 0.03) * abs(sec_val)
+                                  if sec_val != 0 else 0)
+                    sec_rows.append({
+                        "時刻": ts,
+                        "value": round(sec_val + sec_jitter, 2),
+                    })
+
+        if not rows:
+            continue
+
+        df = pd.DataFrame(rows)
+
+        # ピーク値を記録（サマリ用）
+        last_ts = df["時刻"].max()
+        last_df = df[df["時刻"] == last_ts]
+        peak_util = last_df["利用率 (%)"].max()
+        _dir_peaks[dir_key] = peak_util
+
+        # ── 色スケール ──
+        iface_names = df["インターフェース"].unique().tolist()
+        colors = [cfg["colors"][i % len(cfg["colors"])]
+                  for i in range(len(iface_names))]
+
+        # ── チャート構築 ──
+        line = alt.Chart(df).mark_line(strokeWidth=2.5).encode(
+            x=alt.X("時刻:T", title="時刻", axis=alt.Axis(format="%H:%M")),
+            y=alt.Y("利用率 (%):Q",
+                     scale=alt.Scale(domain=[0, 100]),
+                     title="利用率 (%)"),
+            color=alt.Color(
+                "インターフェース:N",
+                scale=alt.Scale(domain=iface_names, range=colors),
+                title="インターフェース",
+            ),
+            tooltip=["時刻:T", "インターフェース:N", "利用率 (%):Q", "帯域:N"],
+        )
+
+        # 右端に現在値ラベル
+        end_labels = alt.Chart(last_df).mark_text(
+            align="left", dx=5, fontSize=11, fontWeight="bold",
+        ).encode(
+            x="時刻:T",
+            y="利用率 (%):Q",
+            text=alt.Text("利用率 (%):Q", format=".0f"),
+            color=alt.Color(
+                "インターフェース:N",
+                scale=alt.Scale(domain=iface_names, range=colors),
+                legend=None,
+            ),
+        )
+
+        rules = alt.Chart(thresholds).mark_rule(
+            strokeDash=[4, 4], opacity=0.4,
+        ).encode(
+            y="利用率 (%):Q",
+            color=alt.value("#FF9800"),
+        )
+
+        rule_labels = alt.Chart(thresholds).mark_text(
+            align="right", dx=-4, dy=-8, fontSize=10, color="#999",
+        ).encode(
+            y="利用率 (%):Q",
+            text="label:N",
+        )
+
+        chart_height = 200 if dir_key != "ha_peer" else 150
+        chart = (line + end_labels + rules + rule_labels).properties(
+            height=chart_height,
+            title=alt.Title(
+                text=cfg["title"],
+                subtitle=cfg["subtitle"],
+                fontSize=14,
+                subtitleFontSize=11,
+                subtitleColor="#888",
+            ),
+        ).configure_legend(orient="bottom")
+
+        st.altair_chart(chart, use_container_width=True)
+
+        # ボトルネック警告（飽和時）
+        if peak_util >= 80:
+            worst_row = last_df.loc[last_df["利用率 (%)"].idxmax()]
+            _status = "飽和" if peak_util >= 90 else "輻輳"
+            _warn_color = "#D32F2F" if peak_util >= 90 else "#FF5722"
+            st.markdown(
+                f'<div style="font-size:12px;color:{_warn_color};font-weight:600;'
+                f'margin:-8px 0 8px 4px;">'
+                f'⚠ ボトルネック: {worst_row["インターフェース"]}'
+                f' — {peak_util:.0f}% ({_status})</div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── フォールバック: 方向分類不可の場合 ──
+    if not _any_rendered:
+        _render_trend_chart_simple(
+            device_id, interfaces, base_util_map, current_level,
+            timestamps, n_points, thresholds, secondary,
+        )
+        return
+
+    # ── 副次メトリクス（独立グラフ）──
+    if secondary and sec_rows and current_level > 0:
         sec_df = pd.DataFrame(sec_rows)
         sec_name = secondary["name"]
         sec_unit = secondary["unit"]
         sec_color = secondary["color"]
-        sec_domain = secondary.get("domain", [sec_df["value"].min(), sec_df["value"].max()])
+        sec_domain = secondary.get("domain",
+                                    [sec_df["value"].min(), sec_df["value"].max()])
 
         sec_line = alt.Chart(sec_df).mark_area(
             line={"color": sec_color, "strokeWidth": 2},
@@ -267,7 +376,7 @@ def _render_trend_chart(
         )
 
         sec_chart = sec_line.properties(
-            height=160,
+            height=140,
             title=alt.Title(
                 text=f"{sec_name} ({sec_unit}) — 劣化シナリオ連動",
                 fontSize=13,
@@ -276,6 +385,61 @@ def _render_trend_chart(
         )
 
         st.altair_chart(sec_chart, use_container_width=True)
+
+
+def _render_trend_chart_simple(
+    device_id: str,
+    interfaces: list,
+    base_util_map: dict,
+    current_level: int,
+    timestamps: list,
+    n_points: int,
+    thresholds,
+    secondary: Optional[dict] = None,
+):
+    """方向分類不可時のフォールバック（単一チャート）。"""
+    import altair as alt
+    import pandas as pd
+
+    rows = []
+    for iface in interfaces:
+        if not isinstance(iface, dict):
+            continue
+        iface_name = iface.get('name', '?')
+        connected_to = iface.get('connected_to', '')
+        label = f"{iface_name} → {connected_to}"
+        _iface_hash = hash(f"offset_{device_id}_{iface_name}")
+        _offset = ((_iface_hash % 17) - 8) * 1.2
+
+        for ti, ts in enumerate(timestamps):
+            progress = ti / max(n_points - 1, 1)
+            effective_level = current_level * progress
+            base_val = _interpolate_level(base_util_map, effective_level)
+            _ts_seed = hash(f"trend_{device_id}_{iface_name}_{ti}")
+            _rng_t = _rng.Random(_ts_seed)
+            jitter = _rng_t.uniform(-5.0, 5.0)
+            util = max(1.0, min(99.9, base_val + _offset + jitter))
+            rows.append({
+                "時刻": ts, "利用率 (%)": round(util, 1),
+                "インターフェース": label,
+            })
+
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+
+    line = alt.Chart(df).mark_line(strokeWidth=2).encode(
+        x=alt.X("時刻:T", title="時刻", axis=alt.Axis(format="%H:%M")),
+        y=alt.Y("利用率 (%):Q", scale=alt.Scale(domain=[0, 100])),
+        color="インターフェース:N",
+        tooltip=["時刻:T", "インターフェース:N", "利用率 (%):Q"],
+    )
+    rules = alt.Chart(thresholds).mark_rule(
+        strokeDash=[4, 4], opacity=0.4,
+    ).encode(y="利用率 (%):Q", color=alt.value("#FF9800"))
+
+    chart = (line + rules).properties(height=280).configure_legend(orient="bottom")
+    st.altair_chart(chart, use_container_width=True)
 
 
 def render_traffic_monitor(
@@ -521,6 +685,9 @@ def render_traffic_monitor(
                 "FIREWALL": "FW",
                 "SWITCH": "SW",
                 "ACCESS_POINT": "AP",
+                "SERVER": "Srv",
+                "CLOUD_GATEWAY": "Cloud GW",
+                "CLOUD_RESOURCE": "Cloud",
             }
             _type_parts = []
             for dtype, devs in sorted(_type_counts.items()):
