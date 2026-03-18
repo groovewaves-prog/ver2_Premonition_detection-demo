@@ -42,11 +42,57 @@ _ZONE_AUTO_PALETTE = [
 
 # vis.js の形状のうち、ラベルを図形の「下」に描画するもの
 # (box/ellipse/database は内部描画 → 上下対称)
-# ★ _compute_fixed_positions._est_extents() と _est_node_size() の両方が参照。
 _LABEL_BELOW_SHAPES = frozenset({
     "hexagon", "diamond", "star", "triangle",
     "triangleDown", "dot", "square",
 })
+
+# ノード寸法推定の共通定数
+# ★ _node_extents() が唯一の寸法計算ソース。_compute_fixed_positions と
+#    _est_node_size の両方がこれを参照する。片方だけ変えると不整合になるため
+#    必ずここで一元管理する。
+_SHAPE_RADIUS = 30    # vis.js デフォルト size=25 + margin
+_SHAPE_LABEL_GAP = 8  # 図形とラベル間の隙間
+_VIS_MARGIN = 8       # vis.js nodes.margin (top/bottom) — graph.py options で設定
+
+
+def _node_extents(nid: str, topology: dict, font_size: int = 12) -> tuple:
+    """ノードの (x,y) からの上方向・下方向エクステントを推定。
+
+    vis.js は hexagon/diamond/star で (x,y) = 図形中心にラベルを下に描画。
+    box/ellipse は (x,y) = ノード全体の中心にラベルを内部描画。
+    いずれもノード margin (8px top/bottom) が描画に加算されるため考慮する。
+    Returns: (above, below) — y座標からの上方向・下方向の広がり(px)
+    """
+    node = topology.get(nid) if topology else None
+    if not isinstance(node, dict):
+        node = {}
+    n_lines = 2  # ID行 + (type/role)行
+    meta = node.get("metadata", {})
+    if isinstance(meta, dict):
+        if meta.get("redundancy_type"):
+            n_lines += 1
+        if meta.get("vendor"):
+            n_lines += 1
+    n_lines += 1  # ステータスタグ行を保守的に考慮
+    line_h = font_size + 5
+    text_h = n_lines * line_h + 24
+
+    node_type = node.get("type", "UNKNOWN")
+    visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
+    shape = visual.get("shape", "box")
+
+    if shape in _LABEL_BELOW_SHAPES:
+        # (x,y) = 図形中心。上方向は図形半径、下方向は図形半径+gap+テキスト全高
+        above = _SHAPE_RADIUS + _VIS_MARGIN
+        below = _SHAPE_RADIUS + _SHAPE_LABEL_GAP + text_h + _VIS_MARGIN
+    else:
+        # (x,y) = ノード全体の中心。上下対称
+        h = max(48, text_h) + _VIS_MARGIN * 2
+        above = h / 2
+        below = h / 2
+
+    return above, below
 
 
 def _load_zones_for_site(topology: dict) -> dict:
@@ -129,48 +175,9 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     PAD_TOP = 55
     PAD_BOTTOM = 65
 
-    # ★ _LABEL_BELOW_SHAPES はモジュールレベル定数を使用（重複排除）
-    _SHAPE_RADIUS = 30   # vis.js デフォルト size=25 + margin
-    _SHAPE_LABEL_GAP = 8  # 図形とラベル間の隙間
-    _VIS_MARGIN = 8       # vis.js nodes.margin (top/bottom) — graph.py options で設定
-
+    # ★ 寸法推定はモジュールレベルの _node_extents() を使用（重複排除）
     def _est_extents(nid: str):
-        """ノードの (x,y) からの上方向・下方向エクステントを推定。
-
-        vis.js は hexagon/diamond/star で (x,y) = 図形中心にラベルを下に描画。
-        box/ellipse は (x,y) = ノード全体の中心にラベルを内部描画。
-        いずれもノード margin (8px top/bottom) が描画に加算されるため考慮する。
-        Returns: (above, below) — y座標からの上方向・下方向の広がり(px)
-        """
-        node = topology.get(nid) if topology else None
-        if not isinstance(node, dict):
-            node = {}
-        n_lines = 2  # ID行 + (type/role)行
-        meta = node.get("metadata", {})
-        if isinstance(meta, dict):
-            if meta.get("redundancy_type"):
-                n_lines += 1
-            if meta.get("vendor"):
-                n_lines += 1
-        n_lines += 1  # ステータスタグ行を保守的に考慮
-        line_h = FONT_SZ + 5
-        text_h = n_lines * line_h + 24
-
-        node_type = node.get("type", "UNKNOWN")
-        visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
-        shape = visual.get("shape", "box")
-
-        if shape in _LABEL_BELOW_SHAPES:
-            # (x,y) = 図形中心。上方向は図形半径、下方向は図形半径+gap+テキスト全高
-            above = _SHAPE_RADIUS + _VIS_MARGIN
-            below = _SHAPE_RADIUS + _SHAPE_LABEL_GAP + text_h + _VIS_MARGIN
-        else:
-            # (x,y) = ノード全体の中心。上下対称
-            h = max(48, text_h) + _VIS_MARGIN * 2
-            above = h / 2
-            below = h / 2
-
-        return above, below
+        return _node_extents(nid, topology, FONT_SZ)
 
     # --- Pass 1: 各ゾーンの行エクステント & 内部全高を計算 ---
     zone_info = {}
@@ -241,32 +248,15 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
 # =====================================================
 
 def _est_node_size(nid: str, topology: dict, font_size: int = 12) -> tuple:
-    """ELK用ノードサイズ推定。Returns (width, height) in pixels."""
-    node = topology.get(nid) if topology else None
-    if not isinstance(node, dict):
-        node = {}
-    n_lines = 2  # ID行 + type行
-    meta = node.get("metadata", {})
-    if isinstance(meta, dict):
-        if meta.get("redundancy_type"):
-            n_lines += 1
-        if meta.get("vendor"):
-            n_lines += 1
-    n_lines += 1  # ステータスタグ行
-    line_h = font_size + 5
-    text_h = n_lines * line_h + 24
+    """ELK用ノードサイズ推定。Returns (width, height) in pixels.
 
-    node_type = node.get("type", "UNKNOWN")
-    visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
-    shape = visual.get("shape", "box")
-
-    if shape in _LABEL_BELOW_SHAPES:
-        height = 30 + 8 + text_h + 16  # shape radius + gap + text + margins
-    else:
-        height = max(48, text_h) + 16  # text + margins
-
+    ★ 寸法計算は _node_extents() に委譲（重複排除）。
+    修正前は label-below 形状で above 側の shape radius (30px) が
+    欠落していた（height = 54+text_h vs 正しくは 84+text_h）。
+    """
+    above, below = _node_extents(nid, topology, font_size)
     width = 160  # vis.js widthConstraint 110-180 の中間推定値
-    return (width, height)
+    return (width, above + below)
 
 
 def _build_elk_graph(zones: dict, topology: dict):
@@ -288,6 +278,7 @@ def _build_elk_graph(zones: dict, topology: dict):
     H_GAP = cfg.get("node_h_gap", 150)
     EDGE_GAP = cfg.get("edge_gap", 45)
     FONT_SZ = cfg.get("font_size", 12)
+    ZONE_GAP_ELK = cfg.get("zone_gap", 30)  # ゾーン間（compound node 間）の最小距離
 
     node_to_zone = {}
     zone_entries = []
@@ -367,13 +358,19 @@ def _build_elk_graph(zones: dict, topology: dict):
             })
             ce_id += 1
 
+    # ルートレベルのスペーシング: ゾーン（compound node）間の距離
+    # ★ _grid.zone_gap を参照し、ゾーン内スペーシングとの一貫性を保つ。
+    #    compound 間は intra-zone より広めにするため最低 60px を保証。
+    _root_node_sp = max(60, ZONE_GAP_ELK * 2)
+    _root_layer_sp = max(80, EDGE_GAP * 2)
+
     return {
         "id": "root",
         "layoutOptions": {
             "elk.algorithm": "layered",
             "elk.direction": "DOWN",
-            "elk.spacing.nodeNode": "80",
-            "elk.layered.spacing.nodeNodeBetweenLayers": "100",
+            "elk.spacing.nodeNode": str(_root_node_sp),
+            "elk.layered.spacing.nodeNodeBetweenLayers": str(_root_layer_sp),
             "elk.hierarchyHandling": "INCLUDE_CHILDREN",
             "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
         },
