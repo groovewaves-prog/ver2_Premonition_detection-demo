@@ -14,6 +14,21 @@ from configs.device_registry import get_all_visuals as _get_all_visuals, get_vis
 _DEVICE_TYPE_VISUALS = _get_all_visuals()
 
 
+# =====================================================
+# ゾーン描画定数（レイアウト計算 & 描画の両レイヤーで共有）
+# ★ _compute_fixed_positions() と beforeDrawing コールバックの
+#    両方がこれらの値を参照する。片方だけ変えると不整合になるため
+#    必ずここで一元管理する。
+# =====================================================
+ZONE_PAD = 25        # ゾーン矩形の左右パディング (px)
+ZONE_PAD_TOP = 30    # ゾーン矩形の上パディング (px, ラベル用に広め)
+ZONE_MIN_GAP = 6     # 隣接ゾーン間の最小ギャップ (px)
+ENV_PAD = 18         # エンベロープの追加パディング (px)
+ENV_PAD_TOP = 22     # エンベロープの上パディング (px, ラベル用)
+# ゾーン同士が重ならないために必要な最小の grid ZONE_GAP:
+#   左ゾーンの右パディング + ギャップ + 右ゾーンの左パディング
+MIN_ZONE_GAP = ZONE_PAD * 2 + ZONE_MIN_GAP  # = 56px
+
 _ZONE_AUTO_PALETTE = [
     {"color": "rgba(200,230,201,0.18)", "border": "#a5d6a7"},
     {"color": "rgba(187,222,251,0.18)", "border": "#90caf9"},
@@ -90,11 +105,19 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
         return {}
 
     cfg = zones.get("_grid", {})
-    COL_W = cfg.get("col_width", 340)
+    COL_W_CFG = cfg.get("col_width", 340)
+    # COL_W は最小でも 2 * ZONE_PAD + ZONE_MIN_GAP 以上必要（隣接列重なり防止）
+    COL_W = max(COL_W_CFG, MIN_ZONE_GAP + 100)  # +100 はノード最小幅分
     H_GAP = cfg.get("node_h_gap", 150)
     FONT_SZ = cfg.get("font_size", 12)
     EDGE_GAP = cfg.get("edge_gap", 22)
-    ZONE_GAP = cfg.get("zone_gap", 30)
+    # ★ ZONE_GAP を描画パディングから算出した最小値で保証。
+    #   JSON に指定された値がこれより小さい場合は自動で引き上げる。
+    #   エンベロープがある場合は ENV_PAD 分の追加マージンも加算。
+    _has_envelopes = "_envelopes" in zones
+    _min_gap = MIN_ZONE_GAP + (ENV_PAD * 2 if _has_envelopes else 0)
+    ZONE_GAP_CFG = cfg.get("zone_gap", 30)
+    ZONE_GAP_VAL = max(ZONE_GAP_CFG, _min_gap)
     PAD_TOP = 55
     PAD_BOTTOM = 65
 
@@ -191,7 +214,7 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     y_cursor = 0.0
     for r in sorted(grid_row_max.keys()):
         grid_row_y[r] = y_cursor
-        y_cursor += grid_row_max[r] + ZONE_GAP
+        y_cursor += grid_row_max[r] + ZONE_GAP_VAL
 
     # --- Pass 3: 各ノードの (x, y) を算出（非対称エクステント使用） ---
     positions = {}
@@ -591,16 +614,33 @@ var options = {{
 var network = new vis.Network(document.getElementById('mynetwork'), data, options);
 
 /* ── ゾーンボックス描画 (beforeDrawing) ──
- * 全拠点共通アルゴリズム:
- *   1. 各ゾーンのメンバーノード getBoundingBox から矩形を算出
- *   2. パディング適用後、隣接ゾーン間の重なりを検出・解消
- *   3. 重なり解消は中間点スナップ（両者均等に譲り合い）
- *   4. 調整済み矩形で描画
+ * 全拠点共通アルゴリズム（2レイヤー協調設計）:
+ *
+ *   レイヤー1 (_compute_fixed_positions):
+ *     ノード座標を算出する際に MIN_ZONE_GAP + ENV_PAD を考慮し、
+ *     ゾーン矩形が重ならない配置を保証する。
+ *
+ *   レイヤー2 (このコールバック = 安全ネット):
+ *     万一重なりが残った場合のフォールバック解消。
+ *     正常系では発火しない。
+ *
+ *   パス構成:
+ *     1    — ゾーン矩形算出 (getBoundingBox + パディング)
+ *     1.5  — ノード包含下限を記録 (origBounds)
+ *     2    — ゾーン ↔ ゾーン重なり解消 (中心座標比較 + 浅い軸選択)
+ *     2.5  — origBounds クランプ (縮みすぎ防止)
+ *     3    — エンベロープ算出 + 重なり解消
+ *            (エンベロープ vs 外部ゾーン: エンベロープ側のみ縮小)
+ *            (エンベロープ vs エンベロープ: midpoint snapping)
+ *     4    — 描画
  * ─────────────────────────────────────── */
 network.on('beforeDrawing', function(ctx) {{
-  var ZONE_PAD = 25;
-  var ZONE_PAD_TOP = 30;
-  var ZONE_MIN_GAP = 6;  /* ゾーン間の最小ギャップ */
+  /* ★ 定数はモジュールレベルの Python 定数から注入（一元管理） */
+  var ZONE_PAD = {ZONE_PAD};
+  var ZONE_PAD_TOP = {ZONE_PAD_TOP};
+  var ZONE_MIN_GAP = {ZONE_MIN_GAP};
+  var ENV_PAD = {ENV_PAD};
+  var ENV_PAD_TOP = {ENV_PAD_TOP};
 
   /* ── 第1パス: 全ゾーン矩形を算出 ── */
   var zoneRects = [];
@@ -747,7 +787,7 @@ network.on('beforeDrawing', function(ctx) {{
    *   - 子ゾーン包含境界以下には絶対に縮めない（過剰縮小ガード）
    *   - エンベロープ vs エンベロープ → midpoint snapping（双方が譲る） */
   var envelopes = zones._envelopes || {{}};
-  var ENV_PAD = 18;
+  /* ENV_PAD, ENV_PAD_TOP は冒頭で注入済み */
   var envRects = [];
   for (var ek in envelopes) {{
     var env = envelopes[ek];
@@ -769,7 +809,7 @@ network.on('beforeDrawing', function(ctx) {{
       }}
     }}
     if (!eFound) continue;
-    eMinX -= ENV_PAD; eMinY -= 22; eMaxX += ENV_PAD; eMaxY += ENV_PAD;
+    eMinX -= ENV_PAD; eMinY -= ENV_PAD_TOP; eMaxX += ENV_PAD; eMaxY += ENV_PAD;
     envRects.push({{
       key: ek, env: env, childSet: childSet,
       x1: eMinX, y1: eMinY, x2: eMaxX, y2: eMaxY
