@@ -159,12 +159,11 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
         return {}
 
     cfg = zones.get("_grid", {})
-    COL_W_CFG = cfg.get("col_width", 340)
-    # COL_W は最小でも 2 * ZONE_PAD + ZONE_MIN_GAP 以上必要（隣接列重なり防止）
-    COL_W = max(COL_W_CFG, MIN_ZONE_GAP + 100)  # +100 はノード最小幅分
+    COL_W_HINT = cfg.get("col_width", 340)
     H_GAP = cfg.get("node_h_gap", 150)
     FONT_SZ = cfg.get("font_size", 12)
     EDGE_GAP = cfg.get("edge_gap", 22)
+    NODE_MAX_W = 180  # vis.js widthConstraint maximum
     # ★ ZONE_GAP を描画パディングから算出した最小値で保証。
     #   JSON に指定された値がこれより小さい場合は自動で引き上げる。
     #   エンベロープがある場合は ENV_PAD 分の追加マージンも加算。
@@ -179,7 +178,7 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     def _est_extents(nid: str):
         return _node_extents(nid, topology, FONT_SZ)
 
-    # --- Pass 1: 各ゾーンの行エクステント & 内部全高を計算 ---
+    # --- Pass 1: 各ゾーンの行エクステント & 内部全高 & 必要幅を計算 ---
     zone_info = {}
     for zk, zv in zones.items():
         if zk.startswith("_") or not isinstance(zv, dict):
@@ -204,13 +203,46 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
         for ri in range(len(rows) - 1):
             internal_h += row_belows[ri] + EDGE_GAP + row_aboves[ri + 1]
 
+        # ★ 必要幅 = 最も広い行のノード配置幅 + パディング
+        #   各行の幅: (n-1) * H_GAP (ノード間距離) + NODE_MAX_W (左右端のノード幅)
+        max_row_len = max(len(row) for row in rows)
+        content_w = (max_row_len - 1) * H_GAP + NODE_MAX_W
+        required_w = content_w + ZONE_PAD * 2
+
         zone_info[zk] = {
             "gc": gc, "gr": gr, "colspan": colspan, "rowspan": rowspan,
             "rows": rows,
             "row_aboves": row_aboves, "row_belows": row_belows,
             "internal_h": internal_h,
-            "cx": gc * COL_W + colspan * COL_W / 2,
+            "required_w": required_w,
         }
+
+    # --- Pass 1.5: 列幅の動的計算 → ゾーン中心X座標 ---
+    # 各グリッド列に必要な最小幅を、その列に属するゾーンから算出する。
+    # colspan > 1 のゾーンは幅を均等按分して各列の下限に反映する。
+    col_min_w: dict = {}
+    for zi in zone_info.values():
+        per_col = zi["required_w"] / zi["colspan"]
+        for c in range(zi["gc"], zi["gc"] + zi["colspan"]):
+            col_min_w[c] = max(col_min_w.get(c, 0), per_col)
+    # JSON の col_width ヒントを最低幅として適用
+    for c in col_min_w:
+        col_min_w[c] = max(col_min_w[c], COL_W_HINT)
+
+    # 列の開始X座標を累積計算（列間に ZONE_GAP_VAL を確保）
+    col_x_start: dict = {}
+    x_cursor = 0.0
+    for c in sorted(col_min_w.keys()):
+        col_x_start[c] = x_cursor
+        x_cursor += col_min_w[c] + ZONE_GAP_VAL
+
+    # 各ゾーンの中心X = そのゾーンが占める列範囲の中央
+    for zi in zone_info.values():
+        first_col = zi["gc"]
+        last_col = zi["gc"] + zi["colspan"] - 1
+        x_left = col_x_start[first_col]
+        x_right = col_x_start[last_col] + col_min_w[last_col]
+        zi["cx"] = (x_left + x_right) / 2
 
     # --- Pass 2: ゾーングリッドの行ごとの最大高さ → Y オフセット ---
     grid_row_max: dict = {}
