@@ -643,9 +643,25 @@ network.on('beforeDrawing', function(ctx) {{
     zoneKeys.push(zk);
   }}
 
+  /* ── 第1.5パス: ゾーンごとのノード包含下限を記録 ──
+   * 第2パスの midpoint snapping がゾーン矩形を縮めすぎて
+   * ノードが枠外に飛び出すのを防ぐ。
+   * origBounds[i] = {{x1,y1,x2,y2}} はノード群の getBoundingBox
+   * から算出した「これ以上縮めてはならない下限」。 */
+  var origBounds = [];
+  for (var i = 0; i < zoneRects.length; i++) {{
+    origBounds.push({{
+      x1: zoneRects[i].x1, y1: zoneRects[i].y1,
+      x2: zoneRects[i].x2, y2: zoneRects[i].y2
+    }});
+  }}
+
   /* ── 第2パス: ゾーン間の重なり解消 ──
    * 水平・垂直それぞれで、重なりがあれば中間点にスナップ。
-   * Y範囲が重なるゾーン対のみ水平チェック（逆も同様）。 */
+   * ★ 改善点:
+   *   1) 完全包含（A が B を含む or 逆）も検出・解消
+   *   2) midpoint 結果が origBounds を割り込む場合はクランプ
+   *      （ノードが枠外に飛び出すのを防止） */
   for (var i = 0; i < zoneRects.length; i++) {{
     for (var j = i + 1; j < zoneRects.length; j++) {{
       var a = zoneRects[i], b = zoneRects[j];
@@ -654,30 +670,56 @@ network.on('beforeDrawing', function(ctx) {{
       /* 水平範囲が重なるか */
       var xOverlap = a.x1 < b.x2 && b.x1 < a.x2;
 
-      if (yOverlap) {{
-        /* 水平方向の重なり解消 */
-        if (a.x2 > b.x1 && a.x1 < b.x1) {{
-          /* a が左、b が右 — a.x2 と b.x1 が重なっている */
+      if (yOverlap && xOverlap) {{
+        /* 両軸で重なっている → 重なりが浅い軸で解消する */
+        var xDepth = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+        var yDepth = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+
+        if (xDepth <= yDepth) {{
+          /* 水平方向で解消（完全包含含む: 中心の左右で判定） */
+          var aCx = (a.x1 + a.x2) / 2, bCx = (b.x1 + b.x2) / 2;
+          if (aCx <= bCx) {{
+            var mid = (Math.min(a.x2, b.x2) + Math.max(a.x1, b.x1)) / 2;
+            a.x2 = mid - ZONE_MIN_GAP / 2;
+            b.x1 = mid + ZONE_MIN_GAP / 2;
+          }} else {{
+            var mid = (Math.min(a.x2, b.x2) + Math.max(a.x1, b.x1)) / 2;
+            b.x2 = mid - ZONE_MIN_GAP / 2;
+            a.x1 = mid + ZONE_MIN_GAP / 2;
+          }}
+        }} else {{
+          /* 垂直方向で解消 */
+          var aCy = (a.y1 + a.y2) / 2, bCy = (b.y1 + b.y2) / 2;
+          if (aCy <= bCy) {{
+            var mid = (Math.min(a.y2, b.y2) + Math.max(a.y1, b.y1)) / 2;
+            a.y2 = mid - ZONE_MIN_GAP / 2;
+            b.y1 = mid + ZONE_MIN_GAP / 2;
+          }} else {{
+            var mid = (Math.min(a.y2, b.y2) + Math.max(a.y1, b.y1)) / 2;
+            b.y2 = mid - ZONE_MIN_GAP / 2;
+            a.y1 = mid + ZONE_MIN_GAP / 2;
+          }}
+        }}
+      }} else if (yOverlap) {{
+        /* 水平方向の重なり解消（Y軸のみ重複 = 横並びで接近） */
+        var aCx = (a.x1 + a.x2) / 2, bCx = (b.x1 + b.x2) / 2;
+        if (aCx <= bCx) {{
           var mid = (a.x2 + b.x1) / 2;
           a.x2 = mid - ZONE_MIN_GAP / 2;
           b.x1 = mid + ZONE_MIN_GAP / 2;
-        }} else if (b.x2 > a.x1 && b.x1 < a.x1) {{
-          /* b が左、a が右 */
+        }} else {{
           var mid = (b.x2 + a.x1) / 2;
           b.x2 = mid - ZONE_MIN_GAP / 2;
           a.x1 = mid + ZONE_MIN_GAP / 2;
         }}
-      }}
-
-      if (xOverlap) {{
-        /* 垂直方向の重なり解消 */
-        if (a.y2 > b.y1 && a.y1 < b.y1) {{
-          /* a が上、b が下 */
+      }} else if (xOverlap) {{
+        /* 垂直方向の重なり解消（X軸のみ重複 = 上下で接近） */
+        var aCy = (a.y1 + a.y2) / 2, bCy = (b.y1 + b.y2) / 2;
+        if (aCy <= bCy) {{
           var mid = (a.y2 + b.y1) / 2;
           a.y2 = mid - ZONE_MIN_GAP / 2;
           b.y1 = mid + ZONE_MIN_GAP / 2;
-        }} else if (b.y2 > a.y1 && b.y1 < a.y1) {{
-          /* b が上、a が下 */
+        }} else {{
           var mid = (b.y2 + a.y1) / 2;
           b.y2 = mid - ZONE_MIN_GAP / 2;
           a.y1 = mid + ZONE_MIN_GAP / 2;
@@ -686,11 +728,24 @@ network.on('beforeDrawing', function(ctx) {{
     }}
   }}
 
-  /* ── 第3パス: エンベロープ矩形算出 + 非子ゾーンとの重なり解消 ──
+  /* ── 第2.5パス: ノード包含下限のクランプ ──
+   * midpoint snapping でゾーン矩形がノードの外に縮んだ場合、
+   * 元のノード包含境界まで復元する。 */
+  for (var i = 0; i < zoneRects.length; i++) {{
+    var z = zoneRects[i], ob = origBounds[i];
+    if (z.x1 > ob.x1) z.x1 = ob.x1;
+    if (z.y1 > ob.y1) z.y1 = ob.y1;
+    if (z.x2 < ob.x2) z.x2 = ob.x2;
+    if (z.y2 < ob.y2) z.y2 = ob.y2;
+  }}
+
+  /* ── 第3パス: エンベロープ矩形算出 + 重なり解消 ──
    * _envelopes: 複数の子ゾーンを包む親枠（データセンター等）
    * エンベロープは子ゾーンの和集合 + パディング。
-   * エンベロープに含まれない外部ゾーン（AWS Cloud等）との
-   * 重なりを中間点スナップで解消する。 */
+   * ★ 重なり解消の原則:
+   *   - エンベロープ vs 外部ゾーン → エンベロープ側のみ縮小
+   *   - 子ゾーン包含境界以下には絶対に縮めない（過剰縮小ガード）
+   *   - エンベロープ vs エンベロープ → midpoint snapping（双方が譲る） */
   var envelopes = zones._envelopes || {{}};
   var ENV_PAD = 18;
   var envRects = [];
@@ -721,30 +776,80 @@ network.on('beforeDrawing', function(ctx) {{
     }});
   }}
 
+  /* エンベロープの子ゾーン下限を記録（過剰縮小ガード用）
+   * エンベロープが外部ゾーンとの重なり解消で縮みすぎて
+   * 子ゾーンをカバーしなくなるのを防ぐ。 */
+  var envChildBounds = [];
+  for (var ei = 0; ei < envRects.length; ei++) {{
+    var cbMinX = Infinity, cbMinY = Infinity, cbMaxX = -Infinity, cbMaxY = -Infinity;
+    for (var ri = 0; ri < zoneRects.length; ri++) {{
+      if (envRects[ei].childSet[zoneRects[ri].key]) {{
+        var cr = zoneRects[ri];
+        if (cr.x1 < cbMinX) cbMinX = cr.x1;
+        if (cr.y1 < cbMinY) cbMinY = cr.y1;
+        if (cr.x2 > cbMaxX) cbMaxX = cr.x2;
+        if (cr.y2 > cbMaxY) cbMaxY = cr.y2;
+      }}
+    }}
+    envChildBounds.push({{ x1: cbMinX, y1: cbMinY, x2: cbMaxX, y2: cbMaxY }});
+  }}
+
   /* エンベロープ vs 非子ゾーンの重なり解消
    * ★ エンベロープ側のみ縮小し、ゾーン矩形は一切変更しない。
-   * エンベロープは装飾的な親枠であり、ゾーンの描画位置を壊してはならない。 */
+   * ★ ただし子ゾーンの包含境界以下には縮めない（過剰縮小ガード）。 */
   for (var ei = 0; ei < envRects.length; ei++) {{
     var erc = envRects[ei];
+    var ecb = envChildBounds[ei];
     for (var zi = 0; zi < zoneRects.length; zi++) {{
       var zr = zoneRects[zi];
       if (erc.childSet[zr.key]) continue;  /* 子ゾーンはスキップ */
       var yOvl = erc.y1 < zr.y2 && zr.y1 < erc.y2;
       var xOvl = erc.x1 < zr.x2 && zr.x1 < erc.x2;
       if (yOvl) {{
-        /* 水平方向: エンベロープ側のみ縮小 */
-        if (erc.x2 > zr.x1 && erc.x1 < zr.x1) {{
-          erc.x2 = zr.x1 - ZONE_MIN_GAP;
-        }} else if (zr.x2 > erc.x1 && zr.x1 < erc.x1) {{
-          erc.x1 = zr.x2 + ZONE_MIN_GAP;
+        /* 水平方向: エンベロープ側のみ縮小（中心で左右判定） */
+        var eCx = (erc.x1 + erc.x2) / 2, zCx = (zr.x1 + zr.x2) / 2;
+        if (eCx <= zCx) {{
+          var nx2 = zr.x1 - ZONE_MIN_GAP;
+          erc.x2 = Math.max(nx2, ecb.x2);  /* 子ゾーン下限でクランプ */
+        }} else {{
+          var nx1 = zr.x2 + ZONE_MIN_GAP;
+          erc.x1 = Math.min(nx1, ecb.x1);  /* 子ゾーン下限でクランプ */
         }}
       }}
       if (xOvl) {{
         /* 垂直方向: エンベロープ側のみ縮小 */
-        if (erc.y2 > zr.y1 && erc.y1 < zr.y1) {{
-          erc.y2 = zr.y1 - ZONE_MIN_GAP;
-        }} else if (zr.y2 > erc.y1 && zr.y1 < erc.y1) {{
-          erc.y1 = zr.y2 + ZONE_MIN_GAP;
+        var eCy = (erc.y1 + erc.y2) / 2, zCy = (zr.y1 + zr.y2) / 2;
+        if (eCy <= zCy) {{
+          var ny2 = zr.y1 - ZONE_MIN_GAP;
+          erc.y2 = Math.max(ny2, ecb.y2);  /* 子ゾーン下限でクランプ */
+        }} else {{
+          var ny1 = zr.y2 + ZONE_MIN_GAP;
+          erc.y1 = Math.min(ny1, ecb.y1);  /* 子ゾーン下限でクランプ */
+        }}
+      }}
+    }}
+  }}
+
+  /* エンベロープ同士の重なり解消（midpoint snapping）
+   * 複数エンベロープ定義時に互いが重ならないようにする。 */
+  for (var ei = 0; ei < envRects.length; ei++) {{
+    for (var ej = ei + 1; ej < envRects.length; ej++) {{
+      var ea = envRects[ei], eb = envRects[ej];
+      var yOvl = ea.y1 < eb.y2 && eb.y1 < ea.y2;
+      var xOvl = ea.x1 < eb.x2 && eb.x1 < ea.x2;
+      if (yOvl && xOvl) {{
+        var xD = Math.min(ea.x2, eb.x2) - Math.max(ea.x1, eb.x1);
+        var yD = Math.min(ea.y2, eb.y2) - Math.max(ea.y1, eb.y1);
+        if (xD <= yD) {{
+          var aCx = (ea.x1 + ea.x2) / 2, bCx = (eb.x1 + eb.x2) / 2;
+          var mid = (Math.min(ea.x2, eb.x2) + Math.max(ea.x1, eb.x1)) / 2;
+          if (aCx <= bCx) {{ ea.x2 = mid - ZONE_MIN_GAP / 2; eb.x1 = mid + ZONE_MIN_GAP / 2; }}
+          else {{ eb.x2 = mid - ZONE_MIN_GAP / 2; ea.x1 = mid + ZONE_MIN_GAP / 2; }}
+        }} else {{
+          var aCy = (ea.y1 + ea.y2) / 2, bCy = (eb.y1 + eb.y2) / 2;
+          var mid = (Math.min(ea.y2, eb.y2) + Math.max(ea.y1, eb.y1)) / 2;
+          if (aCy <= bCy) {{ ea.y2 = mid - ZONE_MIN_GAP / 2; eb.y1 = mid + ZONE_MIN_GAP / 2; }}
+          else {{ eb.y2 = mid - ZONE_MIN_GAP / 2; ea.y1 = mid + ZONE_MIN_GAP / 2; }}
         }}
       }}
     }}
