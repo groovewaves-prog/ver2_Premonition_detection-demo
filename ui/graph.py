@@ -272,6 +272,13 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
                       + EDGE_GAP
                       + zi["row_aboves"][ri + 1])
 
+    # --- Pass 4: 列境界メタデータを zones に注入 ---
+    # beforeDrawing で colspan ベースの最小幅を強制するため
+    zones["_col_bounds"] = {
+        str(c): {"x_start": col_x_start[c], "width": col_min_w[c]}
+        for c in sorted(col_min_w.keys())
+    }
+
     return positions
 
 
@@ -568,8 +575,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     # --- vis.js レイアウトオプション組み立て ---
     if _use_fixed:
         _layout_js = "layout: { hierarchical: false }"
-        _edge_smooth_js = ("smooth: { type: 'cubicBezier', "
-                           "forceDirection: 'vertical', roundness: 0.15 }")
+        _edge_smooth_js = "smooth: false"
     else:
         _layout_js = (
             f"layout: {{ hierarchical: {{ enabled: true, direction: 'UD', "
@@ -726,11 +732,30 @@ network.on('beforeDrawing', function(ctx) {{
     zoneKeys.push(zk);
   }}
 
-  /* ── 第1.5パス: ゾーンごとのノード包含下限を記録 ──
+  /* ── 第1.5パス: colspan ベースの最小幅を強制 ──
+   * dc_core のように colspan>1 でもノードが中央に集中している場合、
+   * getBoundingBox だけでは幅が足りない。Python 側で注入した
+   * _col_bounds を参照して、占有列の全幅をゾーン矩形に強制する。 */
+  var colBounds = zones._col_bounds || {{}};
+  for (var i = 0; i < zoneRects.length; i++) {{
+    var z = zoneRects[i].zone;
+    var g = z.grid;
+    if (!g || g.length < 3 || g[2] <= 1) continue;
+    var colStart = g[0], colspan = g[2];
+    var cb0 = colBounds[String(colStart)];
+    var cbN = colBounds[String(colStart + colspan - 1)];
+    if (!cb0 || !cbN) continue;
+    var spanLeft = cb0.x_start - ZONE_PAD;
+    var spanRight = cbN.x_start + cbN.width + ZONE_PAD;
+    if (zoneRects[i].x1 > spanLeft) zoneRects[i].x1 = spanLeft;
+    if (zoneRects[i].x2 < spanRight) zoneRects[i].x2 = spanRight;
+  }}
+
+  /* ── 第1.75パス: ゾーンごとのノード包含下限を記録 ──
    * 第2パスの midpoint snapping がゾーン矩形を縮めすぎて
    * ノードが枠外に飛び出すのを防ぐ。
    * origBounds[i] = {{x1,y1,x2,y2}} はノード群の getBoundingBox
-   * から算出した「これ以上縮めてはならない下限」。 */
+   * + colspan 拡張後の「これ以上縮めてはならない下限」。 */
   var origBounds = [];
   for (var i = 0; i < zoneRects.length; i++) {{
     origBounds.push({{
@@ -965,8 +990,8 @@ network.on('beforeDrawing', function(ctx) {{
       ctx.font = 'bold 12px Arial, sans-serif';
       ctx.fillStyle = env.border || '#999';
       ctx.textAlign = 'left';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(env.label, eR.x1 + 12, eR.y1 - 6);
+      ctx.textBaseline = 'top';
+      ctx.fillText(env.label, eR.x1 + 12, eR.y1 + 5);
     }}
   }}
 
@@ -992,13 +1017,13 @@ network.on('beforeDrawing', function(ctx) {{
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-    /* ゾーンラベル（ボックス上部） */
+    /* ゾーンラベル（ボックス内部の上端、パディング領域に配置） */
     if (z.label) {{
       ctx.font = '11px Arial, sans-serif';
       ctx.fillStyle = z.border || '#888';
       ctx.textAlign = 'left';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(z.label, zr.x1 + 8, zr.y1 - 4);
+      ctx.textBaseline = 'top';
+      ctx.fillText(z.label, zr.x1 + 8, zr.y1 + 5);
     }}
   }}
 }});
