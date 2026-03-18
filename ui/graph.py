@@ -233,6 +233,151 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     return positions
 
 
+# =====================================================
+# ELK.js レイアウト計算（Phase 1: _compute_fixed_positions の代替）
+# =====================================================
+
+def _est_node_size(nid: str, topology: dict, font_size: int = 12) -> tuple:
+    """ELK用ノードサイズ推定。Returns (width, height) in pixels."""
+    node = topology.get(nid) if topology else None
+    if not isinstance(node, dict):
+        node = {}
+    n_lines = 2  # ID行 + type行
+    meta = node.get("metadata", {})
+    if isinstance(meta, dict):
+        if meta.get("redundancy_type"):
+            n_lines += 1
+        if meta.get("vendor"):
+            n_lines += 1
+    n_lines += 1  # ステータスタグ行
+    line_h = font_size + 5
+    text_h = n_lines * line_h + 24
+
+    node_type = node.get("type", "UNKNOWN")
+    visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
+    shape = visual.get("shape", "box")
+
+    _LABEL_BELOW = {"hexagon", "diamond", "star", "triangle",
+                    "triangleDown", "dot", "square"}
+    if shape in _LABEL_BELOW:
+        height = 30 + 8 + text_h + 16  # shape radius + gap + text + margins
+    else:
+        height = max(48, text_h) + 16  # text + margins
+
+    width = 160  # vis.js widthConstraint 110-180 の中間推定値
+    return (width, height)
+
+
+def _build_elk_graph(zones: dict, topology: dict):
+    """zones + topology → ELK.js 階層グラフ JSON。
+
+    グリッドゾーン（rows 定義）を持つサイトでのみ ELK グラフを生成。
+    ゾーンを ELK の compound node にマッピングし、トポロジーのエッジを
+    ゾーン内（intra-zone）とゾーン間（cross-zone）に分離する。
+    グリッドゾーンがなければ None を返す。
+    """
+    has_layout = any(
+        isinstance(v, dict) and "rows" in v
+        for k, v in zones.items() if not k.startswith("_")
+    )
+    if not has_layout:
+        return None
+
+    cfg = zones.get("_grid", {})
+    H_GAP = cfg.get("node_h_gap", 150)
+    EDGE_GAP = cfg.get("edge_gap", 45)
+    FONT_SZ = cfg.get("font_size", 12)
+
+    node_to_zone = {}
+    zone_entries = []
+
+    for zk, zv in zones.items():
+        if zk.startswith("_") or not isinstance(zv, dict):
+            continue
+        rows = zv.get("rows")
+        if not rows:
+            continue
+
+        grid = zv.get("grid", [0, 0, 1, 1])
+        zone_node_ids = set()
+        elk_children = []
+
+        for row in rows:
+            for nid in row:
+                node_to_zone[nid] = zk
+                zone_node_ids.add(nid)
+                w, h = _est_node_size(nid, topology, FONT_SZ)
+                elk_children.append({"id": nid, "width": w, "height": h})
+
+        # ゾーン内エッジ（parent_id が同一ゾーン内のもの）
+        zone_edges = []
+        eid = 0
+        for nid in zone_node_ids:
+            nd = topology.get(nid, {})
+            if not isinstance(nd, dict):
+                continue
+            pid = nd.get("parent_id")
+            if pid and pid in zone_node_ids:
+                zone_edges.append({
+                    "id": f"ze_{zk}_{eid}",
+                    "sources": [pid], "targets": [nid],
+                })
+                eid += 1
+
+        zone_compound = {
+            "id": f"__zone_{zk}",
+            "layoutOptions": {
+                "elk.algorithm": "layered",
+                "elk.direction": "DOWN",
+                "elk.spacing.nodeNode": str(H_GAP),
+                "elk.layered.spacing.nodeNodeBetweenLayers": str(EDGE_GAP),
+                "elk.padding": (
+                    f"[top={ZONE_PAD_TOP + 15},"
+                    f"left={ZONE_PAD},bottom={ZONE_PAD},right={ZONE_PAD}]"
+                ),
+                "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+            },
+            "children": elk_children,
+            "edges": zone_edges,
+        }
+        zone_entries.append((grid, zk, zone_compound))
+
+    # ゾーンを grid 位置順にソート（ELK の入力順序が配置に影響する）
+    zone_entries.sort(key=lambda x: (x[0][1], x[0][0]))
+
+    # ゾーン間エッジ（parent_id が別ゾーンのもの）
+    cross_edges = []
+    ce_id = 0
+    for nid, nd in topology.items():
+        if not isinstance(nd, dict):
+            continue
+        pid = nd.get("parent_id")
+        if not pid:
+            continue
+        nid_z = node_to_zone.get(nid)
+        pid_z = node_to_zone.get(pid)
+        if nid_z and pid_z and nid_z != pid_z:
+            cross_edges.append({
+                "id": f"ce_{ce_id}",
+                "sources": [pid], "targets": [nid],
+            })
+            ce_id += 1
+
+    return {
+        "id": "root",
+        "layoutOptions": {
+            "elk.algorithm": "layered",
+            "elk.direction": "DOWN",
+            "elk.spacing.nodeNode": "80",
+            "elk.layered.spacing.nodeNodeBetweenLayers": "100",
+            "elk.hierarchyHandling": "INCLUDE_CHILDREN",
+            "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+        },
+        "children": [e[2] for e in zone_entries],
+        "edges": cross_edges,
+    }
+
+
 def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results: List[dict]):
     """
     vis.js でインタラクティブなトポロジーグラフを描画し、
@@ -294,10 +439,14 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     # --- 各状態の使用有無を追跡（凡例表示用） ---
     used_states = set()
 
-    # --- ゾーン定義の読み込み & 固定座標の計算 ---
+    # --- ゾーン定義の読み込み & レイアウト計算 ---
     zones = _load_zones_for_site(topology)
-    fixed_positions = _compute_fixed_positions(zones, topology)
-    _use_fixed = bool(fixed_positions)
+    # ELK.js パス: グリッドゾーンを持つサイトは ELK で計算
+    elk_graph = _build_elk_graph(zones, topology)
+    _use_elk = elk_graph is not None
+    # 非 ELK サイト: Python 側で固定座標を計算（フォールバック）
+    fixed_positions = {} if _use_elk else _compute_fixed_positions(zones, topology)
+    _use_fixed = _use_elk or bool(fixed_positions)
 
     # --- ノード生成 ---
     _n_nodes = len(topology)
@@ -472,7 +621,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
             "widthConstraint": {"minimum": 110, "maximum": 180},
             "heightConstraint": {"minimum": 40},
         }
-        if node_id in fixed_positions:
+        # ELK サイトでは JS 側で位置を計算するため Python 側では設定しない
+        if not _use_elk and node_id in fixed_positions:
             node_obj["x"] = fixed_positions[node_id]["x"]
             node_obj["y"] = fixed_positions[node_id]["y"]
             node_obj["fixed"] = {"x": True, "y": True}
@@ -516,7 +666,10 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     # --- レイアウト設定 ---
     # 初期レイアウトのパラメータ（リフローが最終調整するため、大まかな値で十分）
     _level_sep, _node_sp, _tree_sp = 200, 150, 150
-    if _use_fixed:
+    if _use_elk:
+        # ELK レイアウトは JS 側で計算 → network.fit() で自動調整
+        _canvas_h = max(800, _n_nodes * 55)
+    elif _use_fixed:
         _max_y = max(p["y"] for p in fixed_positions.values())
         _canvas_h = int(_max_y + 250)
     else:
@@ -544,9 +697,49 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     zones_json = json.dumps(zones, ensure_ascii=False)
     legend_html = _build_legend_html(used_states)
 
+    # --- ELK.js 準備 ---
+    if _use_elk:
+        _elk_script_tag = (
+            '<script src="https://unpkg.com/elkjs@0.9.3/lib/elk.bundled.js">'
+            '</script>'
+        )
+        _elk_graph_json = json.dumps(elk_graph, ensure_ascii=False)
+        _elk_layout_js = f"""
+/* ── ELK.js 階層レイアウト計算 ── */
+try {{
+  var _elk = new ELK();
+  var _elkResult = await _elk.layout({_elk_graph_json});
+  var _posMap = {{}};
+  (function _extractPos(node, ox, oy) {{
+    (node.children || []).forEach(function(c) {{
+      var cx = ox + (c.x || 0);
+      var cy = oy + (c.y || 0);
+      if (c.children) {{
+        _extractPos(c, cx, cy);
+      }} else {{
+        _posMap[c.id] = {{ x: cx + (c.width || 0) / 2, y: cy + (c.height || 0) / 2 }};
+      }}
+    }});
+  }})(_elkResult, 0, 0);
+  nodeArr.forEach(function(n) {{
+    if (_posMap[n.id]) {{
+      n.x = _posMap[n.id].x;
+      n.y = _posMap[n.id].y;
+      n.fixed = {{ x: true, y: true }};
+    }}
+  }});
+}} catch(_elkErr) {{
+  console.warn('ELK layout failed, using vis.js fallback:', _elkErr);
+}}
+"""
+    else:
+        _elk_script_tag = ''
+        _elk_layout_js = ''
+
     html = f"""
 <html><head>
 <script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
+{_elk_script_tag}
 <style>
   body {{ margin:0; padding:0; overflow:hidden; }}
   #topo-wrap {{ position:relative; width:100%; height:{_canvas_h}px; }}
@@ -588,9 +781,14 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
   <div id="legend-bar">{legend_html}</div>
 </div>
 <script>
-var nodes = new vis.DataSet({nodes_json});
-var edges = new vis.DataSet({edges_json});
+(async function() {{
+var _USE_ELK = {'true' if _use_elk else 'false'};
+var nodeArr = {nodes_json};
+var edgeArr = {edges_json};
 var zones = {zones_json};
+{_elk_layout_js}
+var nodes = new vis.DataSet(nodeArr);
+var edges = new vis.DataSet(edgeArr);
 var data = {{ nodes: nodes, edges: edges }};
 var options = {{
     {_layout_js},
@@ -960,6 +1158,12 @@ network.on('beforeDrawing', function(ctx) {{
   }}
 }});
 
+/* ── afterDrawing: ELK サイトは fit() のみ、非 ELK は従来のリフロー ── */
+if (_USE_ELK) {{
+  network.once('afterDrawing', function() {{
+    setTimeout(function(){{ network.fit({{padding:50, animation:false}}); }}, 100);
+  }});
+}} else {{
 /* ══════════════════════════════════════════════════════════════
  * Universal Measure & Reflow — 全拠点共通レイアウトアルゴリズム
  * ──────────────────────────────────────────────────────────────
@@ -1141,6 +1345,7 @@ network.once('afterDrawing', function() {{
   }}
   setTimeout(function(){{ network.fit({{padding:50, animation:false}}); }}, 100);
 }});
+}} /* end if/else _USE_ELK afterDrawing */
 
 /* ── ホイールズーム制御ボタン（トグル方式） ──
  * デフォルトは zoomView:false でブラウザスクロールを阻害しない。
@@ -1177,6 +1382,7 @@ function onFsChange() {{
 }}
 document.addEventListener('fullscreenchange', onFsChange);
 document.addEventListener('webkitfullscreenchange', onFsChange);
+}})(); /* end async IIFE */
 </script></body></html>
 """
     # ★ キャッシュに保存（次回rerunで再利用）
