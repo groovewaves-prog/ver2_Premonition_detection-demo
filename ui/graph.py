@@ -540,14 +540,17 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     vertical-align:middle; margin-right:5px;
   }}
   .lg-item {{ margin-right:14px; white-space:nowrap; }}
-  #fs-btn {{
-    position:absolute; top:8px; right:8px; z-index:20;
+  #fs-btn, #zoom-btn {{
+    position:absolute; z-index:20;
     background:rgba(255,255,255,0.92); border:1px solid #ccc;
     border-radius:6px; padding:6px 12px;
     font:13px/1 Arial,sans-serif; color:#444; cursor:pointer;
-    transition:background 0.2s;
+    transition:background 0.2s; user-select:none;
   }}
-  #fs-btn:hover {{ background:#e3f2fd; border-color:#90caf9; }}
+  #fs-btn {{ top:8px; right:8px; }}
+  #zoom-btn {{ top:8px; right:120px; }}
+  #fs-btn:hover, #zoom-btn:hover {{ background:#e3f2fd; border-color:#90caf9; }}
+  #zoom-btn.active {{ background:#e3f2fd; border-color:#1976d2; color:#1976d2; }}
   #topo-wrap:fullscreen,
   #topo-wrap:-webkit-full-screen {{
     width:100vw; height:100vh; background:#fff;
@@ -556,6 +559,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 </head>
 <body>
 <div id="topo-wrap">
+  <button id="zoom-btn" title="押下中のみマウスホイールでズーム">&#x1F50D; ホイールズーム</button>
   <button id="fs-btn" title="全画面表示 / 戻る">&#x26F6; 全画面</button>
   <div id="mynetwork"></div>
   <div id="legend-bar">{legend_html}</div>
@@ -571,7 +575,7 @@ var options = {{
     interaction: {{
         hover: true,
         tooltipDelay: 100,
-        zoomView: true,
+        zoomView: false,
         dragView: true,
         dragNodes: false
     }},
@@ -682,7 +686,60 @@ network.on('beforeDrawing', function(ctx) {{
     }}
   }}
 
-  /* ── 第3パス: 調整済み矩形で描画 ── */
+  /* ── 第3パス: エンベロープ描画（子ゾーンの背後） ──
+   * _envelopes: 複数の子ゾーンを包む親枠（データセンター等）*/
+  var envelopes = zones._envelopes || {{}};
+  var ENV_PAD = 18;
+  for (var ek in envelopes) {{
+    var env = envelopes[ek];
+    var childKeys = env.children || [];
+    var eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
+    var eFound = false;
+    for (var ci = 0; ci < childKeys.length; ci++) {{
+      for (var ri = 0; ri < zoneRects.length; ri++) {{
+        if (zoneRects[ri].key === childKeys[ci]) {{
+          var cr = zoneRects[ri];
+          if (cr.x1 < eMinX) eMinX = cr.x1;
+          if (cr.y1 < eMinY) eMinY = cr.y1;
+          if (cr.x2 > eMaxX) eMaxX = cr.x2;
+          if (cr.y2 > eMaxY) eMaxY = cr.y2;
+          eFound = true;
+        }}
+      }}
+    }}
+    if (!eFound) continue;
+    eMinX -= ENV_PAD; eMinY -= 22; eMaxX += ENV_PAD; eMaxY += ENV_PAD;
+    /* 背景 */
+    ctx.fillStyle = env.color || 'rgba(0,0,0,0.03)';
+    ctx.strokeStyle = env.border || '#bdbdbd';
+    ctx.lineWidth = 1.8;
+    if (env.border_style === 'dashed') ctx.setLineDash([8, 5]);
+    ctx.beginPath();
+    var er = 12;
+    ctx.moveTo(eMinX + er, eMinY);
+    ctx.lineTo(eMaxX - er, eMinY);
+    ctx.arcTo(eMaxX, eMinY, eMaxX, eMinY + er, er);
+    ctx.lineTo(eMaxX, eMaxY - er);
+    ctx.arcTo(eMaxX, eMaxY, eMaxX - er, eMaxY, er);
+    ctx.lineTo(eMinX + er, eMaxY);
+    ctx.arcTo(eMinX, eMaxY, eMinX, eMaxY - er, er);
+    ctx.lineTo(eMinX, eMinY + er);
+    ctx.arcTo(eMinX, eMinY, eMinX + er, eMinY, er);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.setLineDash([]);
+    /* ラベル */
+    if (env.label) {{
+      ctx.font = 'bold 12px Arial, sans-serif';
+      ctx.fillStyle = env.border || '#999';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(env.label, eMinX + 12, eMinY - 6);
+    }}
+  }}
+
+  /* ── 第4パス: 通常ゾーン矩形を描画 ── */
   for (var i = 0; i < zoneRects.length; i++) {{
     var zr = zoneRects[i];
     var z = zr.zone;
@@ -896,6 +953,26 @@ network.once('afterDrawing', function() {{
   }}
   setTimeout(function(){{ network.fit({{padding:50, animation:false}}); }}, 100);
 }});
+
+/* ── ホイールズーム制御ボタン ──
+ * デフォルトは zoomView:false でブラウザスクロールを阻害しない。
+ * ボタン押下中のみ zoomView:true に切り替える。 */
+var zoomBtn = document.getElementById('zoom-btn');
+var _zoomActive = false;
+function _setZoom(on) {{
+  _zoomActive = on;
+  network.setOptions({{ interaction: {{ zoomView: on }} }});
+  zoomBtn.classList.toggle('active', on);
+  zoomBtn.innerHTML = on
+    ? '&#x1F50D; ズーム有効'
+    : '&#x1F50D; ホイールズーム';
+}}
+zoomBtn.addEventListener('mousedown', function(e) {{ e.preventDefault(); _setZoom(true); }});
+zoomBtn.addEventListener('mouseup', function() {{ _setZoom(false); }});
+zoomBtn.addEventListener('mouseleave', function() {{ if (_zoomActive) _setZoom(false); }});
+/* タッチ対応 */
+zoomBtn.addEventListener('touchstart', function(e) {{ e.preventDefault(); _setZoom(true); }});
+zoomBtn.addEventListener('touchend', function() {{ _setZoom(false); }});
 
 /* ── 全画面トグル ── */
 var fsBtn = document.getElementById('fs-btn');
@@ -1137,7 +1214,7 @@ var options = {{
         }}
     }},
     physics: {{ enabled: false }},
-    interaction: {{ hover: true, zoomView: true, dragView: true, dragNodes: false }},
+    interaction: {{ hover: true, zoomView: false, dragView: true, dragNodes: false }},
     nodes: {{
         font: {{ size: 12, face: 'Arial' }},
         margin: {{ top: 6, bottom: 6, left: 8, right: 8 }}
@@ -1147,7 +1224,71 @@ var options = {{
     }}
 }};
 var network = new vis.Network(document.getElementById('impact-net'), data, options);
-network.fit({{ padding: 30 }});
+
+/* ── Measure & Reflow: 同一レベル内の水平重なり解消 ──
+ * vis.js hierarchical layout は nodeSpacing をノード中心間距離で適用するため、
+ * ノード幅が大きいと重なりが発生する。描画後に実サイズを測定し、
+ * 重なりを検出・解消する。 */
+network.once('afterDrawing', function() {{
+  var allIds = nodes.getIds();
+  if (allIds.length === 0) return;
+  var pos = network.getPositions();
+  var bb = {{}};
+  allIds.forEach(function(id) {{
+    try {{ bb[id] = network.getBoundingBox(id); }} catch(e) {{}}
+  }});
+
+  /* レベル別にノードをグループ化 */
+  var levelMap = {{}};
+  nodes.forEach(function(n) {{
+    var lv = n.level != null ? n.level : 0;
+    if (!levelMap[lv]) levelMap[lv] = [];
+    levelMap[lv].push(n.id);
+  }});
+
+  var HGAP = 12; /* 最小水平ギャップ(px) */
+  var changed = false;
+
+  for (var lv in levelMap) {{
+    var ids = levelMap[lv];
+    if (ids.length < 2) continue;
+    /* X座標でソート */
+    ids.sort(function(a, b) {{ return (pos[a] ? pos[a].x : 0) - (pos[b] ? pos[b].x : 0); }});
+    /* 重なり検出 & 解消 */
+    for (var i = 0; i < ids.length - 1; i++) {{
+      var aId = ids[i], bId = ids[i + 1];
+      var aBB = bb[aId], bBB = bb[bId];
+      if (!aBB || !bBB) continue;
+      var overlap = aBB.right + HGAP - bBB.left;
+      if (overlap > 0) {{
+        /* a を左に、b を右に均等シフト */
+        var shift = overlap / 2 + 1;
+        pos[aId].x -= shift;
+        pos[bId].x += shift;
+        /* 後続ノードへの波及: シフト量を連鎖 */
+        for (var j = i + 2; j < ids.length; j++) {{
+          pos[ids[j]].x += shift;
+        }}
+        /* BB更新 */
+        aBB.left -= shift; aBB.right -= shift;
+        bBB.left += shift; bBB.right += shift;
+        changed = true;
+      }}
+    }}
+  }}
+
+  if (changed) {{
+    /* 調整後の座標を適用 */
+    var updates = [];
+    allIds.forEach(function(id) {{
+      if (pos[id]) updates.push({{ id: id, x: pos[id].x, y: pos[id].y }});
+    }});
+    nodes.update(updates);
+    network.fit({{ padding: 30, animation: false }});
+  }} else {{
+    network.fit({{ padding: 30 }});
+  }}
+}});
 </script></body></html>
 """
     # ホップ距離内訳バー
