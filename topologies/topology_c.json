@@ -1,6 +1,15 @@
 {
   "_zones": {
     "_grid": {"col_width": 380, "node_h_gap": 200, "font_size": 12, "edge_gap": 45, "zone_gap": 30},
+    "_envelopes": {
+      "site_c_dc": {
+        "label": "Site-C データセンター (東京 DC-1)",
+        "color": "rgba(120,120,120,0.04)",
+        "border": "#bdbdbd",
+        "border_style": "dashed",
+        "children": ["dc_core", "web_tier", "app_tier", "db_tier"]
+      }
+    },
     "dc_core": {
       "label": "DC Core (Network Infrastructure)",
       "color": "rgba(200,230,201,0.18)",
