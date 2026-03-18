@@ -329,7 +329,11 @@ def _build_elk_graph(zones: dict, topology: dict):
                     f"[top={ZONE_PAD_TOP + 15},"
                     f"left={ZONE_PAD},bottom={ZONE_PAD},right={ZONE_PAD}]"
                 ),
-                "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+                # ★ considerModelOrder は compound node に設定禁止。
+                # INCLUDE_CHILDREN モードでは root の layered が全ノード配置を
+                # 統合管理するため、compound に同オプションがあると ELK 内部で
+                # 未初期化参照が発生しクラッシュする (elkjs ≤0.9.3)。
+                # ノード入力順序のヒントは root レベル設定から継承される。
             },
             "children": elk_children,
             "edges": zone_edges,
