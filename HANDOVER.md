@@ -25,6 +25,14 @@
   - web_tier: x=0..430, app_tier: x=522..952, db_tier: x=1044..1474 (各間 92px gap)
   - dc_core: x=0..1474 (3列スパン), aws_cloud: x=1566..1996
 
+### 固定レイアウトの白余白問題の修正
+- **ファイル**: `ui/graph.py` — afterDrawing リフロー + キャンバス高さ計算
+- **原因**: afterDrawing リフローは hierarchical レイアウト（Site A/B）用。固定座標レイアウト（Site C）で実行されると `moveNode()` がグリッド配置を破壊し、巨大な白余白が発生
+- **修正**:
+  1. `_useFixed` フラグを JS に渡し、固定レイアウトではリフローをスキップ → `network.fit()` のみ実行
+  2. `_canvas_h` を `_row_bounds` からタイトに算出（ゾーンパディング考慮）
+  3. beforeDrawing / afterDrawing / IIFE 全体に try-catch ガードを追加（障害シナリオでの白画面防止）
+
 ### エッジ直線化（Site C）
 - 固定レイアウトのエッジを `cubicBezier` → `smooth: false`（直線）に変更
 
@@ -53,5 +61,6 @@
 - テストファイル（tests/test_digital_twin_v2.py, test_integration_v2.py）はパス不整合で実行不可（本セッションの変更とは無関係）
 
 ## 次セッションへの推奨アクション
-1. ブラウザで Site C のトポロジーマップを確認し、ゾーン分離が正しく表示されるか検証
-2. 必要に応じて FAD-1（デバイスタイプレジストリ）の実装に着手
+1. ブラウザで Site C の「WAN全回線断」シナリオを確認し、白余白なく表示されるか検証
+2. Site A/B の hierarchical レイアウトが従来通り正常に動作するか確認（リフローは Site A/B のみで実行）
+3. 必要に応じて FAD-1（デバイスタイプレジストリ）の実装に着手

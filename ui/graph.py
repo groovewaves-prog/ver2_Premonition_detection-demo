@@ -571,8 +571,14 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     # 初期レイアウトのパラメータ（リフローが最終調整するため、大まかな値で十分）
     _level_sep, _node_sp, _tree_sp = 200, 150, 150
     if _use_fixed:
-        _max_y = max(p["y"] for p in fixed_positions.values())
-        _canvas_h = int(_max_y + 250)
+        # グリッドセル境界からキャンバス高さを算出（タイトフィット）
+        _row_bounds = zones.get("_row_bounds", {})
+        if _row_bounds:
+            _max_grid_y = max(rb["y_start"] + rb["height"] for rb in _row_bounds.values())
+            _canvas_h = int(_max_grid_y + ENV_PAD_TOP + ENV_PAD + ZONE_PAD + 80)
+        else:
+            _max_y = max(p["y"] for p in fixed_positions.values())
+            _canvas_h = int(_max_y + 250)
     else:
         # キャンバス高さはリフロー後に network.fit() で自動調整される
         _canvas_h = max(700, _n_nodes * 80)
@@ -646,6 +652,7 @@ try {{
 var nodes = new vis.DataSet({nodes_json});
 var edges = new vis.DataSet({edges_json});
 var zones = {zones_json};
+var _useFixed = {'true' if _use_fixed else 'false'};
 var data = {{ nodes: nodes, edges: edges }};
 var options = {{
     {_layout_js},
@@ -910,6 +917,13 @@ network.on('beforeDrawing', function(ctx) {{
  * ══════════════════════════════════════════════════════════════ */
 network.once('afterDrawing', function() {{
   try {{
+  /* 固定座標レイアウトではリフロー不要（Python 側で正確に配置済み）。
+   * moveNode() は fixed ノードも移動するため、グリッドレイアウトが壊れる。
+   * fit() のみ実行してキャンバスに収める。 */
+  if (_useFixed) {{
+    setTimeout(function(){{ network.fit({{padding:30, animation:false}}); }}, 50);
+    return;
+  }}
   var allIds = nodes.getIds();
   if (allIds.length === 0) {{ network.fit({{padding:50}}); return; }}
 
