@@ -132,40 +132,47 @@ REST API / gRPC / MQTT で監視する機器は、現在の前提と根本的に
 
 ---
 
-### FAD-2: トポロジーマップのゾーン表示 — エリア別グルーピング
+### FAD-2: トポロジーマップのゾーン表示 — エリア別グルーピング【実装済み】
 
 **背景:** C拠点（18ノード）のようにサーバ・クラウドを含む大規模トポロジーでは、
 ノードがどの物理エリア（データセンター、ラック列、クラウドリージョン等）に
 属するかを視覚的に把握する必要がある。
 
-**方針:** トポロジーJSONに `_zones` メタデータを定義し、vis.js の
-`beforeDrawing` イベントで半透明の背景ボックスを描画する。
+**実装済みアルゴリズム: GML Grid-based Zone Layout**
 
-**準備済み（実装途中）:**
-- `topologies/topology_c.json` に `_zones` 定義を追加済み
-- `registry.py` で `_` 始まりキーをスキップするガード追加済み
-- `ui/graph.py` に `_load_zones_for_site()` ヘルパー追加済み
+ゾーン矩形の非重複を**構造的に保証**するトップダウン方式。
+学術的根拠: GML (Grid and Modularity-based Layout, PLOS ONE 2019)
 
-**残作業:**
-- vis.js の `beforeDrawing` コールバックでゾーンボックスを描画
-- エッジを直線化（`smooth: false`）し、視認性向上
-- ゾーンラベルをボックス上部に表示
+| レイヤー | 処理内容 | ファイル |
+|---|---|---|
+| Python `_compute_fixed_positions()` Pass 1.5 | 各グリッド列の必要幅を動的計算 | `ui/graph.py` |
+| Python Pass 4 | `_col_bounds` + `_row_bounds` メタデータを zones に注入 | `ui/graph.py` |
+| JS `beforeDrawing` Pass 1 | `grid: [col, row, colspan, rowspan]` + `_col_bounds` + `_row_bounds` からゾーン矩形をトップダウン算出 | `ui/graph.py` |
+| JS Pass 1b | 安全ネット: ノード BB がセル外にはみ出す場合のみ拡張 | `ui/graph.py` |
+| JS Pass 2 | エンベロープ = 子ゾーンの和集合 + パディング | `ui/graph.py` |
+| JS Pass 3 | 描画 (エンベロープ → ゾーン) | `ui/graph.py` |
+
+**設計原則（必ず遵守）:**
+1. **ゾーン矩形はグリッドセル境界から決定する（トップダウン）。** ノード BB からボトムアップに算出してはならない。ボトムアップ方式は vis.js の描画サイズ誤差で重なりが発生し、midpoint snapping + origBounds clamp の悪循環で解消不能になる。
+2. **衝突解消ロジックを書かない。** グリッドセルは Python 側で非重複に配置済みであり、JS 側で collision resolution は不要。追加すると複雑化するだけで効果がない。
+3. **グリッド情報がないゾーンのみフォールバック** として旧来のノード BB 方式を使用する。
 
 **`_zones` フォーマット（topology JSON 内）:**
 ```json
 {
   "_zones": {
-    "dc_core": {
-      "label": "DC Core (Network Infrastructure)",
-      "color": "rgba(200,230,201,0.18)",
-      "border": "#a5d6a7",
-      "nodes": ["DC_ROUTER_C01", "FW_C01_PRIMARY", ...]
+    "_grid": {"col_width": 380, "node_h_gap": 200, "font_size": 12, "edge_gap": 45, "zone_gap": 30},
+    "_envelopes": {
+      "site_c_dc": {
+        "label": "Site-C データセンター",
+        "children": ["dc_core", "web_tier", "app_tier", "db_tier"]
+      }
     },
-    "aws_cloud": {
-      "label": "AWS Cloud (ap-northeast-1)",
-      "color": "rgba(237,231,246,0.22)",
-      "border": "#b39ddb",
-      "nodes": ["AWS_DX_C01", "AWS_TGW_C01", ...]
+    "dc_core": {
+      "label": "DC Core",
+      "grid": [0, 0, 3, 1],
+      "rows": [["DC_ROUTER_C01"], ["FW_C01_PRIMARY", "FW_C01_SECONDARY"]],
+      "nodes": ["DC_ROUTER_C01", "FW_C01_PRIMARY", "FW_C01_SECONDARY"]
     }
   }
 }

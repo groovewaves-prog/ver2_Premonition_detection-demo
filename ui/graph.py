@@ -642,6 +642,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 </div>
 <script>
 (function() {{
+try {{
 var nodes = new vis.DataSet({nodes_json});
 var edges = new vis.DataSet({edges_json});
 var zones = {zones_json};
@@ -687,6 +688,7 @@ var network = new vis.Network(document.getElementById('mynetwork'), data, option
  *     3    — 描画 (エンベロープ → ゾーン)
  * ─────────────────────────────────────── */
 network.on('beforeDrawing', function(ctx) {{
+  try {{
   /* ★ 定数はモジュールレベルの Python 定数から注入（一元管理） */
   var ZONE_PAD = {ZONE_PAD};
   var ZONE_PAD_TOP = {ZONE_PAD_TOP};
@@ -747,15 +749,17 @@ network.on('beforeDrawing', function(ctx) {{
             found = true;
           }}
         }} catch(e) {{
-          var pp = network.getPositions([nid]);
-          if (pp[nid]) {{
-            var px = pp[nid].x, py = pp[nid].y;
-            if (px - 80 < minX) minX = px - 80;
-            if (px + 80 > maxX) maxX = px + 80;
-            if (py - 80 < minY) minY = py - 80;
-            if (py + 80 > maxY) maxY = py + 80;
-            found = true;
-          }}
+          try {{
+            var pp = network.getPositions([nid]);
+            if (pp[nid]) {{
+              var px = pp[nid].x, py = pp[nid].y;
+              if (px - 80 < minX) minX = px - 80;
+              if (px + 80 > maxX) maxX = px + 80;
+              if (py - 80 < minY) minY = py - 80;
+              if (py + 80 > maxY) maxY = py + 80;
+              found = true;
+            }}
+          }} catch(e2) {{ /* ignore */ }}
         }}
       }}
       if (!found) continue;
@@ -876,6 +880,12 @@ network.on('beforeDrawing', function(ctx) {{
       ctx.fillText(z.label, zr.x1 + 8, zr.y1 + 5);
     }}
   }}
+  }} catch(err) {{
+    /* beforeDrawing 内の例外がキャンバス描画を破壊しないようガード。
+     * 障害シナリオ発動時に getBoundingBox() がレイアウト途中で
+     * 例外を投げるケースへの安全ネット。 */
+    console.warn('beforeDrawing zone render error:', err);
+  }}
 }});
 
 /* ══════════════════════════════════════════════════════════════
@@ -899,6 +909,7 @@ network.on('beforeDrawing', function(ctx) {{
  *   Phase 6: 座標適用 & fit
  * ══════════════════════════════════════════════════════════════ */
 network.once('afterDrawing', function() {{
+  try {{
   var allIds = nodes.getIds();
   if (allIds.length === 0) {{ network.fit({{padding:50}}); return; }}
 
@@ -1058,6 +1069,11 @@ network.once('afterDrawing', function() {{
     }});
   }}
   setTimeout(function(){{ network.fit({{padding:50, animation:false}}); }}, 100);
+  }} catch(err) {{
+    /* リフロー中の例外がキャンバスを破壊しないようガード */
+    console.warn('afterDrawing reflow error:', err);
+    try {{ network.fit({{padding:50, animation:false}}); }} catch(e2) {{}}
+  }}
 }});
 
 /* ── ホイールズーム制御ボタン（トグル方式） ──
@@ -1095,6 +1111,16 @@ function onFsChange() {{
 }}
 document.addEventListener('fullscreenchange', onFsChange);
 document.addEventListener('webkitfullscreenchange', onFsChange);
+}} catch(fatalErr) {{
+  /* vis.js 初期化エラーをキャッチしてユーザーに通知 */
+  console.error('Topology graph initialization error:', fatalErr);
+  var el = document.getElementById('mynetwork');
+  if (el) {{
+    el.innerHTML = '<div style="padding:40px;color:#c00;font-family:sans-serif;">'
+      + '<b>⚠ トポロジーマップの描画に失敗しました</b><br>'
+      + '<small>' + fatalErr.message + '</small></div>';
+  }}
+}}
 }})(); /* end IIFE */
 </script></body></html>
 """
