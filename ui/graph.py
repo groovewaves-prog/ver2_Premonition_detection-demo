@@ -721,34 +721,30 @@ network.on('beforeDrawing', function(ctx) {{
     }});
   }}
 
-  /* エンベロープ vs 非子ゾーンの重なり解消 */
+  /* エンベロープ vs 非子ゾーンの重なり解消
+   * ★ エンベロープ側のみ縮小し、ゾーン矩形は一切変更しない。
+   * エンベロープは装飾的な親枠であり、ゾーンの描画位置を壊してはならない。 */
   for (var ei = 0; ei < envRects.length; ei++) {{
-    var er = envRects[ei];
+    var erc = envRects[ei];
     for (var zi = 0; zi < zoneRects.length; zi++) {{
       var zr = zoneRects[zi];
-      if (er.childSet[zr.key]) continue;  /* 子ゾーンはスキップ */
-      var yOvl = er.y1 < zr.y2 && zr.y1 < er.y2;
-      var xOvl = er.x1 < zr.x2 && zr.x1 < er.x2;
+      if (erc.childSet[zr.key]) continue;  /* 子ゾーンはスキップ */
+      var yOvl = erc.y1 < zr.y2 && zr.y1 < erc.y2;
+      var xOvl = erc.x1 < zr.x2 && zr.x1 < erc.x2;
       if (yOvl) {{
-        if (er.x2 > zr.x1 && er.x1 < zr.x1) {{
-          var mid = (er.x2 + zr.x1) / 2;
-          er.x2 = mid - ZONE_MIN_GAP / 2;
-          zr.x1 = mid + ZONE_MIN_GAP / 2;
-        }} else if (zr.x2 > er.x1 && zr.x1 < er.x1) {{
-          var mid = (zr.x2 + er.x1) / 2;
-          zr.x2 = mid - ZONE_MIN_GAP / 2;
-          er.x1 = mid + ZONE_MIN_GAP / 2;
+        /* 水平方向: エンベロープ側のみ縮小 */
+        if (erc.x2 > zr.x1 && erc.x1 < zr.x1) {{
+          erc.x2 = zr.x1 - ZONE_MIN_GAP;
+        }} else if (zr.x2 > erc.x1 && zr.x1 < erc.x1) {{
+          erc.x1 = zr.x2 + ZONE_MIN_GAP;
         }}
       }}
       if (xOvl) {{
-        if (er.y2 > zr.y1 && er.y1 < zr.y1) {{
-          var mid = (er.y2 + zr.y1) / 2;
-          er.y2 = mid - ZONE_MIN_GAP / 2;
-          zr.y1 = mid + ZONE_MIN_GAP / 2;
-        }} else if (zr.y2 > er.y1 && zr.y1 < er.y1) {{
-          var mid = (zr.y2 + er.y1) / 2;
-          zr.y2 = mid - ZONE_MIN_GAP / 2;
-          er.y1 = mid + ZONE_MIN_GAP / 2;
+        /* 垂直方向: エンベロープ側のみ縮小 */
+        if (erc.y2 > zr.y1 && erc.y1 < zr.y1) {{
+          erc.y2 = zr.y1 - ZONE_MIN_GAP;
+        }} else if (zr.y2 > erc.y1 && zr.y1 < erc.y1) {{
+          erc.y1 = zr.y2 + ZONE_MIN_GAP;
         }}
       }}
     }}
