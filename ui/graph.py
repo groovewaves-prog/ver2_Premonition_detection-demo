@@ -272,11 +272,16 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
                       + EDGE_GAP
                       + zi["row_aboves"][ri + 1])
 
-    # --- Pass 4: 列境界メタデータを zones に注入 ---
-    # beforeDrawing で colspan ベースの最小幅を強制するため
+    # --- Pass 4: グリッドセル境界メタデータを zones に注入 ---
+    # beforeDrawing でゾーン矩形をトップダウン算出するため
+    # (GML grid-based layout: グリッドセル境界が矩形を決定 → 非重複保証)
     zones["_col_bounds"] = {
         str(c): {"x_start": col_x_start[c], "width": col_min_w[c]}
         for c in sorted(col_min_w.keys())
+    }
+    zones["_row_bounds"] = {
+        str(r): {"y_start": grid_row_y[r], "height": grid_row_max[r]}
+        for r in sorted(grid_row_y.keys())
     }
 
     return positions
@@ -669,199 +674,125 @@ var network = new vis.Network(document.getElementById('mynetwork'), data, option
  *     ノード座標を算出する際に MIN_ZONE_GAP + ENV_PAD を考慮し、
  *     ゾーン矩形が重ならない配置を保証する。
  *
- *   レイヤー2 (このコールバック = 安全ネット):
- *     万一重なりが残った場合のフォールバック解消。
- *     正常系では発火しない。
+ *   レイヤー2 (このコールバック):
+ *     GML grid-based layout (PLOS ONE, 2019) の原理:
+ *     グリッドセル境界からゾーン矩形をトップダウンに決定し、
+ *     構造的に非重複を保証する。ボトムアップの衝突解消は不要。
  *
  *   パス構成:
- *     1    — ゾーン矩形算出 (getBoundingBox + パディング)
- *     1.5  — ノード包含下限を記録 (origBounds)
- *     2    — ゾーン ↔ ゾーン重なり解消 (中心座標比較 + 浅い軸選択)
- *     2.5  — origBounds クランプ (縮みすぎ防止)
- *     3    — エンベロープ算出 + 重なり解消
- *            (エンベロープ vs 外部ゾーン: エンベロープ側のみ縮小)
- *            (エンベロープ vs エンベロープ: midpoint snapping)
- *     4    — 描画
+ *     1    — グリッドセルベースでゾーン矩形を算出
+ *            (_col_bounds + _row_bounds → 列行の境界から矩形を決定)
+ *     1b   — 安全ネット: ノード BB がセル外にはみ出す場合は拡張
+ *     2    — エンベロープ算出 (子ゾーン和集合 + パディング)
+ *     3    — 描画 (エンベロープ → ゾーン)
  * ─────────────────────────────────────── */
 network.on('beforeDrawing', function(ctx) {{
   /* ★ 定数はモジュールレベルの Python 定数から注入（一元管理） */
   var ZONE_PAD = {ZONE_PAD};
   var ZONE_PAD_TOP = {ZONE_PAD_TOP};
-  var ZONE_MIN_GAP = {ZONE_MIN_GAP};
   var ENV_PAD = {ENV_PAD};
   var ENV_PAD_TOP = {ENV_PAD_TOP};
 
-  /* ── 第1パス: 全ゾーン矩形を算出 ── */
+  /* Python 側で注入されたグリッドセル境界 */
+  var colBounds = zones._col_bounds || {{}};
+  var rowBounds = zones._row_bounds || {{}};
+  var hasGrid = (Object.keys(colBounds).length > 0 && Object.keys(rowBounds).length > 0);
+
+  /* ── 第1パス: グリッドセルベースでゾーン矩形を算出 ──
+   * GML 原理: 各ゾーンは grid: [col, row, colspan, rowspan] を持ち、
+   * 対応するグリッドセルの和集合が矩形を決定する。
+   * グリッドセルは Python 側で非重複に配置済み → 矩形も非重複。
+   *
+   * グリッド情報がないゾーン（旧式 or auto-generated）は
+   * フォールバックとしてノード BB から算出する。 */
   var zoneRects = [];
-  var zoneKeys = [];
   for (var zk in zones) {{
     if (zk.charAt(0) === '_') continue;
     var z = zones[zk];
     var memberNodes = z.nodes || [];
-    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    var found = false;
-    for (var i = 0; i < memberNodes.length; i++) {{
-      var nid = memberNodes[i];
-      try {{
-        var bb = network.getBoundingBox(nid);
-        if (bb) {{
-          if (bb.left < minX) minX = bb.left;
-          if (bb.right > maxX) maxX = bb.right;
-          if (bb.top < minY) minY = bb.top;
-          if (bb.bottom > maxY) maxY = bb.bottom;
-          found = true;
-        }}
-      }} catch(e) {{
-        var pp = network.getPositions([nid]);
-        if (pp[nid]) {{
-          var px = pp[nid].x, py = pp[nid].y;
-          if (px - 80 < minX) minX = px - 80;
-          if (px + 80 > maxX) maxX = px + 80;
-          if (py - 80 < minY) minY = py - 80;
-          if (py + 80 > maxY) maxY = py + 80;
-          found = true;
-        }}
-      }}
-    }}
-    if (!found) continue;
-    zoneRects.push({{
-      key: zk, zone: z,
-      x1: minX - ZONE_PAD, y1: minY - ZONE_PAD_TOP,
-      x2: maxX + ZONE_PAD, y2: maxY + ZONE_PAD
-    }});
-    zoneKeys.push(zk);
-  }}
-
-  /* ── 第1.5パス: colspan ベースの最小幅を強制 ──
-   * dc_core のように colspan>1 でもノードが中央に集中している場合、
-   * getBoundingBox だけでは幅が足りない。Python 側で注入した
-   * _col_bounds を参照して、占有列の全幅をゾーン矩形に強制する。 */
-  var colBounds = zones._col_bounds || {{}};
-  for (var i = 0; i < zoneRects.length; i++) {{
-    var z = zoneRects[i].zone;
+    if (memberNodes.length === 0) continue;
     var g = z.grid;
-    if (!g || g.length < 3 || g[2] <= 1) continue;
-    var colStart = g[0], colspan = g[2];
-    var cb0 = colBounds[String(colStart)];
-    var cbN = colBounds[String(colStart + colspan - 1)];
-    if (!cb0 || !cbN) continue;
-    var spanLeft = cb0.x_start - ZONE_PAD;
-    var spanRight = cbN.x_start + cbN.width + ZONE_PAD;
-    if (zoneRects[i].x1 > spanLeft) zoneRects[i].x1 = spanLeft;
-    if (zoneRects[i].x2 < spanRight) zoneRects[i].x2 = spanRight;
-  }}
+    var x1, y1, x2, y2;
+    var usedGrid = false;
 
-  /* ── 第1.75パス: ゾーンごとのノード包含下限を記録 ──
-   * 第2パスの midpoint snapping がゾーン矩形を縮めすぎて
-   * ノードが枠外に飛び出すのを防ぐ。
-   * origBounds[i] = {{x1,y1,x2,y2}} はノード群の getBoundingBox
-   * + colspan 拡張後の「これ以上縮めてはならない下限」。 */
-  var origBounds = [];
-  for (var i = 0; i < zoneRects.length; i++) {{
-    origBounds.push({{
-      x1: zoneRects[i].x1, y1: zoneRects[i].y1,
-      x2: zoneRects[i].x2, y2: zoneRects[i].y2
-    }});
-  }}
-
-  /* ── 第2パス: ゾーン間の重なり解消 ──
-   * 水平・垂直それぞれで、重なりがあれば中間点にスナップ。
-   * ★ 改善点:
-   *   1) 完全包含（A が B を含む or 逆）も検出・解消
-   *   2) midpoint 結果が origBounds を割り込む場合はクランプ
-   *      （ノードが枠外に飛び出すのを防止） */
-  for (var i = 0; i < zoneRects.length; i++) {{
-    for (var j = i + 1; j < zoneRects.length; j++) {{
-      var a = zoneRects[i], b = zoneRects[j];
-      /* 垂直範囲が重なるか */
-      var yOverlap = a.y1 < b.y2 && b.y1 < a.y2;
-      /* 水平範囲が重なるか */
-      var xOverlap = a.x1 < b.x2 && b.x1 < a.x2;
-
-      if (yOverlap && xOverlap) {{
-        /* 両軸で重なっている → 重なりが浅い軸で解消する */
-        var xDepth = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
-        var yDepth = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
-
-        if (xDepth <= yDepth) {{
-          /* 水平方向で解消（完全包含含む: 中心の左右で判定） */
-          var aCx = (a.x1 + a.x2) / 2, bCx = (b.x1 + b.x2) / 2;
-          if (aCx <= bCx) {{
-            var mid = (Math.min(a.x2, b.x2) + Math.max(a.x1, b.x1)) / 2;
-            a.x2 = mid - ZONE_MIN_GAP / 2;
-            b.x1 = mid + ZONE_MIN_GAP / 2;
-          }} else {{
-            var mid = (Math.min(a.x2, b.x2) + Math.max(a.x1, b.x1)) / 2;
-            b.x2 = mid - ZONE_MIN_GAP / 2;
-            a.x1 = mid + ZONE_MIN_GAP / 2;
-          }}
-        }} else {{
-          /* 垂直方向で解消 */
-          var aCy = (a.y1 + a.y2) / 2, bCy = (b.y1 + b.y2) / 2;
-          if (aCy <= bCy) {{
-            var mid = (Math.min(a.y2, b.y2) + Math.max(a.y1, b.y1)) / 2;
-            a.y2 = mid - ZONE_MIN_GAP / 2;
-            b.y1 = mid + ZONE_MIN_GAP / 2;
-          }} else {{
-            var mid = (Math.min(a.y2, b.y2) + Math.max(a.y1, b.y1)) / 2;
-            b.y2 = mid - ZONE_MIN_GAP / 2;
-            a.y1 = mid + ZONE_MIN_GAP / 2;
-          }}
-        }}
-      }} else if (yOverlap) {{
-        /* 水平方向の重なり解消（Y軸のみ重複 = 横並びで接近） */
-        var aCx = (a.x1 + a.x2) / 2, bCx = (b.x1 + b.x2) / 2;
-        if (aCx <= bCx) {{
-          var mid = (a.x2 + b.x1) / 2;
-          a.x2 = mid - ZONE_MIN_GAP / 2;
-          b.x1 = mid + ZONE_MIN_GAP / 2;
-        }} else {{
-          var mid = (b.x2 + a.x1) / 2;
-          b.x2 = mid - ZONE_MIN_GAP / 2;
-          a.x1 = mid + ZONE_MIN_GAP / 2;
-        }}
-      }} else if (xOverlap) {{
-        /* 垂直方向の重なり解消（X軸のみ重複 = 上下で接近） */
-        var aCy = (a.y1 + a.y2) / 2, bCy = (b.y1 + b.y2) / 2;
-        if (aCy <= bCy) {{
-          var mid = (a.y2 + b.y1) / 2;
-          a.y2 = mid - ZONE_MIN_GAP / 2;
-          b.y1 = mid + ZONE_MIN_GAP / 2;
-        }} else {{
-          var mid = (b.y2 + a.y1) / 2;
-          b.y2 = mid - ZONE_MIN_GAP / 2;
-          a.y1 = mid + ZONE_MIN_GAP / 2;
-        }}
+    if (hasGrid && g && g.length >= 4) {{
+      /* ── グリッドセルベース（トップダウン）── */
+      var colStart = g[0], rowStart = g[1], colspan = g[2], rowspan = g[3];
+      var cb0 = colBounds[String(colStart)];
+      var cbN = colBounds[String(colStart + colspan - 1)];
+      var rb0 = rowBounds[String(rowStart)];
+      var rbN = rowBounds[String(rowStart + rowspan - 1)];
+      if (cb0 && cbN && rb0 && rbN) {{
+        x1 = cb0.x_start;
+        x2 = cbN.x_start + cbN.width;
+        y1 = rb0.y_start;
+        y2 = rbN.y_start + rbN.height;
+        usedGrid = true;
       }}
     }}
+
+    if (!usedGrid) {{
+      /* ── フォールバック: ノード BB から算出 ── */
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      var found = false;
+      for (var i = 0; i < memberNodes.length; i++) {{
+        var nid = memberNodes[i];
+        try {{
+          var bb = network.getBoundingBox(nid);
+          if (bb) {{
+            if (bb.left < minX) minX = bb.left;
+            if (bb.right > maxX) maxX = bb.right;
+            if (bb.top < minY) minY = bb.top;
+            if (bb.bottom > maxY) maxY = bb.bottom;
+            found = true;
+          }}
+        }} catch(e) {{
+          var pp = network.getPositions([nid]);
+          if (pp[nid]) {{
+            var px = pp[nid].x, py = pp[nid].y;
+            if (px - 80 < minX) minX = px - 80;
+            if (px + 80 > maxX) maxX = px + 80;
+            if (py - 80 < minY) minY = py - 80;
+            if (py + 80 > maxY) maxY = py + 80;
+            found = true;
+          }}
+        }}
+      }}
+      if (!found) continue;
+      x1 = minX - ZONE_PAD;
+      y1 = minY - ZONE_PAD_TOP;
+      x2 = maxX + ZONE_PAD;
+      y2 = maxY + ZONE_PAD;
+    }}
+
+    /* ── 第1bパス (安全ネット): ノード BB がセル外にはみ出す場合は拡張 ──
+     * vis.js の実描画サイズが Python 推定と微妙にずれる場合の保険 */
+    if (usedGrid) {{
+      for (var i = 0; i < memberNodes.length; i++) {{
+        var nid = memberNodes[i];
+        try {{
+          var bb = network.getBoundingBox(nid);
+          if (bb) {{
+            if (bb.left - ZONE_PAD < x1) x1 = bb.left - ZONE_PAD;
+            if (bb.right + ZONE_PAD > x2) x2 = bb.right + ZONE_PAD;
+            if (bb.top - ZONE_PAD_TOP < y1) y1 = bb.top - ZONE_PAD_TOP;
+            if (bb.bottom + ZONE_PAD > y2) y2 = bb.bottom + ZONE_PAD;
+          }}
+        }} catch(e) {{ /* ignore */ }}
+      }}
+    }}
+
+    zoneRects.push({{ key: zk, zone: z, x1: x1, y1: y1, x2: x2, y2: y2 }});
   }}
 
-  /* ── 第2.5パス: ノード包含下限のクランプ ──
-   * midpoint snapping でゾーン矩形がノードの外に縮んだ場合、
-   * 元のノード包含境界まで復元する。 */
-  for (var i = 0; i < zoneRects.length; i++) {{
-    var z = zoneRects[i], ob = origBounds[i];
-    if (z.x1 > ob.x1) z.x1 = ob.x1;
-    if (z.y1 > ob.y1) z.y1 = ob.y1;
-    if (z.x2 < ob.x2) z.x2 = ob.x2;
-    if (z.y2 < ob.y2) z.y2 = ob.y2;
-  }}
-
-  /* ── 第3パス: エンベロープ矩形算出 + 重なり解消 ──
-   * _envelopes: 複数の子ゾーンを包む親枠（データセンター等）
-   * エンベロープは子ゾーンの和集合 + パディング。
-   * ★ 重なり解消の原則:
-   *   - エンベロープ vs 外部ゾーン → エンベロープ側のみ縮小
-   *   - 子ゾーン包含境界以下には絶対に縮めない（過剰縮小ガード）
-   *   - エンベロープ vs エンベロープ → midpoint snapping（双方が譲る） */
+  /* ── 第2パス: エンベロープ矩形算出 ──
+   * 子ゾーンの和集合 + パディング。グリッドベースのゾーンが
+   * 非重複であるため、エンベロープも構造的に正しい。 */
   var envelopes = zones._envelopes || {{}};
-  /* ENV_PAD, ENV_PAD_TOP は冒頭で注入済み */
   var envRects = [];
   for (var ek in envelopes) {{
     var env = envelopes[ek];
     var childKeys = env.children || [];
-    var childSet = {{}};
-    for (var ci = 0; ci < childKeys.length; ci++) childSet[childKeys[ci]] = true;
     var eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
     var eFound = false;
     for (var ci = 0; ci < childKeys.length; ci++) {{
@@ -878,90 +809,10 @@ network.on('beforeDrawing', function(ctx) {{
     }}
     if (!eFound) continue;
     eMinX -= ENV_PAD; eMinY -= ENV_PAD_TOP; eMaxX += ENV_PAD; eMaxY += ENV_PAD;
-    envRects.push({{
-      key: ek, env: env, childSet: childSet,
-      x1: eMinX, y1: eMinY, x2: eMaxX, y2: eMaxY
-    }});
+    envRects.push({{ key: ek, env: env, x1: eMinX, y1: eMinY, x2: eMaxX, y2: eMaxY }});
   }}
 
-  /* エンベロープの子ゾーン下限を記録（過剰縮小ガード用）
-   * エンベロープが外部ゾーンとの重なり解消で縮みすぎて
-   * 子ゾーンをカバーしなくなるのを防ぐ。 */
-  var envChildBounds = [];
-  for (var ei = 0; ei < envRects.length; ei++) {{
-    var cbMinX = Infinity, cbMinY = Infinity, cbMaxX = -Infinity, cbMaxY = -Infinity;
-    for (var ri = 0; ri < zoneRects.length; ri++) {{
-      if (envRects[ei].childSet[zoneRects[ri].key]) {{
-        var cr = zoneRects[ri];
-        if (cr.x1 < cbMinX) cbMinX = cr.x1;
-        if (cr.y1 < cbMinY) cbMinY = cr.y1;
-        if (cr.x2 > cbMaxX) cbMaxX = cr.x2;
-        if (cr.y2 > cbMaxY) cbMaxY = cr.y2;
-      }}
-    }}
-    envChildBounds.push({{ x1: cbMinX, y1: cbMinY, x2: cbMaxX, y2: cbMaxY }});
-  }}
-
-  /* エンベロープ vs 非子ゾーンの重なり解消
-   * ★ エンベロープ側のみ縮小し、ゾーン矩形は一切変更しない。
-   * ★ ただし子ゾーンの包含境界以下には縮めない（過剰縮小ガード）。 */
-  for (var ei = 0; ei < envRects.length; ei++) {{
-    var erc = envRects[ei];
-    var ecb = envChildBounds[ei];
-    for (var zi = 0; zi < zoneRects.length; zi++) {{
-      var zr = zoneRects[zi];
-      if (erc.childSet[zr.key]) continue;  /* 子ゾーンはスキップ */
-      var yOvl = erc.y1 < zr.y2 && zr.y1 < erc.y2;
-      var xOvl = erc.x1 < zr.x2 && zr.x1 < erc.x2;
-      if (yOvl) {{
-        /* 水平方向: エンベロープ側のみ縮小（中心で左右判定） */
-        var eCx = (erc.x1 + erc.x2) / 2, zCx = (zr.x1 + zr.x2) / 2;
-        if (eCx <= zCx) {{
-          var nx2 = zr.x1 - ZONE_MIN_GAP;
-          erc.x2 = Math.max(nx2, ecb.x2);  /* 子ゾーン下限でクランプ */
-        }} else {{
-          var nx1 = zr.x2 + ZONE_MIN_GAP;
-          erc.x1 = Math.min(nx1, ecb.x1);  /* 子ゾーン下限でクランプ */
-        }}
-      }}
-      if (xOvl) {{
-        /* 垂直方向: エンベロープ側のみ縮小 */
-        var eCy = (erc.y1 + erc.y2) / 2, zCy = (zr.y1 + zr.y2) / 2;
-        if (eCy <= zCy) {{
-          var ny2 = zr.y1 - ZONE_MIN_GAP;
-          erc.y2 = Math.max(ny2, ecb.y2);  /* 子ゾーン下限でクランプ */
-        }} else {{
-          var ny1 = zr.y2 + ZONE_MIN_GAP;
-          erc.y1 = Math.min(ny1, ecb.y1);  /* 子ゾーン下限でクランプ */
-        }}
-      }}
-    }}
-  }}
-
-  /* エンベロープ同士の重なり解消（midpoint snapping）
-   * 複数エンベロープ定義時に互いが重ならないようにする。 */
-  for (var ei = 0; ei < envRects.length; ei++) {{
-    for (var ej = ei + 1; ej < envRects.length; ej++) {{
-      var ea = envRects[ei], eb = envRects[ej];
-      var yOvl = ea.y1 < eb.y2 && eb.y1 < ea.y2;
-      var xOvl = ea.x1 < eb.x2 && eb.x1 < ea.x2;
-      if (yOvl && xOvl) {{
-        var xD = Math.min(ea.x2, eb.x2) - Math.max(ea.x1, eb.x1);
-        var yD = Math.min(ea.y2, eb.y2) - Math.max(ea.y1, eb.y1);
-        if (xD <= yD) {{
-          var aCx = (ea.x1 + ea.x2) / 2, bCx = (eb.x1 + eb.x2) / 2;
-          var mid = (Math.min(ea.x2, eb.x2) + Math.max(ea.x1, eb.x1)) / 2;
-          if (aCx <= bCx) {{ ea.x2 = mid - ZONE_MIN_GAP / 2; eb.x1 = mid + ZONE_MIN_GAP / 2; }}
-          else {{ eb.x2 = mid - ZONE_MIN_GAP / 2; ea.x1 = mid + ZONE_MIN_GAP / 2; }}
-        }} else {{
-          var aCy = (ea.y1 + ea.y2) / 2, bCy = (eb.y1 + eb.y2) / 2;
-          var mid = (Math.min(ea.y2, eb.y2) + Math.max(ea.y1, eb.y1)) / 2;
-          if (aCy <= bCy) {{ ea.y2 = mid - ZONE_MIN_GAP / 2; eb.y1 = mid + ZONE_MIN_GAP / 2; }}
-          else {{ eb.y2 = mid - ZONE_MIN_GAP / 2; ea.y1 = mid + ZONE_MIN_GAP / 2; }}
-        }}
-      }}
-    }}
-  }}
+  /* ── 第3パス: 描画 (エンベロープ → ゾーン) ── */
 
   /* エンベロープ描画 */
   for (var ei = 0; ei < envRects.length; ei++) {{
@@ -995,11 +846,10 @@ network.on('beforeDrawing', function(ctx) {{
     }}
   }}
 
-  /* ── 第4パス: 通常ゾーン矩形を描画 ── */
+  /* ゾーン描画 */
   for (var i = 0; i < zoneRects.length; i++) {{
     var zr = zoneRects[i];
     var z = zr.zone;
-    /* 背景ボックス（角丸） */
     ctx.fillStyle = z.color || 'rgba(200,200,200,0.15)';
     ctx.strokeStyle = z.border || '#ccc';
     ctx.lineWidth = 1.5;
@@ -1017,7 +867,7 @@ network.on('beforeDrawing', function(ctx) {{
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-    /* ゾーンラベル（ボックス内部の上端、パディング領域に配置） */
+    /* ゾーンラベル（ボックス内部の上端） */
     if (z.label) {{
       ctx.font = '11px Arial, sans-serif';
       ctx.fillStyle = z.border || '#888';
