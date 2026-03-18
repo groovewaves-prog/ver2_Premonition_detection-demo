@@ -559,7 +559,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 </head>
 <body>
 <div id="topo-wrap">
-  <button id="zoom-btn" title="押下中のみマウスホイールでズーム">&#x1F50D; ホイールズーム</button>
+  <button id="zoom-btn" title="クリックでマウスホイールズームの有効/無効を切替">&#x1F50D; ホイールズーム</button>
   <button id="fs-btn" title="全画面表示 / 戻る">&#x26F6; 全画面</button>
   <div id="mynetwork"></div>
   <div id="legend-bar">{legend_html}</div>
@@ -686,13 +686,19 @@ network.on('beforeDrawing', function(ctx) {{
     }}
   }}
 
-  /* ── 第3パス: エンベロープ描画（子ゾーンの背後） ──
-   * _envelopes: 複数の子ゾーンを包む親枠（データセンター等）*/
+  /* ── 第3パス: エンベロープ矩形算出 + 非子ゾーンとの重なり解消 ──
+   * _envelopes: 複数の子ゾーンを包む親枠（データセンター等）
+   * エンベロープは子ゾーンの和集合 + パディング。
+   * エンベロープに含まれない外部ゾーン（AWS Cloud等）との
+   * 重なりを中間点スナップで解消する。 */
   var envelopes = zones._envelopes || {{}};
   var ENV_PAD = 18;
+  var envRects = [];
   for (var ek in envelopes) {{
     var env = envelopes[ek];
     var childKeys = env.children || [];
+    var childSet = {{}};
+    for (var ci = 0; ci < childKeys.length; ci++) childSet[childKeys[ci]] = true;
     var eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
     var eFound = false;
     for (var ci = 0; ci < childKeys.length; ci++) {{
@@ -709,33 +715,74 @@ network.on('beforeDrawing', function(ctx) {{
     }}
     if (!eFound) continue;
     eMinX -= ENV_PAD; eMinY -= 22; eMaxX += ENV_PAD; eMaxY += ENV_PAD;
-    /* 背景 */
+    envRects.push({{
+      key: ek, env: env, childSet: childSet,
+      x1: eMinX, y1: eMinY, x2: eMaxX, y2: eMaxY
+    }});
+  }}
+
+  /* エンベロープ vs 非子ゾーンの重なり解消 */
+  for (var ei = 0; ei < envRects.length; ei++) {{
+    var er = envRects[ei];
+    for (var zi = 0; zi < zoneRects.length; zi++) {{
+      var zr = zoneRects[zi];
+      if (er.childSet[zr.key]) continue;  /* 子ゾーンはスキップ */
+      var yOvl = er.y1 < zr.y2 && zr.y1 < er.y2;
+      var xOvl = er.x1 < zr.x2 && zr.x1 < er.x2;
+      if (yOvl) {{
+        if (er.x2 > zr.x1 && er.x1 < zr.x1) {{
+          var mid = (er.x2 + zr.x1) / 2;
+          er.x2 = mid - ZONE_MIN_GAP / 2;
+          zr.x1 = mid + ZONE_MIN_GAP / 2;
+        }} else if (zr.x2 > er.x1 && zr.x1 < er.x1) {{
+          var mid = (zr.x2 + er.x1) / 2;
+          zr.x2 = mid - ZONE_MIN_GAP / 2;
+          er.x1 = mid + ZONE_MIN_GAP / 2;
+        }}
+      }}
+      if (xOvl) {{
+        if (er.y2 > zr.y1 && er.y1 < zr.y1) {{
+          var mid = (er.y2 + zr.y1) / 2;
+          er.y2 = mid - ZONE_MIN_GAP / 2;
+          zr.y1 = mid + ZONE_MIN_GAP / 2;
+        }} else if (zr.y2 > er.y1 && zr.y1 < er.y1) {{
+          var mid = (zr.y2 + er.y1) / 2;
+          zr.y2 = mid - ZONE_MIN_GAP / 2;
+          er.y1 = mid + ZONE_MIN_GAP / 2;
+        }}
+      }}
+    }}
+  }}
+
+  /* エンベロープ描画 */
+  for (var ei = 0; ei < envRects.length; ei++) {{
+    var eR = envRects[ei];
+    var env = eR.env;
     ctx.fillStyle = env.color || 'rgba(0,0,0,0.03)';
     ctx.strokeStyle = env.border || '#bdbdbd';
     ctx.lineWidth = 1.8;
     if (env.border_style === 'dashed') ctx.setLineDash([8, 5]);
     ctx.beginPath();
-    var er = 12;
-    ctx.moveTo(eMinX + er, eMinY);
-    ctx.lineTo(eMaxX - er, eMinY);
-    ctx.arcTo(eMaxX, eMinY, eMaxX, eMinY + er, er);
-    ctx.lineTo(eMaxX, eMaxY - er);
-    ctx.arcTo(eMaxX, eMaxY, eMaxX - er, eMaxY, er);
-    ctx.lineTo(eMinX + er, eMaxY);
-    ctx.arcTo(eMinX, eMaxY, eMinX, eMaxY - er, er);
-    ctx.lineTo(eMinX, eMinY + er);
-    ctx.arcTo(eMinX, eMinY, eMinX + er, eMinY, er);
+    var eRad = 12;
+    ctx.moveTo(eR.x1 + eRad, eR.y1);
+    ctx.lineTo(eR.x2 - eRad, eR.y1);
+    ctx.arcTo(eR.x2, eR.y1, eR.x2, eR.y1 + eRad, eRad);
+    ctx.lineTo(eR.x2, eR.y2 - eRad);
+    ctx.arcTo(eR.x2, eR.y2, eR.x2 - eRad, eR.y2, eRad);
+    ctx.lineTo(eR.x1 + eRad, eR.y2);
+    ctx.arcTo(eR.x1, eR.y2, eR.x1, eR.y2 - eRad, eRad);
+    ctx.lineTo(eR.x1, eR.y1 + eRad);
+    ctx.arcTo(eR.x1, eR.y1, eR.x1 + eRad, eR.y1, eRad);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
     ctx.setLineDash([]);
-    /* ラベル */
     if (env.label) {{
       ctx.font = 'bold 12px Arial, sans-serif';
       ctx.fillStyle = env.border || '#999';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(env.label, eMinX + 12, eMinY - 6);
+      ctx.fillText(env.label, eR.x1 + 12, eR.y1 - 6);
     }}
   }}
 
@@ -954,25 +1001,20 @@ network.once('afterDrawing', function() {{
   setTimeout(function(){{ network.fit({{padding:50, animation:false}}); }}, 100);
 }});
 
-/* ── ホイールズーム制御ボタン ──
+/* ── ホイールズーム制御ボタン（トグル方式） ──
  * デフォルトは zoomView:false でブラウザスクロールを阻害しない。
- * ボタン押下中のみ zoomView:true に切り替える。 */
+ * クリックで ON/OFF を切り替える。 */
 var zoomBtn = document.getElementById('zoom-btn');
 var _zoomActive = false;
-function _setZoom(on) {{
-  _zoomActive = on;
-  network.setOptions({{ interaction: {{ zoomView: on }} }});
-  zoomBtn.classList.toggle('active', on);
-  zoomBtn.innerHTML = on
+zoomBtn.addEventListener('click', function(e) {{
+  e.preventDefault();
+  _zoomActive = !_zoomActive;
+  network.setOptions({{ interaction: {{ zoomView: _zoomActive }} }});
+  zoomBtn.classList.toggle('active', _zoomActive);
+  zoomBtn.innerHTML = _zoomActive
     ? '&#x1F50D; ズーム有効'
     : '&#x1F50D; ホイールズーム';
-}}
-zoomBtn.addEventListener('mousedown', function(e) {{ e.preventDefault(); _setZoom(true); }});
-zoomBtn.addEventListener('mouseup', function() {{ _setZoom(false); }});
-zoomBtn.addEventListener('mouseleave', function() {{ if (_zoomActive) _setZoom(false); }});
-/* タッチ対応 */
-zoomBtn.addEventListener('touchstart', function(e) {{ e.preventDefault(); _setZoom(true); }});
-zoomBtn.addEventListener('touchend', function() {{ _setZoom(false); }});
+}});
 
 /* ── 全画面トグル ── */
 var fsBtn = document.getElementById('fs-btn');
