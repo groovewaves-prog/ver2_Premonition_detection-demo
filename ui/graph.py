@@ -349,17 +349,18 @@ def _build_elk_graph(zones: dict, topology: dict):
     zone_entries.sort(key=lambda x: (x[0][1], x[0][0]))
 
     # ゾーン間エッジ（parent_id が別ゾーンのもの）
+    # ★ node_to_zone のキーのみ走査（全トポロジーではなくゾーン所属ノードのみ）
     cross_edges = []
     ce_id = 0
-    for nid, nd in topology.items():
+    for nid, nid_z in node_to_zone.items():
+        nd = topology.get(nid, {})
         if not isinstance(nd, dict):
             continue
         pid = nd.get("parent_id")
         if not pid:
             continue
-        nid_z = node_to_zone.get(nid)
         pid_z = node_to_zone.get(pid)
-        if nid_z and pid_z and nid_z != pid_z:
+        if pid_z and pid_z != nid_z:
             cross_edges.append({
                 "id": f"ce_{ce_id}",
                 "sources": [pid], "targets": [nid],
@@ -680,18 +681,27 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         _canvas_h = max(700, _n_nodes * 80)
 
     # --- vis.js レイアウトオプション組み立て ---
-    if _use_fixed:
+    _hierarchical_opts = (
+        f"{{ hierarchical: {{ enabled: true, direction: 'UD', "
+        f"sortMethod: 'directed', levelSeparation: {_level_sep}, "
+        f"nodeSpacing: {_node_sp}, treeSpacing: {_tree_sp}, "
+        f"blockShifting: true, edgeMinimization: true, "
+        f"parentCentralization: true }} }}"
+    )
+    if _use_elk:
+        # ELK 成功時は hierarchical: false、失敗時は vis.js hierarchical にフォールバック
+        _layout_js = f"layout: _USE_ELK ? {{ hierarchical: false }} : {_hierarchical_opts}"
+        _edge_smooth_js = (
+            "smooth: _USE_ELK "
+            "? { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.15 } "
+            ": false"
+        )
+    elif _use_fixed:
         _layout_js = "layout: { hierarchical: false }"
         _edge_smooth_js = ("smooth: { type: 'cubicBezier', "
                            "forceDirection: 'vertical', roundness: 0.15 }")
     else:
-        _layout_js = (
-            f"layout: {{ hierarchical: {{ enabled: true, direction: 'UD', "
-            f"sortMethod: 'directed', levelSeparation: {_level_sep}, "
-            f"nodeSpacing: {_node_sp}, treeSpacing: {_tree_sp}, "
-            f"blockShifting: true, edgeMinimization: true, "
-            f"parentCentralization: true }} }}"
-        )
+        _layout_js = f"layout: {_hierarchical_opts}"
         _edge_smooth_js = "smooth: false"
 
     # --- vis.js HTML (凡例はキャンバス内にオーバーレイ表示) ---
@@ -709,10 +719,10 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         _elk_graph_json = json.dumps(elk_graph, ensure_ascii=False)
         _elk_layout_js = f"""
 /* ── ELK.js 階層レイアウト計算 ── */
+var _posMap = {{}};
 try {{
   var _elk = new ELK();
   var _elkResult = await _elk.layout({_elk_graph_json});
-  var _posMap = {{}};
   (function _extractPos(node, ox, oy) {{
     (node.children || []).forEach(function(c) {{
       var cx = ox + (c.x || 0);
@@ -733,6 +743,10 @@ try {{
   }});
 }} catch(_elkErr) {{
   console.warn('ELK layout failed, using vis.js fallback:', _elkErr);
+}}
+/* ELK 失敗時: _USE_ELK を false に戻し vis.js hierarchical へフォールバック */
+if (Object.keys(_posMap).length === 0) {{
+  _USE_ELK = false;
 }}
 """
     else:
