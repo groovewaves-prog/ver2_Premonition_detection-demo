@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# DT Engine runtime data (generated at startup)
+.dt_storage/
+a/
+c/
+default/
+state.db
+*.db
