@@ -52,7 +52,14 @@ def main():
         tab_ops, tab_tune = st.tabs(_TAB_NAMES)
         with tab_ops:
             if st.session_state[_tab_key] == _TAB_NAMES[0]:
-                render_incident_cockpit(active_site, api_key)
+                try:
+                    render_incident_cockpit(active_site, api_key)
+                except Exception as _cockpit_err:
+                    import traceback
+                    st.error(f"Cockpit レンダリングエラー: {type(_cockpit_err).__name__}: {_cockpit_err}")
+                    st.code(traceback.format_exc(), language="text")
+                    if st.button("🔄 再試行", key="_cockpit_retry"):
+                        st.rerun()
             else:
                 st.info("🚀 「Cockpit を表示」を押すとインシデント分析を実行します。")
                 if st.button("🚀 Cockpit を表示", key="_activate_cockpit", type="primary"):
@@ -61,7 +68,12 @@ def main():
 
         with tab_tune:
             if st.session_state[_tab_key] == _TAB_NAMES[1]:
-                render_tuning_dashboard(active_site)
+                try:
+                    render_tuning_dashboard(active_site)
+                except Exception as _tune_err:
+                    import traceback
+                    st.error(f"Tuning レンダリングエラー: {type(_tune_err).__name__}: {_tune_err}")
+                    st.code(traceback.format_exc(), language="text")
             else:
                 st.info("🔧 「チューニング開始」を押すと Digital Twin の詳細分析が実行されます。")
                 if st.button("🔧 チューニング開始", key="_activate_tuning", type="primary"):

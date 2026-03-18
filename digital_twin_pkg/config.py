@@ -57,6 +57,6 @@ OUTCOME_SUSPECTED_MAINTENANCE = "suspected_maintenance"
 OUTCOME_PLANNED_MAINTENANCE = "planned_maintenance"
 
 # Lock Config
-LOCK_TIMEOUT_SEC = 30.0
-LOCK_TTL_SEC = 60.0
-LOCK_POLL_SEC = 0.1
+LOCK_TIMEOUT_SEC = 5.0    # ★ 30→5秒: Streamlit UIがハングしないよう短縮
+LOCK_TTL_SEC = 15.0       # ★ 60→15秒: ステールロック検出を高速化
+LOCK_POLL_SEC = 0.05      # ★ 0.1→0.05秒: ポーリング間隔を短縮

@@ -580,30 +580,39 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     #   auto_tuning と auto_confirm をスキップ（DB I/O 削減）
     _sim_active = bool(st.session_state.get("injected_weak_signal"))
     if dt_engine and not _sim_active:
-        dt_engine.maybe_run_auto_tuning()
+        try:
+            dt_engine.maybe_run_auto_tuning()
+        except Exception as _tune_e:
+            logger.warning("auto_tuning failed: %s", _tune_e)
 
     if dt_engine and scenario != "正常稼働" and not _sim_active:
         critical_devices = {a.device_id for a in alarms if a.severity == "CRITICAL"}
         for dev_id in critical_devices:
-            confirmed_count = dt_engine.forecast_auto_confirm_on_incident(
-                dev_id, scenario=scenario, note="障害シナリオ発生により自動確認"
-            )
-            if confirmed_count > 0:
-                logger.info(f"Auto-confirmed {confirmed_count} predictions for {dev_id} on scenario: {scenario}")
+            try:
+                confirmed_count = dt_engine.forecast_auto_confirm_on_incident(
+                    dev_id, scenario=scenario, note="障害シナリオ発生により自動確認"
+                )
+                if confirmed_count > 0:
+                    logger.info(f"Auto-confirmed {confirmed_count} predictions for {dev_id} on scenario: {scenario}")
+            except Exception as _ac_e:
+                logger.warning("auto_confirm failed for %s: %s", dev_id, _ac_e)
 
     # =====================================================
     # DT予兆パイプライン（prediction_pipeline.py に委譲）
     # =====================================================
     if dt_engine:
-        run_prediction_pipeline(
-            dt_engine=dt_engine,
-            alarms=alarms,
-            analysis_results=analysis_results,
-            site_id=site_id,
-            api_key=api_key,
-            topology=topology,
-            scenario=scenario,
-        )
+        try:
+            run_prediction_pipeline(
+                dt_engine=dt_engine,
+                alarms=alarms,
+                analysis_results=analysis_results,
+                site_id=site_id,
+                api_key=api_key,
+                topology=topology,
+                scenario=scenario,
+            )
+        except Exception as _pp_e:
+            logger.warning("prediction_pipeline failed: %s", _pp_e)
 
     # =====================================================
     # 3分類: root_cause / symptom / unrelated
