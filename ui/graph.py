@@ -40,6 +40,14 @@ _ZONE_AUTO_PALETTE = [
     {"color": "rgba(220,237,200,0.18)", "border": "#aed581"},
 ]
 
+# vis.js の形状のうち、ラベルを図形の「下」に描画するもの
+# (box/ellipse/database は内部描画 → 上下対称)
+# ★ _compute_fixed_positions._est_extents() と _est_node_size() の両方が参照。
+_LABEL_BELOW_SHAPES = frozenset({
+    "hexagon", "diamond", "star", "triangle",
+    "triangleDown", "dot", "square",
+})
+
 
 def _load_zones_for_site(topology: dict) -> dict:
     """現在のサイトのトポロジーJSONから _zones を読み込む。
@@ -121,12 +129,7 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     PAD_TOP = 55
     PAD_BOTTOM = 65
 
-    # vis.js の形状のうち、ラベルを図形の「下」に描画するもの
-    # (box/ellipse/database は内部描画 → 上下対称)
-    _LABEL_BELOW_SHAPES = frozenset({
-        "hexagon", "diamond", "star", "triangle",
-        "triangleDown", "dot", "square",
-    })
+    # ★ _LABEL_BELOW_SHAPES はモジュールレベル定数を使用（重複排除）
     _SHAPE_RADIUS = 30   # vis.js デフォルト size=25 + margin
     _SHAPE_LABEL_GAP = 8  # 図形とラベル間の隙間
     _VIS_MARGIN = 8       # vis.js nodes.margin (top/bottom) — graph.py options で設定
@@ -257,9 +260,7 @@ def _est_node_size(nid: str, topology: dict, font_size: int = 12) -> tuple:
     visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
     shape = visual.get("shape", "box")
 
-    _LABEL_BELOW = {"hexagon", "diamond", "star", "triangle",
-                    "triangleDown", "dot", "square"}
-    if shape in _LABEL_BELOW:
+    if shape in _LABEL_BELOW_SHAPES:
         height = 30 + 8 + text_h + 16  # shape radius + gap + text + margins
     else:
         height = max(48, text_h) + 16  # text + margins
@@ -331,6 +332,8 @@ def _build_elk_graph(zones: dict, topology: dict):
                 "elk.direction": "DOWN",
                 "elk.spacing.nodeNode": str(H_GAP),
                 "elk.layered.spacing.nodeNodeBetweenLayers": str(EDGE_GAP),
+                # ELK は compound node 内のラベル描画領域を自動確保しないため、
+                # ゾーンラベル分の追加パディング (+15px) を手動で加算する。
                 "elk.padding": (
                     f"[top={ZONE_PAD_TOP + 15},"
                     f"left={ZONE_PAD},bottom={ZONE_PAD},right={ZONE_PAD}]"
