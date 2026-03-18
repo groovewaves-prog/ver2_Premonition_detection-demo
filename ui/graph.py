@@ -399,7 +399,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _analysis_sig = tuple(sorted((r.get("id", ""), r.get("status", ""), r.get("prob", 0)) for r in analysis_results))
     _maint_sig = tuple(sorted(st.session_state.get("maint_devices", {}).get(
         st.session_state.get("active_site", ""), set())))
-    _zone_sig = tuple(sorted(st.session_state.get("active_site", "A")))
+    _zone_sig = st.session_state.get("active_site", "A")
     _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology), _maint_sig, _zone_sig))
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
