@@ -571,9 +571,28 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     # 初期レイアウトのパラメータ（リフローが最終調整するため、大まかな値で十分）
     _level_sep, _node_sp, _tree_sp = 200, 150, 150
     if _use_fixed:
-        # グリッドセル境界からキャンバス高さを算出（タイトフィット）
+        # グリッドセル境界からキャンバス高さを算出。
+        # network.fit() がコンテンツをコンテナ幅に収めるズームを適用するため、
+        # Python 側でもズーム後の高さを近似する。
+        # Streamlit メインカラム幅は通常 700-900px（サイドバー表示時）。
+        _APPROX_CONTAINER_W = 780  # 近似コンテナ幅 (px)
+        _col_bounds = zones.get("_col_bounds", {})
         _row_bounds = zones.get("_row_bounds", {})
-        if _row_bounds:
+        if _col_bounds and _row_bounds:
+            _content_w = (
+                max(cb["x_start"] + cb["width"] for cb in _col_bounds.values())
+                - min(cb["x_start"] for cb in _col_bounds.values())
+                + (ENV_PAD + 5) * 2  # エンベロープパディング
+            )
+            _content_h = (
+                max(rb["y_start"] + rb["height"] for rb in _row_bounds.values())
+                - min(rb["y_start"] for rb in _row_bounds.values())
+                + ENV_PAD_TOP + 18 + ENV_PAD + 5  # パディング + ラベル
+            )
+            _approx_zoom = min(_APPROX_CONTAINER_W / _content_w, 1.0) if _content_w > 0 else 1.0
+            _canvas_h = int(_content_h * _approx_zoom) + 80  # 凡例・ボタン分
+            _canvas_h = max(_canvas_h, 400)  # 最低高さ
+        elif _row_bounds:
             _max_grid_y = max(rb["y_start"] + rb["height"] for rb in _row_bounds.values())
             _canvas_h = int(_max_grid_y + ENV_PAD_TOP + ENV_PAD + ZONE_PAD + 80)
         else:
@@ -931,7 +950,11 @@ network.once('afterDrawing', function() {{
   if (_useFixed) {{
     network.fit({{padding:30, animation:false}});
 
-    /* ── Post-render resize: コンテンツのアスペクト比からキャンバス高さを算出 ── */
+    /* ── Post-render resize: コンテンツのアスペクト比からキャンバス高さを算出 ──
+     * Python 側では Streamlit コンテナの実幅が不明なため _canvas_h を正確に
+     * 算出できない (vis.js #1832, Streamlit #4659)。
+     * afterDrawing 時点で clientWidth を取得し、グリッドメタデータのアスペクト比
+     * から必要高さを逆算 → Streamlit postMessage API で iframe ごとリサイズ。 */
     var colBounds = zones._col_bounds || {{}};
     var rowBounds = zones._row_bounds || {{}};
     var cMinX = Infinity, cMaxX = -Infinity, cMinY = Infinity, cMaxY = -Infinity;
@@ -965,9 +988,23 @@ network.once('afterDrawing', function() {{
     network.setSize(containerW + 'px', neededH + 'px');
     network.fit({{padding:30, animation:false}});
 
-    /* Streamlit iframe を動的リサイズ（白余白を除去） */
+    /* ── Streamlit iframe + 親コンテナを動的リサイズ ──
+     * 3段階のフォールバックで確実にリサイズする:
+     *   1. Streamlit 公式 postMessage API (streamlit:setFrameHeight)
+     *   2. frameElement.style.height (same-origin iframe)
+     *   3. frameElement.parentElement の高さも書き換え */
+    if (window.parent !== window) {{
+      window.parent.postMessage({{
+        isStreamlitMessage: true,
+        type: "streamlit:setFrameHeight",
+        height: neededH
+      }}, "*");
+    }}
     if (window.frameElement) {{
       window.frameElement.style.height = neededH + 'px';
+      if (window.frameElement.parentElement) {{
+        window.frameElement.parentElement.style.height = neededH + 'px';
+      }}
     }}
     return;
   }}
