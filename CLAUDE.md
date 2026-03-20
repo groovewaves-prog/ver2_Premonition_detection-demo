@@ -156,6 +156,8 @@ REST API / gRPC / MQTT で監視する機器は、現在の前提と根本的に
 1. **ゾーン矩形はグリッドセル境界から決定する（トップダウン）。** ノード BB からボトムアップに算出してはならない。ボトムアップ方式は vis.js の描画サイズ誤差で重なりが発生し、midpoint snapping + origBounds clamp の悪循環で解消不能になる。
 2. **衝突解消ロジックを書かない。** グリッドセルは Python 側で非重複に配置済みであり、JS 側で collision resolution は不要。追加すると複雑化するだけで効果がない。
 3. **グリッド情報がないゾーンのみフォールバック** として旧来のノード BB 方式を使用する。
+4. **キャンバス高さは post-render resize で動的決定する。** Python 側ではコンテナ実幅が不明なため `_canvas_h` を正確に算出できない（vis.js #1832, Streamlit #4659）。`afterDrawing` で `clientWidth` を取得し、コンテンツのアスペクト比から必要高さを逆算 → iframe を動的リサイズ。`_canvas_h` はフォールバック初期値としてのみ機能する。
+5. **固定座標レイアウトで afterDrawing リフローを実行しない。** `moveNode()` は `fixed: true` ノードも移動するため、グリッド配置を破壊する。リフローは hierarchical レイアウト（Site A/B）専用。
 
 **`_zones` フォーマット（topology JSON 内）:**
 ```json
