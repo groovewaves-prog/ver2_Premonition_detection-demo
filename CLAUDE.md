@@ -65,6 +65,178 @@ streamlit run app.py
 - **右メイン画面（監視・運用タスク領域）**: 「今起きている事象の分析」と「それに対する運用者のアクション」を配置。実運用におけるタスクフローはすべて右側メイン画面内で完結させる
   - 例: インシデントのプレビュー（What-If操作）、予兆ステータス履歴（Inbox）の処理（「対応」「静観」ボタン等）、AIエージェントとのチャット、自動復旧（Remediation）の実行ボタン
 
+## 予兆検知アルゴリズム — 論文・研究基盤リファレンス
+
+本プロジェクトの予兆検知パイプラインで採用している学術論文・アルゴリズムの一覧。
+ドキュメント作成・サポート・新規開発者のオンボーディング時に参照すること。
+
+---
+
+### レイヤー1: グラフ異常検知（スペクトル領域）
+
+#### ChiGAD — カイ二乗ウェーブレットフィルタ
+- **論文**: Li et al., "ChiGAD", **KDD 2025**
+- **実装**: `digital_twin_pkg/gnn.py`
+- **解決する課題**: 標準 GNN のローパスフィルタリングが高周波の異常信号を抑制してしまう問題
+- **核心技術**:
+  - ウェーブレットカーネル: `ψ(s, λ) = λ · exp(-s·λ / 2)`（帯域通過）
+  - スケーリングカーネル: `φ(s, λ) = exp(-s·λ / 2)`（低域通過）
+  - `ChiSquareWaveletFilterBank`: 多スケールウェーブレット分解（num_scales=3, max_scale=4.0）
+  - ゲーテッド融合: 低周波（GNN出力）+ 高周波（ウェーブレット出力）を学習可能な重みで結合
+- **出力**: confidence（sigmoid）, time_to_failure（ReLU）, spectral_info
+
+#### Heterogeneous GNN（異種グラフニューラルネットワーク）
+- **基盤**: GAT (Graph Attention), GraphSAGE (Neighborhood Aggregation)
+- **実装**: `digital_twin_pkg/gnn.py` — `HeteroConv`, `GATConv`, `SAGEConv` (PyTorch Geometric)
+- **特徴**: デバイスタイプ・関係種別に応じた異種メッセージパッシング
+- **グラフ構造**: `('device', 'depends_on', 'device')` エッジタイプ
+- **スペクトル分析**: 正規化ラプラシアン `L_sym = I - D^{-1/2} A D^{-1/2}` の固有値分解
+
+---
+
+### レイヤー2: グラフ偏差検知（ベースライン比較）
+
+#### GDN — Graph Deviation Network
+- **論文**: Deng & Hooi, **AAAI 2021**
+- **実装**: `digital_twin_pkg/gdn.py`
+- **解決する課題**: 正常状態からの多変量偏差を構造的に検出
+- **核心技術**:
+  - `DeviceBaselineTracker`: Welford のオンラインアルゴリズムによるデバイス毎の正常状態統計量（平均・標準偏差）の逐次更新
+  - `GraphDeviationScorer`: 多メトリクス偏差スコアリング
+  - Z スコア → シグモイド変換: `sigmoid(max_z - threshold)` で [0,1] に正規化
+- **理論**: エスカレーションルールのメトリクス + アラーム特徴量を「センサー」として扱い、学習済みパターンからの偏差を検出
+
+---
+
+### レイヤー3: メトリクス因果推論（暗黙的障害信号）
+
+#### GrayScope — メトリクスベース因果モニタリング
+- **論文**: **NSDI 2023**
+- **実装**: `digital_twin_pkg/grayscope.py`
+- **解決する課題**: 直接アラームが発生しないサイレント障害の検出
+- **核心技術**:
+  - `MetricCrossCorrelator`: ピアソン相関 + ラグ分析（max_lag=6, 有意閾値 |r|≥0.5, n≥8）
+  - `ImplicitFeedbackDetector`: 直接アラームなしの障害パターン検出
+  - `MultiHopPropagationTracer`: 多段障害伝搬パスの追跡
+  - `SilentFailureScorer`: 確率的サイレント障害スコアリング（ヒューリスティック50%閾値を置換）
+- **統合**: Phase 1-3 信号（メトリクストレンド、Granger因果、GDN偏差）を統合した包括的障害検出
+
+#### Granger 因果性検定
+- **理論**: 古典的統計手法
+- **実装**: `digital_twin_pkg/granger.py` — `granger_f_test()`
+- **F検定**: `F = ((RSS_r - RSS_u) / p) / (RSS_u / (n - 2p - 1))`
+- **帰無仮説**: ソースデバイスの過去値はターゲットの予測に寄与しない
+- **p値近似**: 誤差関数（erfc）による近似（scipy 非依存）
+- **用途**: 静的トポロジーを補完する動的因果関係の発見
+
+---
+
+### レイヤー4: トレンド分析・残存寿命推定
+
+#### 線形回帰トレンド分析（STL 簡易版）
+- **実装**: `digital_twin_pkg/trend.py` — `analyze_trend()`
+- **手法**: `np.polyfit()` による1次多項式フィット
+- **出力**: 傾き（劣化方向 [0.0-1.0]）, R²（適合度）, TTF推定値
+- **TTF計算**: `TTF = (failure_value - current_value) / slope`
+- **用途**: WARNING アラームのメトリクスから CRITICAL 到達時刻を予測
+
+---
+
+### レイヤー5: 確率推論・信頼度統合
+
+#### ベイズ推論エンジン
+- **実装**: `digital_twin_pkg/bayesian.py` — `BayesianInferenceEngine`
+- **ベイズの定理**: `P(failure|signal) = P(signal|failure) × P(failure) / P(signal)`
+- **特徴**:
+  - 過去168時間（7日間）の履歴データからの事後確率更新
+  - 時系列パターン強化（`_calculate_temporal_boost()`）
+  - 事前確率キャッシュ（TTL 3600秒）
+
+#### 信頼度ブースト（多信号集約）
+- **実装**: `digital_twin.py`
+- **計算式**:
+  ```
+  confidence = base_confidence
+             × (0.8 + 0.2 × match_quality)
+             × (1.0 - REDUNDANCY_DISCOUNT)   # HA構成時: 0.15
+             × SPOF_BOOST                     # SPOF時: 1.10
+  ```
+- **閾値**: `EMBEDDING_THRESHOLD = 0.40`, `MIN_PREDICTION_CONFIDENCE = 0.40`
+
+---
+
+### レイヤー6: セマンティック照合
+
+#### Sentence Transformers（all-MiniLM-L6-v2）
+- **論文**: Reimers & Gurevych, "Sentence-BERT", **EMNLP 2019**
+- **実装**: `digital_twin.py` — `SentenceTransformer('all-MiniLM-L6-v2')`
+- **用途**: アラームメッセージとエスカレーションルールのコサイン類似度照合
+- **類似度計算**: `cos(θ) = (u·v) / (||u|| × ||v||)`
+- **フォールバック**: N-gram ハッシュ埋め込み（`vector_store.py` — オフライン環境用）
+
+#### Vector Store（ChromaDB）
+- **実装**: `digital_twin_pkg/vector_store.py`
+- **用途**: 類似インシデントのセマンティック検索・過去事例参照
+
+---
+
+### レイヤー7: グラフ伝搬・影響分析
+
+#### BFS（幅優先探索）による障害伝搬
+- **実装**: `digital_twin_pkg/common.py`, `digital_twin.py`
+- **用途**: ネットワークトポロジー上の下流影響範囲の算出
+- **深度制限**: `MAX_PROPAGATION_HOPS = 3`
+- **関連構造**: `children_map`（親子隣接リスト）, `redundancy_groups`（HA ペア検出）
+- **NetworkX**: `nx.DiGraph`, `nx.bfs_tree()`, `nx.shortest_path_length()`
+
+---
+
+### レイヤー8: クロス検証（多エージェント合意）
+
+#### 2エージェント交差検証
+- **実装**: `cross_verification.py`
+- **Agent 1（トポロジーベース）**: BFS伝搬 + 冗長性分析 + SPOF検出
+- **Agent 2（埋め込みベース）**: エスカレーションルール照合 + セマンティック類似度
+- **合意ロジック**: 合意 → 信頼度ボーナス / 不一致 → エスカレーションフラグ
+- **目的**: コンセンサスベースの検証による偽陽性削減
+
+---
+
+### レイヤー9: 可視化アルゴリズム
+
+#### GML Grid-based Zone Layout
+- **論文**: **PLOS ONE 2019**
+- **実装**: `ui/graph.py` — 詳細は FAD-2 セクション参照
+- **用途**: トポロジーマップの非重複ゾーン表示
+
+#### vis.js Hierarchical Layout + Post-render Resize
+- **実装**: `ui/graph.py` — afterDrawing コールバック
+- **参照**: vis.js #1832, Streamlit #4659, Chart.js responsive pattern
+
+---
+
+### パイプライン全体像
+
+```
+WARNING アラーム受信
+    │
+    ├─→ [L6] Sentence Transformer: エスカレーションルール照合
+    ├─→ [L4] 線形回帰: メトリクストレンド → TTF推定
+    ├─→ [L7] BFS: 下流影響範囲の算出
+    │
+    ├─→ [L1] ChiGAD + HeteroGNN: スペクトル異常検知
+    ├─→ [L2] GDN: ベースライン偏差検知
+    ├─→ [L3] GrayScope + Granger: メトリクス因果推論
+    │
+    ├─→ [L5] ベイズ推論: 事後確率 → 信頼度統合
+    ├─→ [L8] 2エージェント交差検証: 偽陽性フィルタ
+    │
+    └─→ 予兆ステータス発報 (confidence ≥ 0.40)
+         └─→ [L9] ダッシュボード可視化
+```
+
+---
+
 ## 将来の設計方針（Future Architecture Decisions）
 
 以下はまだ実装されていない将来のリファクタリング方針。
