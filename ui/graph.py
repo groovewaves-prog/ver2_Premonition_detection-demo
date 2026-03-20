@@ -919,9 +919,56 @@ network.once('afterDrawing', function() {{
   try {{
   /* 固定座標レイアウトではリフロー不要（Python 側で正確に配置済み）。
    * moveNode() は fixed ノードも移動するため、グリッドレイアウトが壊れる。
-   * fit() のみ実行してキャンバスに収める。 */
+   *
+   * 代わりに post-render resize を実行:
+   *   1. network.fit() でキャンバスにフィット
+   *   2. コンテナ実幅からアスペクト比を計算
+   *   3. 不要な白余白を除去するため iframe を動的リサイズ
+   *
+   * 学術的根拠: Chart.js responsive pattern (maintainAspectRatio)
+   * + ResizeObserver pattern (CSS-driven canvas sizing)
+   * 参照: vis.js #1832, Streamlit #4659 */
   if (_useFixed) {{
-    setTimeout(function(){{ network.fit({{padding:30, animation:false}}); }}, 50);
+    network.fit({{padding:30, animation:false}});
+
+    /* ── Post-render resize: コンテンツのアスペクト比からキャンバス高さを算出 ── */
+    var colBounds = zones._col_bounds || {{}};
+    var rowBounds = zones._row_bounds || {{}};
+    var cMinX = Infinity, cMaxX = -Infinity, cMinY = Infinity, cMaxY = -Infinity;
+    for (var c in colBounds) {{
+      var cb = colBounds[c];
+      if (cb.x_start < cMinX) cMinX = cb.x_start;
+      if (cb.x_start + cb.width > cMaxX) cMaxX = cb.x_start + cb.width;
+    }}
+    for (var r in rowBounds) {{
+      var rb = rowBounds[r];
+      if (rb.y_start < cMinY) cMinY = rb.y_start;
+      if (rb.y_start + rb.height > cMaxY) cMaxY = rb.y_start + rb.height;
+    }}
+    /* ゾーン/エンベロープのパディング + ラベル分を加算 */
+    cMinX -= {ENV_PAD} + 5;  cMaxX += {ENV_PAD} + 5;
+    cMinY -= {ENV_PAD_TOP} + 18; cMaxY += {ENV_PAD} + 5;
+    var contentW = cMaxX - cMinX;
+    var contentH = cMaxY - cMinY;
+    if (contentW <= 0 || contentH <= 0) return;
+
+    /* 実コンテナ幅からズーム率 → 必要高さを逆算 */
+    var wrap = document.getElementById('topo-wrap');
+    var containerW = wrap.clientWidth - 2; /* border 分 */
+    var zoom = Math.min(containerW / contentW, 1.0); /* 1x 以上にはしない */
+    var neededH = Math.ceil(contentH * zoom) + 80; /* 凡例・ボタン分 */
+    neededH = Math.max(neededH, 400); /* 最低高さ */
+
+    /* キャンバスコンテナ & vis.js リサイズ */
+    wrap.style.height = neededH + 'px';
+    document.getElementById('mynetwork').style.height = neededH + 'px';
+    network.setSize(containerW + 'px', neededH + 'px');
+    network.fit({{padding:30, animation:false}});
+
+    /* Streamlit iframe を動的リサイズ（白余白を除去） */
+    if (window.frameElement) {{
+      window.frameElement.style.height = neededH + 'px';
+    }}
     return;
   }}
   var allIds = nodes.getIds();
