@@ -30,7 +30,11 @@ def render_topology_panel(
     """左カラム全体を描画: トポロジーマップ + 影響伝搬 + AI学習ルール + Auto-Diagnostics"""
 
     st.subheader("🌐 Network Topology")
-    render_topology_graph(topology, alarms, analysis_results)
+    try:
+        render_topology_graph(topology, alarms, analysis_results)
+    except Exception as _topo_err:
+        logger.error(f"トポロジーグラフ描画エラー: {_topo_err}", exc_info=True)
+        st.error(f"トポロジーマップの描画に失敗しました: {_topo_err}")
 
     # --- BFS 影響伝搬グラフ ---
     # 障害シナリオ（確定インシデント）・劣化シナリオ（予兆検知）の両方で表示する
