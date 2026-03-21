@@ -60,9 +60,6 @@ def render_sidebar():
                     st.session_state["_stream_needs_refresh"] = False
                     st.session_state["_stream_rerun_count"] = 0
 
-                    # ★ トポロジーグラフキャッシュもクリア（シナリオ変更でアラーム色が変わる）
-                    st.session_state.pop("_topo_graph_cache", None)
-
                     # ★ 予兆シミュレーションとの競合を防ぐため自動クリア
                     injected = st.session_state.get("injected_weak_signal")
                     if injected and selected != "正常稼働":
