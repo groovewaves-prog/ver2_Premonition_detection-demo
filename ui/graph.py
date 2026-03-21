@@ -354,10 +354,12 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _use_fixed = bool(fixed_positions)
 
     # --- ノード生成 ---
-    _n_nodes = len(topology)
+    # _zones 等のメタデータキー（_ プレフィックス）をデバイスノードとして処理しない
+    _device_items = {k: v for k, v in topology.items() if not k.startswith("_")}
+    _n_nodes = len(_device_items)
     _font_size = 12
     nodes = []
-    for node_id, node in topology.items():
+    for node_id, node in _device_items.items():
         if isinstance(node, dict):
             node_type = node.get('type', 'UNKNOWN')
             metadata = node.get('metadata', {})
@@ -534,7 +536,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 
     # --- 冗長グループインデックスを事前構築 O(n) ---
     _rg_index: Dict[str, List[str]] = {}
-    for _nid, _n in topology.items():
+    for _nid, _n in _device_items.items():
         _rg = _n.get('redundancy_group') if isinstance(_n, dict) else getattr(_n, 'redundancy_group', None)
         if _rg:
             _rg_index.setdefault(_rg, []).append(_nid)
@@ -542,7 +544,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     # --- エッジ生成 ---
     edges = []
     added_edges = set()
-    for node_id, node in topology.items():
+    for node_id, node in _device_items.items():
         parent_id = node.get('parent_id') if isinstance(node, dict) else getattr(node, 'parent_id', None)
         if parent_id:
             edge_key = (parent_id, node_id)
