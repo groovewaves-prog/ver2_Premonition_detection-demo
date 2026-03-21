@@ -171,8 +171,8 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
     _min_gap = MIN_ZONE_GAP + (ENV_PAD * 2 if _has_envelopes else 0)
     ZONE_GAP_CFG = cfg.get("zone_gap", 30)
     ZONE_GAP_VAL = max(ZONE_GAP_CFG, _min_gap)
-    PAD_TOP = 55
-    PAD_BOTTOM = 65
+    PAD_TOP = 40      # ゾーンラベル(18px) + 余白: 過大な値は _canvas_h を膨張させる
+    PAD_BOTTOM = 45
 
     # ★ 寸法推定はモジュールレベルの _node_extents() を使用（重複排除）
     def _est_extents(nid: str):
@@ -312,7 +312,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     _cached = st.session_state.get(_topo_cache_key)
     if _cached and _cached.get("sig") == _cache_sig:
         # キャッシュヒット: HTML描画のみ（凡例はHTML内に含まれる）
-        components.html(_cached["html"], height=_cached.get("canvas_h", 720))
+        components.html(_cached["html"], height=_cached.get("canvas_h", 500))
         return
 
     # --- アラーム情報をデバイスIDでマッピング ---
@@ -576,8 +576,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         # グリッドセル境界からキャンバス高さを算出。
         # network.fit() がコンテンツをコンテナ幅に収めるズームを適用するため、
         # Python 側でもズーム後の高さを近似する。
-        # Streamlit メインカラム幅は通常 700-900px（サイドバー表示時）。
-        _APPROX_CONTAINER_W = 780  # 近似コンテナ幅 (px)
+        # layout="wide" 時のメインカラム幅は通常 1000-1200px（サイドバー表示時）。
+        _APPROX_CONTAINER_W = 1100  # 近似コンテナ幅 (px) — wide layout 前提
         _col_bounds = zones.get("_col_bounds", {})
         _row_bounds = zones.get("_row_bounds", {})
         if _col_bounds and _row_bounds:
@@ -592,7 +592,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                 + ENV_PAD_TOP + 18 + ENV_PAD + 5  # パディング + ラベル
             )
             _approx_zoom = min(_APPROX_CONTAINER_W / _content_w, 1.0) if _content_w > 0 else 1.0
-            _canvas_h = int(_content_h * _approx_zoom) + 80  # 凡例・ボタン分
+            _canvas_h = int(_content_h * _approx_zoom) + 50  # 凡例・ボタン分（最小限）
             _canvas_h = max(_canvas_h, 400)  # 最低高さ
         elif _row_bounds:
             _max_grid_y = max(rb["y_start"] + rb["height"] for rb in _row_bounds.values())
@@ -629,8 +629,9 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
 <script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
 <style>
   body {{ margin:0; padding:0; overflow:hidden; }}
-  #topo-wrap {{ position:relative; width:100%; height:{_canvas_h}px; }}
-  #mynetwork {{ width:100%; height:100%; border:1px solid #e0e0e0; border-radius:4px; }}
+  #topo-wrap {{ position:relative; width:100%; height:{_canvas_h}px; overflow:hidden; }}
+  #mynetwork {{ width:100%; height:100%; border:1px solid #e0e0e0; border-radius:4px;
+    background:#fafafa; }}
   #legend-bar {{
     position:absolute; bottom:6px; left:6px; right:6px;
     background:rgba(250,250,250,0.92); border:1px solid #e0e0e0;
@@ -950,13 +951,14 @@ network.once('afterDrawing', function() {{
    * + ResizeObserver pattern (CSS-driven canvas sizing)
    * 参照: vis.js #1832, Streamlit #4659 */
   if (_useFixed) {{
-    network.fit({{padding:30, animation:false}});
-
     /* ── Post-render resize: コンテンツのアスペクト比からキャンバス高さを算出 ──
-     * Python 側では Streamlit コンテナの実幅が不明なため _canvas_h を正確に
-     * 算出できない (vis.js #1832, Streamlit #4659)。
-     * afterDrawing 時点で clientWidth を取得し、グリッドメタデータのアスペクト比
-     * から必要高さを逆算 → Streamlit postMessage API で iframe ごとリサイズ。 */
+     * Python 側の _canvas_h は近似値。afterDrawing で clientWidth を取得し
+     * 正確な高さを逆算 → 内部コンテナのみリサイズ（iframe 高さは変えない）。
+     *
+     * ★ 重要: Streamlit postMessage (setFrameHeight) で iframe 高さを変えると
+     *   コンポーネント再レンダリングが発生 → 新 iframe 生成 → afterDrawing 再発火
+     *   → 無限ループ（白いベール点滅の根本原因）。
+     *   iframe 高さは Python 側の _canvas_h で固定し、内部でのみ調整する。 */
     var colBounds = zones._col_bounds || {{}};
     var rowBounds = zones._row_bounds || {{}};
     var cMinX = Infinity, cMaxX = -Infinity, cMinY = Infinity, cMaxY = -Infinity;
@@ -975,39 +977,25 @@ network.once('afterDrawing', function() {{
     cMinY -= {ENV_PAD_TOP} + 18; cMaxY += {ENV_PAD} + 5;
     var contentW = cMaxX - cMinX;
     var contentH = cMaxY - cMinY;
-    if (contentW <= 0 || contentH <= 0) return;
+    if (contentW <= 0 || contentH <= 0) {{
+      network.fit({{padding:30, animation:false}});
+      return;
+    }}
 
     /* 実コンテナ幅からズーム率 → 必要高さを逆算 */
     var wrap = document.getElementById('topo-wrap');
     var containerW = wrap.clientWidth - 2; /* border 分 */
-    var zoom = Math.min(containerW / contentW, 1.0); /* 1x 以上にはしない */
-    var neededH = Math.ceil(contentH * zoom) + 80; /* 凡例・ボタン分 */
-    neededH = Math.max(neededH, 400); /* 最低高さ */
+    var zoom = Math.min(containerW / contentW, 1.0);
+    var neededH = Math.ceil(contentH * zoom) + 50; /* 凡例分（最小限） */
+    neededH = Math.max(neededH, 400);
 
-    /* キャンバスコンテナ & vis.js リサイズ */
-    wrap.style.height = neededH + 'px';
-    document.getElementById('mynetwork').style.height = neededH + 'px';
-    network.setSize(containerW + 'px', neededH + 'px');
+    /* 内部コンテナのみリサイズ（iframe サイズは Python 側 _canvas_h で固定） */
+    var currentH = wrap.clientHeight;
+    var finalH = Math.min(neededH, currentH); /* iframe をはみ出さない */
+    wrap.style.height = finalH + 'px';
+    document.getElementById('mynetwork').style.height = finalH + 'px';
+    network.setSize(containerW + 'px', finalH + 'px');
     network.fit({{padding:30, animation:false}});
-
-    /* ── Streamlit iframe + 親コンテナを動的リサイズ ──
-     * 3段階のフォールバックで確実にリサイズする:
-     *   1. Streamlit 公式 postMessage API (streamlit:setFrameHeight)
-     *   2. frameElement.style.height (same-origin iframe)
-     *   3. frameElement.parentElement の高さも書き換え */
-    if (window.parent !== window) {{
-      window.parent.postMessage({{
-        isStreamlitMessage: true,
-        type: "streamlit:setFrameHeight",
-        height: neededH
-      }}, "*");
-    }}
-    if (window.frameElement) {{
-      window.frameElement.style.height = neededH + 'px';
-      if (window.frameElement.parentElement) {{
-        window.frameElement.parentElement.style.height = neededH + 'px';
-      }}
-    }}
     return;
   }}
   var allIds = nodes.getIds();

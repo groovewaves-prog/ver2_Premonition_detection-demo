@@ -80,17 +80,17 @@ def main():
                     st.session_state[_tab_key] = _TAB_NAMES[1]
                     st.rerun()
 
-        # ストリーム実行中: 自動リフレッシュ（0.3s間隔で約2-3秒で全描画完了）
+        # ストリーム実行中: 自動リフレッシュ（0.5s間隔）
         # ★ デッドロック防止: 連続rerunカウンタで無限ループを検出・遮断
         _stream_needs_refresh = st.session_state.get("_stream_needs_refresh", False)
         if stream_running and _stream_needs_refresh:
             _rerun_count = st.session_state.get("_stream_rerun_count", 0) + 1
             st.session_state["_stream_rerun_count"] = _rerun_count
-            if _rerun_count > 30:  # 30回 × 0.3s = 9秒超 → 異常と判断
+            if _rerun_count > 15:  # 15回 × 0.5s = 7.5秒超 → 異常と判断
                 st.session_state["_stream_needs_refresh"] = False
                 st.session_state["_stream_rerun_count"] = 0
             else:
-                time.sleep(0.3)
+                time.sleep(0.5)
                 st.rerun()
         else:
             st.session_state["_stream_rerun_count"] = 0

@@ -53,6 +53,16 @@ def render_sidebar():
                 if selected != current:
                     st.session_state.site_scenarios[site_id] = selected
 
+                    # ★ シナリオ切替時: ストリームシミュレータ + リフレッシュフラグを
+                    #   即座にクリア。これを行わないと app.py の自動リフレッシュループ
+                    #   (time.sleep + st.rerun) が残存し、白いベールが点滅する。
+                    _clear_simulator()
+                    st.session_state["_stream_needs_refresh"] = False
+                    st.session_state["_stream_rerun_count"] = 0
+
+                    # ★ トポロジーグラフキャッシュもクリア（シナリオ変更でアラーム色が変わる）
+                    st.session_state.pop("_topo_graph_cache", None)
+
                     # ★ 予兆シミュレーションとの競合を防ぐため自動クリア
                     injected = st.session_state.get("injected_weak_signal")
                     if injected and selected != "正常稼働":
