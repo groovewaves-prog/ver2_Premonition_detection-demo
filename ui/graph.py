@@ -951,50 +951,12 @@ network.once('afterDrawing', function() {{
    * + ResizeObserver pattern (CSS-driven canvas sizing)
    * 参照: vis.js #1832, Streamlit #4659 */
   if (_useFixed) {{
-    /* ── Post-render resize: コンテンツのアスペクト比からキャンバス高さを算出 ──
-     * Python 側の _canvas_h は近似値。afterDrawing で clientWidth を取得し
-     * 正確な高さを逆算 → 内部コンテナのみリサイズ（iframe 高さは変えない）。
-     *
-     * ★ 重要: Streamlit postMessage (setFrameHeight) で iframe 高さを変えると
-     *   コンポーネント再レンダリングが発生 → 新 iframe 生成 → afterDrawing 再発火
-     *   → 無限ループ（白いベール点滅の根本原因）。
-     *   iframe 高さは Python 側の _canvas_h で固定し、内部でのみ調整する。 */
-    var colBounds = zones._col_bounds || {{}};
-    var rowBounds = zones._row_bounds || {{}};
-    var cMinX = Infinity, cMaxX = -Infinity, cMinY = Infinity, cMaxY = -Infinity;
-    for (var c in colBounds) {{
-      var cb = colBounds[c];
-      if (cb.x_start < cMinX) cMinX = cb.x_start;
-      if (cb.x_start + cb.width > cMaxX) cMaxX = cb.x_start + cb.width;
-    }}
-    for (var r in rowBounds) {{
-      var rb = rowBounds[r];
-      if (rb.y_start < cMinY) cMinY = rb.y_start;
-      if (rb.y_start + rb.height > cMaxY) cMaxY = rb.y_start + rb.height;
-    }}
-    /* ゾーン/エンベロープのパディング + ラベル分を加算 */
-    cMinX -= {ENV_PAD} + 5;  cMaxX += {ENV_PAD} + 5;
-    cMinY -= {ENV_PAD_TOP} + 18; cMaxY += {ENV_PAD} + 5;
-    var contentW = cMaxX - cMinX;
-    var contentH = cMaxY - cMinY;
-    if (contentW <= 0 || contentH <= 0) {{
-      network.fit({{padding:30, animation:false}});
-      return;
-    }}
-
-    /* 実コンテナ幅からズーム率 → 必要高さを逆算 */
-    var wrap = document.getElementById('topo-wrap');
-    var containerW = wrap.clientWidth - 2; /* border 分 */
-    var zoom = Math.min(containerW / contentW, 1.0);
-    var neededH = Math.ceil(contentH * zoom) + 50; /* 凡例分（最小限） */
-    neededH = Math.max(neededH, 400);
-
-    /* 内部コンテナのみリサイズ（iframe サイズは Python 側 _canvas_h で固定） */
-    var currentH = wrap.clientHeight;
-    var finalH = Math.min(neededH, currentH); /* iframe をはみ出さない */
-    wrap.style.height = finalH + 'px';
-    document.getElementById('mynetwork').style.height = finalH + 'px';
-    network.setSize(containerW + 'px', finalH + 'px');
+    /* ── 固定座標レイアウト: network.fit() のみ ──
+     * Python 側で _canvas_h を正確に算出済み。
+     * DOM 操作（wrap.style.height, postMessage 等）は一切行わない。
+     * DOM を変更すると Streamlit が「コンポーネント描画中」と判断し
+     * 半透明オーバーレイ（白いベール）が消えなくなる。
+     * network.fit() がコンテンツをキャンバス内にフィットさせる。 */
     network.fit({{padding:30, animation:false}});
     return;
   }}
