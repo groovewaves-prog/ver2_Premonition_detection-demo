@@ -1,10 +1,13 @@
 # ui/graph.py  ―  vis.js インタラクティブトポロジー描画
 #   色優先順位・予兆アンバーハイライト・3分類対応
+#   ★ Streamlit Custom Component 移行済み: iframe 再生成なし → 白いベール根治
 import json
 import streamlit as st
 import streamlit.components.v1 as components
 from alarm_generator import NodeColor, Alarm
 from typing import List, Dict, Any, Tuple
+from components.topology_graph import topology_graph as _topology_component
+from components.topology_graph import impact_graph as _impact_component
 
 
 # デバイスタイプ別のデフォルト形状・色定義（configs/device_types.json から取得）
@@ -278,9 +281,9 @@ def _compute_fixed_positions(zones: dict, topology: dict) -> dict:
 
 def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results: List[dict]):
     """
-    vis.js でインタラクティブなトポロジーグラフを描画し、
-    Streamlit の components.html() で埋め込む。
-    凡例はマップ外に Streamlit ウィジェットとして表示。
+    vis.js でインタラクティブなトポロジーグラフを描画する。
+    Streamlit Custom Component により iframe を再生成せず
+    データ差分のみ更新（白いベール根治）。
 
     色優先順位（高→低）:
       1. Root Cause CRITICAL（赤）/ WARNING（黄）/ SILENT（紫）
@@ -290,28 +293,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
       5. Unrelated (ノイズ) — 薄紫ダイヤ
       6. Normal — グリーン
     """
-    # ★ トポロジーグラフHTML キャッシュ（入力が同一なら再構築スキップ）
-    _topo_cache_key = "_topo_graph_cache"
-    _alarm_sig = tuple(sorted((a.device_id, a.severity, a.is_root_cause) for a in alarms))
-    # ★ 白いベール対策: prob の微小変化でキャッシュミスしないよう視覚関連フィールドのみ使用。
-    #   prob は 0.1 単位に丸め、is_prediction の有無で分類。
-    #   prob の精密値はツールチップに影響するが、iframe 再生成のコスト（白いベール）が
-    #   ツールチップの鮮度より重い。
-    _analysis_sig = tuple(sorted((
-        r.get("id", ""),
-        r.get("classification", r.get("status", "")),
-        "P" if r.get("is_prediction") else "",
-        round(r.get("prob", 0), 1),
-    ) for r in analysis_results))
-    _maint_sig = tuple(sorted(st.session_state.get("maint_devices", {}).get(
-        st.session_state.get("active_site", ""), set())))
-    _zone_sig = st.session_state.get("active_site", "A")
-    _cache_sig = hash((_alarm_sig, _analysis_sig, len(topology), _maint_sig, _zone_sig))
-    _cached = st.session_state.get(_topo_cache_key)
-    if _cached and _cached.get("sig") == _cache_sig:
-        # キャッシュヒット: HTML描画のみ（凡例はHTML内に含まれる）
-        components.html(_cached["html"], height=_cached.get("canvas_h", 500))
-        return
+    # ★ Custom Component 移行後: HTML キャッシュ不要
+    #   iframe は破棄されず、onRender() でデータ差分のみ更新される
 
     # --- アラーム情報をデバイスIDでマッピング ---
     alarm_map = {}
@@ -611,581 +594,23 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         # キャンバス高さはリフロー後に network.fit() で自動調整される
         _canvas_h = max(700, _n_nodes * 80)
 
-    # --- vis.js レイアウトオプション組み立て ---
-    if _use_fixed:
-        _layout_js = "layout: { hierarchical: false }"
-        _edge_smooth_js = "smooth: false"
-    else:
-        _layout_js = (
-            f"layout: {{ hierarchical: {{ enabled: true, direction: 'UD', "
-            f"sortMethod: 'directed', levelSeparation: {_level_sep}, "
-            f"nodeSpacing: {_node_sp}, treeSpacing: {_tree_sp}, "
-            f"blockShifting: true, edgeMinimization: true, "
-            f"parentCentralization: true }} }}"
-        )
-        _edge_smooth_js = "smooth: false"
-
-    # --- vis.js HTML (凡例はキャンバス内にオーバーレイ表示) ---
-    nodes_json = json.dumps(nodes, ensure_ascii=False)
-    edges_json = json.dumps(edges, ensure_ascii=False)
-    zones_json = json.dumps(zones, ensure_ascii=False)
+    # --- Custom Component でレンダリング ---
     legend_html = _build_legend_html(used_states)
+    _layout_config = {"mode": "fixed"} if _use_fixed else {"mode": "hierarchical"}
+    _topology_component(
+        nodes=nodes,
+        edges=edges,
+        zones=zones,
+        use_fixed=_use_fixed,
+        fit_pad=_fit_pad,
+        canvas_h=_canvas_h,
+        layout_js=_layout_config,
+        legend_html=legend_html,
+        font_size=_font_size,
+        key=f"topo_{st.session_state.get('active_site', 'A')}",
+    )
 
-    html = f"""
-<html><head>
-<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
-<style>
-  body {{ margin:0; padding:0; overflow:hidden; }}
-  #topo-wrap {{ position:relative; width:100%; height:{_canvas_h}px; overflow:hidden; }}
-  #mynetwork {{ width:100%; height:100%; border:1px solid #e0e0e0; border-radius:4px;
-    background:#fafafa; }}
-  #legend-bar {{
-    position:absolute; bottom:6px; left:6px; right:6px;
-    background:rgba(250,250,250,0.92); border:1px solid #e0e0e0;
-    border-radius:4px; padding:5px 12px;
-    font:12px/1.4 Arial,sans-serif; color:#444;
-    pointer-events:none; z-index:10;
-  }}
-  .lg-swatch {{
-    display:inline-block; width:12px; height:12px;
-    vertical-align:middle; margin-right:5px;
-  }}
-  .lg-item {{ margin-right:14px; white-space:nowrap; }}
-  #fs-btn, #zoom-btn {{
-    position:absolute; z-index:20;
-    background:rgba(255,255,255,0.92); border:1px solid #ccc;
-    border-radius:6px; padding:6px 12px;
-    font:13px/1 Arial,sans-serif; color:#444; cursor:pointer;
-    transition:background 0.2s; user-select:none;
-  }}
-  #fs-btn {{ top:8px; right:8px; }}
-  #zoom-btn {{ top:8px; right:120px; }}
-  #fs-btn:hover, #zoom-btn:hover {{ background:#e3f2fd; border-color:#90caf9; }}
-  #zoom-btn.active {{ background:#e3f2fd; border-color:#1976d2; color:#1976d2; }}
-  #topo-wrap:fullscreen,
-  #topo-wrap:-webkit-full-screen {{
-    width:100vw; height:100vh; background:#fff;
-  }}
-</style>
-</head>
-<body>
-<div id="topo-wrap">
-  <button id="zoom-btn" title="クリックでマウスホイールズームの有効/無効を切替">&#x1F50D; ホイールズーム</button>
-  <button id="fs-btn" title="全画面表示 / 戻る">&#x26F6; 全画面</button>
-  <div id="mynetwork"></div>
-  <div id="legend-bar">{legend_html}</div>
-</div>
-<script>
-(function() {{
-try {{
-var nodes = new vis.DataSet({nodes_json});
-var edges = new vis.DataSet({edges_json});
-var zones = {zones_json};
-var _useFixed = {'true' if _use_fixed else 'false'};
-var _fitPad = {_fit_pad};
-var data = {{ nodes: nodes, edges: edges }};
-var options = {{
-    {_layout_js},
-    physics: {{ enabled: false }},
-    interaction: {{
-        hover: true,
-        tooltipDelay: 100,
-        zoomView: false,
-        dragView: true,
-        dragNodes: false
-    }},
-    nodes: {{
-        font: {{ size: {_font_size}, face: 'Arial, sans-serif', multi: false }},
-        margin: {{ top: 8, bottom: 8, left: 10, right: 10 }},
-        shapeProperties: {{ borderRadius: 8 }}
-    }},
-    edges: {{
-        {_edge_smooth_js}
-    }}
-}};
-var network = new vis.Network(document.getElementById('mynetwork'), data, options);
-
-/* ── ゾーンボックス描画 (beforeDrawing) ──
- * 全拠点共通アルゴリズム（2レイヤー協調設計）:
- *
- *   レイヤー1 (_compute_fixed_positions):
- *     ノード座標を算出する際に MIN_ZONE_GAP + ENV_PAD を考慮し、
- *     ゾーン矩形が重ならない配置を保証する。
- *
- *   レイヤー2 (このコールバック):
- *     GML grid-based layout (PLOS ONE, 2019) の原理:
- *     グリッドセル境界からゾーン矩形をトップダウンに決定し、
- *     構造的に非重複を保証する。ボトムアップの衝突解消は不要。
- *
- *   パス構成:
- *     1    — グリッドセルベースでゾーン矩形を算出
- *            (_col_bounds + _row_bounds → 列行の境界から矩形を決定)
- *     1b   — 安全ネット: ノード BB がセル外にはみ出す場合は拡張
- *     2    — エンベロープ算出 (子ゾーン和集合 + パディング)
- *     3    — 描画 (エンベロープ → ゾーン)
- * ─────────────────────────────────────── */
-network.on('beforeDrawing', function(ctx) {{
-  try {{
-  /* ★ 定数はモジュールレベルの Python 定数から注入（一元管理） */
-  var ZONE_PAD = {ZONE_PAD};
-  var ZONE_PAD_TOP = {ZONE_PAD_TOP};
-  var ENV_PAD = {ENV_PAD};
-  var ENV_PAD_TOP = {ENV_PAD_TOP};
-
-  /* Python 側で注入されたグリッドセル境界 */
-  var colBounds = zones._col_bounds || {{}};
-  var rowBounds = zones._row_bounds || {{}};
-  var hasGrid = (Object.keys(colBounds).length > 0 && Object.keys(rowBounds).length > 0);
-
-  /* ── 第1パス: グリッドセルベースでゾーン矩形を算出 ──
-   * GML 原理: 各ゾーンは grid: [col, row, colspan, rowspan] を持ち、
-   * 対応するグリッドセルの和集合が矩形を決定する。
-   * グリッドセルは Python 側で非重複に配置済み → 矩形も非重複。
-   *
-   * グリッド情報がないゾーン（旧式 or auto-generated）は
-   * フォールバックとしてノード BB から算出する。 */
-  var zoneRects = [];
-  for (var zk in zones) {{
-    if (zk.charAt(0) === '_') continue;
-    var z = zones[zk];
-    var memberNodes = z.nodes || [];
-    if (memberNodes.length === 0) continue;
-    var g = z.grid;
-    var x1, y1, x2, y2;
-    var usedGrid = false;
-
-    if (hasGrid && g && g.length >= 4) {{
-      /* ── グリッドセルベース（トップダウン）── */
-      var colStart = g[0], rowStart = g[1], colspan = g[2], rowspan = g[3];
-      var cb0 = colBounds[String(colStart)];
-      var cbN = colBounds[String(colStart + colspan - 1)];
-      var rb0 = rowBounds[String(rowStart)];
-      var rbN = rowBounds[String(rowStart + rowspan - 1)];
-      if (cb0 && cbN && rb0 && rbN) {{
-        x1 = cb0.x_start;
-        x2 = cbN.x_start + cbN.width;
-        y1 = rb0.y_start;
-        y2 = rbN.y_start + rbN.height;
-        usedGrid = true;
-      }}
-    }}
-
-    if (!usedGrid) {{
-      /* ── フォールバック: ノード BB から算出 ── */
-      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      var found = false;
-      for (var i = 0; i < memberNodes.length; i++) {{
-        var nid = memberNodes[i];
-        try {{
-          var bb = network.getBoundingBox(nid);
-          if (bb) {{
-            if (bb.left < minX) minX = bb.left;
-            if (bb.right > maxX) maxX = bb.right;
-            if (bb.top < minY) minY = bb.top;
-            if (bb.bottom > maxY) maxY = bb.bottom;
-            found = true;
-          }}
-        }} catch(e) {{
-          try {{
-            var pp = network.getPositions([nid]);
-            if (pp[nid]) {{
-              var px = pp[nid].x, py = pp[nid].y;
-              if (px - 80 < minX) minX = px - 80;
-              if (px + 80 > maxX) maxX = px + 80;
-              if (py - 80 < minY) minY = py - 80;
-              if (py + 80 > maxY) maxY = py + 80;
-              found = true;
-            }}
-          }} catch(e2) {{ /* ignore */ }}
-        }}
-      }}
-      if (!found) continue;
-      x1 = minX - ZONE_PAD;
-      y1 = minY - ZONE_PAD_TOP;
-      x2 = maxX + ZONE_PAD;
-      y2 = maxY + ZONE_PAD;
-    }}
-
-    /* ── 第1bパス (安全ネット): ノード BB がセル外にはみ出す場合は拡張 ──
-     * vis.js の実描画サイズが Python 推定と微妙にずれる場合の保険 */
-    if (usedGrid) {{
-      for (var i = 0; i < memberNodes.length; i++) {{
-        var nid = memberNodes[i];
-        try {{
-          var bb = network.getBoundingBox(nid);
-          if (bb) {{
-            if (bb.left - ZONE_PAD < x1) x1 = bb.left - ZONE_PAD;
-            if (bb.right + ZONE_PAD > x2) x2 = bb.right + ZONE_PAD;
-            if (bb.top - ZONE_PAD_TOP < y1) y1 = bb.top - ZONE_PAD_TOP;
-            if (bb.bottom + ZONE_PAD > y2) y2 = bb.bottom + ZONE_PAD;
-          }}
-        }} catch(e) {{ /* ignore */ }}
-      }}
-    }}
-
-    zoneRects.push({{ key: zk, zone: z, x1: x1, y1: y1, x2: x2, y2: y2 }});
-  }}
-
-  /* ── 第2パス: エンベロープ矩形算出 ──
-   * 子ゾーンの和集合 + パディング。グリッドベースのゾーンが
-   * 非重複であるため、エンベロープも構造的に正しい。 */
-  var envelopes = zones._envelopes || {{}};
-  var envRects = [];
-  for (var ek in envelopes) {{
-    var env = envelopes[ek];
-    var childKeys = env.children || [];
-    var eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
-    var eFound = false;
-    for (var ci = 0; ci < childKeys.length; ci++) {{
-      for (var ri = 0; ri < zoneRects.length; ri++) {{
-        if (zoneRects[ri].key === childKeys[ci]) {{
-          var cr = zoneRects[ri];
-          if (cr.x1 < eMinX) eMinX = cr.x1;
-          if (cr.y1 < eMinY) eMinY = cr.y1;
-          if (cr.x2 > eMaxX) eMaxX = cr.x2;
-          if (cr.y2 > eMaxY) eMaxY = cr.y2;
-          eFound = true;
-        }}
-      }}
-    }}
-    if (!eFound) continue;
-    eMinX -= ENV_PAD; eMinY -= ENV_PAD_TOP; eMaxX += ENV_PAD; eMaxY += ENV_PAD;
-    envRects.push({{ key: ek, env: env, x1: eMinX, y1: eMinY, x2: eMaxX, y2: eMaxY }});
-  }}
-
-  /* ── 第3パス: 描画 (エンベロープ → ゾーン) ── */
-
-  /* エンベロープ描画 */
-  for (var ei = 0; ei < envRects.length; ei++) {{
-    var eR = envRects[ei];
-    var env = eR.env;
-    ctx.fillStyle = env.color || 'rgba(0,0,0,0.03)';
-    ctx.strokeStyle = env.border || '#bdbdbd';
-    ctx.lineWidth = 1.8;
-    if (env.border_style === 'dashed') ctx.setLineDash([8, 5]);
-    ctx.beginPath();
-    var eRad = 12;
-    ctx.moveTo(eR.x1 + eRad, eR.y1);
-    ctx.lineTo(eR.x2 - eRad, eR.y1);
-    ctx.arcTo(eR.x2, eR.y1, eR.x2, eR.y1 + eRad, eRad);
-    ctx.lineTo(eR.x2, eR.y2 - eRad);
-    ctx.arcTo(eR.x2, eR.y2, eR.x2 - eRad, eR.y2, eRad);
-    ctx.lineTo(eR.x1 + eRad, eR.y2);
-    ctx.arcTo(eR.x1, eR.y2, eR.x1, eR.y2 - eRad, eRad);
-    ctx.lineTo(eR.x1, eR.y1 + eRad);
-    ctx.arcTo(eR.x1, eR.y1, eR.x1 + eRad, eR.y1, eRad);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    ctx.setLineDash([]);
-    if (env.label) {{
-      ctx.font = 'bold 12px Arial, sans-serif';
-      ctx.fillStyle = env.border || '#999';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillText(env.label, eR.x1 + 12, eR.y1 + 5);
-    }}
-  }}
-
-  /* ゾーン描画 */
-  for (var i = 0; i < zoneRects.length; i++) {{
-    var zr = zoneRects[i];
-    var z = zr.zone;
-    ctx.fillStyle = z.color || 'rgba(200,200,200,0.15)';
-    ctx.strokeStyle = z.border || '#ccc';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    var r = 8;
-    ctx.moveTo(zr.x1 + r, zr.y1);
-    ctx.lineTo(zr.x2 - r, zr.y1);
-    ctx.arcTo(zr.x2, zr.y1, zr.x2, zr.y1 + r, r);
-    ctx.lineTo(zr.x2, zr.y2 - r);
-    ctx.arcTo(zr.x2, zr.y2, zr.x2 - r, zr.y2, r);
-    ctx.lineTo(zr.x1 + r, zr.y2);
-    ctx.arcTo(zr.x1, zr.y2, zr.x1, zr.y2 - r, r);
-    ctx.lineTo(zr.x1, zr.y1 + r);
-    ctx.arcTo(zr.x1, zr.y1, zr.x1 + r, zr.y1, r);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-    /* ゾーンラベル（ボックス内部の上端） */
-    if (z.label) {{
-      ctx.font = '11px Arial, sans-serif';
-      ctx.fillStyle = z.border || '#888';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillText(z.label, zr.x1 + 8, zr.y1 + 5);
-    }}
-  }}
-  }} catch(err) {{
-    /* beforeDrawing 内の例外がキャンバス描画を破壊しないようガード。
-     * 障害シナリオ発動時に getBoundingBox() がレイアウト途中で
-     * 例外を投げるケースへの安全ネット。 */
-    console.warn('beforeDrawing zone render error:', err);
-  }}
-}});
-
-/* ══════════════════════════════════════════════════════════════
- * Universal Measure & Reflow — 全拠点共通レイアウトアルゴリズム
- * ──────────────────────────────────────────────────────────────
- * 学術的基盤:
- *   Sugiyama et al. (1981) — 階層グラフ描画フレームワーク
- *   Brandes & Köpf (2001)  — 座標割り当てアルゴリズム (dagre で採用)
- *
- * dagre との違い:
- *   dagre: 描画前にサイズを推定 → レイアウト計算 → 描画
- *   本実装: 描画 → 実サイズ測定 → リフロー（ブラウザ layout engine と同原理）
- *   利点: 推定誤差ゼロ。形状変化（ROOT CAUSE ellipse 等）にも自動対応。
- *
- * アルゴリズム:
- *   Phase 1: vis.js 初期描画（hierarchical or fixed positions）
- *   Phase 2: getBoundingBox() で全ノードの実サイズを測定
- *   Phase 3: BFS でレベルツリーを構築（Y近接フォールバック付き）
- *   Phase 4: レベル単位で Y 座標を再計算（非対称エクステント使用）
- *   Phase 5: 同一レベル内の水平重なりを解消
- *   Phase 6: 座標適用 & fit
- * ══════════════════════════════════════════════════════════════ */
-network.once('afterDrawing', function() {{
-  try {{
-  /* 固定座標レイアウトではリフロー不要（Python 側で正確に配置済み）。
-   * moveNode() は fixed ノードも移動するため、グリッドレイアウトが壊れる。
-   *
-   * 代わりに post-render resize を実行:
-   *   1. network.fit() でキャンバスにフィット
-   *   2. コンテナ実幅からアスペクト比を計算
-   *   3. 不要な白余白を除去するため iframe を動的リサイズ
-   *
-   * 学術的根拠: Chart.js responsive pattern (maintainAspectRatio)
-   * + ResizeObserver pattern (CSS-driven canvas sizing)
-   * 参照: vis.js #1832, Streamlit #4659 */
-  if (_useFixed) {{
-    /* ── 固定座標レイアウト: 単一 fit ──
-     * network.fit() はノード BB のみを考慮し、beforeDrawing で描画する
-     * ゾーン/エンベロープ矩形を含まない。Python 側でゾーン拡張量を計算し
-     * _fitPad として注入。単一 fit で全ゾーンを表示枠内に収める。
-     * DOM 操作は一切行わない（白いベール回避）。
-     * ★ 2パス fit を廃止: 複数 fit は追加の描画サイクルを発生させ、
-     *   iframe の描画完了を遅延させて白いベールの原因となる。 */
-    network.fit({{padding: _fitPad, animation:false}});
-    return;
-  }}
-  var allIds = nodes.getIds();
-  if (allIds.length === 0) {{ network.fit({{padding:50}}); return; }}
-
-  /* ── Phase 2: 実サイズ測定 ── */
-  var pos = network.getPositions();
-  var bb = {{}};
-  allIds.forEach(function(id) {{
-    try {{ bb[id] = network.getBoundingBox(id); }} catch(e) {{}}
-  }});
-
-  /* ── Phase 3: BFS レベル検出 ── */
-  var children = {{}};
-  var inDeg = {{}};
-  allIds.forEach(function(id) {{ children[id] = []; inDeg[id] = 0; }});
-  edges.forEach(function(e) {{
-    if (children[e.from]) children[e.from].push(e.to);
-    inDeg[e.to] = (inDeg[e.to] || 0) + 1;
-  }});
-  var levels = {{}};
-  var queue = [];
-  allIds.forEach(function(id) {{
-    if (!inDeg[id] || inDeg[id] === 0) {{ levels[id] = 0; queue.push(id); }}
-  }});
-  var head = 0;
-  while (head < queue.length) {{
-    var cur = queue[head++];
-    children[cur].forEach(function(ch) {{
-      var nl = levels[cur] + 1;
-      if (levels[ch] === undefined || levels[ch] < nl) {{
-        levels[ch] = nl;
-        queue.push(ch);
-      }}
-    }});
-  }}
-  /* 孤立ノード: レベル 0 に割り当て */
-  allIds.forEach(function(id) {{
-    if (levels[id] === undefined) levels[id] = 0;
-  }});
-
-  /* レベル → ノードリスト（X座標順でソート） */
-  var lvGroups = {{}};
-  allIds.forEach(function(id) {{
-    var lv = levels[id];
-    if (!lvGroups[lv]) lvGroups[lv] = [];
-    lvGroups[lv].push(id);
-  }});
-  var sortedLvs = Object.keys(lvGroups).map(Number).sort(function(a,b){{return a-b;}});
-  sortedLvs.forEach(function(lv) {{
-    lvGroups[lv].sort(function(a,b){{ return pos[a].x - pos[b].x; }});
-  }});
-
-  /* ── Y近接フォールバック ──
-   * 固定座標レイアウト（ゾーングリッド）では BFS レベルと
-   * 視覚的な行が一致しない場合がある（例: AWS_DX は BFS level 1
-   * だがゾーン内では最上行）。初期 Y が大きく異なるノードが
-   * 同一 BFS レベルに入る場合は Y 近接で再分割する。 */
-  var finalRows = [];
-  sortedLvs.forEach(function(lv) {{
-    var grp = lvGroups[lv];
-    grp.sort(function(a,b){{ return pos[a].y - pos[b].y; }});
-    var subRow = [grp[0]];
-    for (var i = 1; i < grp.length; i++) {{
-      if (Math.abs(pos[grp[i]].y - pos[subRow[0]].y) < 50) {{
-        subRow.push(grp[i]);
-      }} else {{
-        finalRows.push(subRow);
-        subRow = [grp[i]];
-      }}
-    }}
-    finalRows.push(subRow);
-  }});
-  /* Y の昇順でソート */
-  finalRows.sort(function(a,b) {{
-    var ya = 0, yb = 0;
-    a.forEach(function(id){{ ya += pos[id].y; }});
-    b.forEach(function(id){{ yb += pos[id].y; }});
-    return ya/a.length - yb/b.length;
-  }});
-
-  /* ── Phase 4: 縦方向リフロー（レベル単位、非対称エクステント） ──
-   * 水平方向に重ならない行間（例: dc_core と aws_cloud）には
-   * 縦ギャップを強制しない。重なりのある直近の先行行を探索して
-   * そこからのギャップのみ確保する（ゾーン間の不要な引き延ばしを防止）。 */
-  var MIN_V_GAP = 40;
-  var rd = finalRows.map(function(row) {{
-    var cy = 0;
-    row.forEach(function(id){{ cy += pos[id].y; }});
-    cy /= row.length;
-    var mxA = 0, mxB = 0;
-    var xL = Infinity, xR = -Infinity;
-    row.forEach(function(id) {{
-      var b = bb[id];
-      if (b) {{
-        mxA = Math.max(mxA, pos[id].y - b.top);
-        mxB = Math.max(mxB, b.bottom - pos[id].y);
-        if (b.left < xL) xL = b.left;
-        if (b.right > xR) xR = b.right;
-      }}
-    }});
-    return {{row:row, cy:cy, above:Math.max(mxA,20), below:Math.max(mxB,20), xL:xL, xR:xR}};
-  }});
-
-  var newCY = [rd[0].cy];
-  for (var r = 1; r < rd.length; r++) {{
-    /* 水平方向に重なりのある直近の先行行を探索 */
-    var bestNeeded = rd[r].cy;
-    for (var p = r - 1; p >= 0; p--) {{
-      /* X範囲が重なるか判定（20pxマージン） */
-      if (rd[p].xR + 20 > rd[r].xL && rd[r].xR + 20 > rd[p].xL) {{
-        var needed = newCY[p] + rd[p].below + MIN_V_GAP + rd[r].above;
-        bestNeeded = Math.max(bestNeeded, needed);
-        break;
-      }}
-    }}
-    newCY.push(bestNeeded);
-  }}
-
-  /* ── Phase 5: 横方向リフロー（重なり部分のみ拡張） ──
-   * dagre の Brandes-Köpf と異なり、vis.js の初期 X 順序を尊重しつつ
-   * 実測幅に基づき重なりノード間のみギャップを確保する。
-   * 行全体の再センタリングは親子アラインメントを壊すため行わない。 */
-  var MIN_H_GAP = 20;
-  var xNew = {{}};
-  finalRows.forEach(function(row) {{
-    if (row.length < 2) return;
-    row.sort(function(a,b){{ return pos[a].x - pos[b].x; }});
-    /* 左→右に走査し、重なりがあれば右側を押し出す */
-    var shifts = new Array(row.length);
-    shifts[0] = 0;
-    for (var j = 1; j < row.length; j++) {{
-      var prevId = row[j-1], currId = row[j];
-      var prevRight = (bb[prevId] ? bb[prevId].right : pos[prevId].x + 80) + shifts[j-1];
-      var currLeft = bb[currId] ? bb[currId].left : pos[currId].x - 80;
-      var overlap = prevRight + MIN_H_GAP - currLeft;
-      shifts[j] = (overlap > 0) ? shifts[j-1] + overlap : shifts[j-1];
-    }}
-    /* 総シフト量の半分を左方向に戻す（行の重心を保持） */
-    var totalShift = shifts[row.length-1];
-    if (totalShift > 0) {{
-      var halfShift = totalShift / 2;
-      for (var j = 0; j < row.length; j++) {{
-        var dx = shifts[j] - halfShift;
-        if (Math.abs(dx) > 1) xNew[row[j]] = pos[row[j]].x + dx;
-      }}
-    }}
-  }});
-
-  /* ── Phase 6: 座標適用 ── */
-  for (var r = 0; r < finalRows.length; r++) {{
-    var dy = newCY[r] - rd[r].cy;
-    finalRows[r].forEach(function(id) {{
-      var nx = (xNew[id] !== undefined) ? xNew[id] : pos[id].x;
-      var ny = pos[id].y + dy;
-      if (Math.abs(ny - pos[id].y) > 1 || Math.abs(nx - pos[id].x) > 1) {{
-        network.moveNode(id, nx, ny);
-      }}
-    }});
-  }}
-  setTimeout(function(){{ network.fit({{padding:50, animation:false}}); }}, 100);
-  }} catch(err) {{
-    /* リフロー中の例外がキャンバスを破壊しないようガード */
-    console.warn('afterDrawing reflow error:', err);
-    try {{ network.fit({{padding:50, animation:false}}); }} catch(e2) {{}}
-  }}
-}});
-
-/* ── ホイールズーム制御ボタン（トグル方式） ──
- * デフォルトは zoomView:false でブラウザスクロールを阻害しない。
- * クリックで ON/OFF を切り替える。 */
-var zoomBtn = document.getElementById('zoom-btn');
-var _zoomActive = false;
-zoomBtn.addEventListener('click', function(e) {{
-  e.preventDefault();
-  _zoomActive = !_zoomActive;
-  network.setOptions({{ interaction: {{ zoomView: _zoomActive }} }});
-  zoomBtn.classList.toggle('active', _zoomActive);
-  zoomBtn.innerHTML = _zoomActive
-    ? '&#x1F50D; ズーム有効'
-    : '&#x1F50D; ホイールズーム';
-}});
-
-/* ── 全画面トグル ── */
-var fsBtn = document.getElementById('fs-btn');
-var topoWrap = document.getElementById('topo-wrap');
-fsBtn.addEventListener('click', function() {{
-  if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
-    (topoWrap.requestFullscreen || topoWrap.webkitRequestFullscreen).call(topoWrap);
-  }} else {{
-    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
-  }}
-}});
-function onFsChange() {{
-  var isFull = !!(document.fullscreenElement || document.webkitFullscreenElement);
-  fsBtn.innerHTML = isFull ? '&#x2716; 戻る' : '&#x26F6; 全画面';
-  setTimeout(function() {{
-    network.redraw();
-    network.fit({{ padding: 40, animation: true }});
-  }}, 300);
-}}
-document.addEventListener('fullscreenchange', onFsChange);
-document.addEventListener('webkitfullscreenchange', onFsChange);
-}} catch(fatalErr) {{
-  /* vis.js 初期化エラーをキャッチしてユーザーに通知 */
-  console.error('Topology graph initialization error:', fatalErr);
-  var el = document.getElementById('mynetwork');
-  if (el) {{
-    el.innerHTML = '<div style="padding:40px;color:#c00;font-family:sans-serif;">'
-      + '<b>⚠ トポロジーマップの描画に失敗しました</b><br>'
-      + '<small>' + fatalErr.message + '</small></div>';
-  }}
-}}
-}})(); /* end IIFE */
-</script></body></html>
-"""
-    # ★ キャッシュに保存（次回rerunで再利用）
-    st.session_state[_topo_cache_key] = {"sig": _cache_sig, "html": html, "used_states": used_states, "canvas_h": _canvas_h}
-    components.html(html, height=_canvas_h)
+    # ★ 旧 HTML テンプレートは Custom Component frontend/index.html に移行済み
 
 
 def _build_legend_html(used_states: set) -> str:
@@ -1253,18 +678,7 @@ def render_impact_graph(
         st.caption("影響範囲なし（配下デバイスなし）")
         return
 
-    # ★ 高速化: 影響伝搬グラフ HTML キャッシュ
-    _impact_cache_key = "_impact_graph_cache"
-    _impact_sig = hash((
-        root_device_id,
-        tuple(sorted(downstream_impacts)),
-        tuple(sorted((r.get("id", ""), r.get("classification", "")) for r in (analysis_results or []))),
-    ))
-    _impact_cached = st.session_state.get(_impact_cache_key)
-    if _impact_cached and _impact_cached.get("sig") == _impact_sig:
-        components.html(_impact_cached["html"], height=370)
-        st.markdown(_impact_cached["summary"], unsafe_allow_html=True)
-        return
+    # ★ Custom Component 移行後: HTML キャッシュ不要
 
     # --- 状態マップ構築 ---
     classification_map = {}
@@ -1371,113 +785,14 @@ def render_impact_graph(
         hop_counts[hop] = hop_counts.get(hop, 0) + 1
     total = len(downstream_impacts)
 
-    nodes_json = json.dumps(nodes, ensure_ascii=False)
-    edges_json = json.dumps(edges, ensure_ascii=False)
+    # --- Custom Component で影響伝搬グラフを描画 ---
+    _impact_component(
+        nodes=nodes,
+        edges=edges,
+        canvas_h=370,
+        key=f"impact_{root_device_id}",
+    )
 
-    html = f"""
-<html><head>
-<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-<style>
-  body {{ margin:0; padding:0; overflow:hidden; }}
-  #impact-net {{ width:100%; height:350px; border:1px solid #e0e0e0; border-radius:4px; }}
-</style>
-</head>
-<body>
-<div id="impact-net"></div>
-<script>
-var nodes = new vis.DataSet({nodes_json});
-var edges = new vis.DataSet({edges_json});
-var data = {{ nodes: nodes, edges: edges }};
-var options = {{
-    layout: {{
-        hierarchical: {{
-            enabled: true,
-            direction: "UD",
-            sortMethod: "directed",
-            levelSeparation: 85,
-            nodeSpacing: 120,
-            treeSpacing: 150,
-            parentCentralization: true
-        }}
-    }},
-    physics: {{ enabled: false }},
-    interaction: {{ hover: true, zoomView: false, dragView: true, dragNodes: false }},
-    nodes: {{
-        font: {{ size: 12, face: 'Arial' }},
-        margin: {{ top: 6, bottom: 6, left: 8, right: 8 }}
-    }},
-    edges: {{
-        smooth: {{ type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.3 }}
-    }}
-}};
-var network = new vis.Network(document.getElementById('impact-net'), data, options);
-
-/* ── Measure & Reflow: 同一レベル内の水平重なり解消 ──
- * vis.js hierarchical layout は nodeSpacing をノード中心間距離で適用するため、
- * ノード幅が大きいと重なりが発生する。描画後に実サイズを測定し、
- * 重なりを検出・解消する。 */
-network.once('afterDrawing', function() {{
-  var allIds = nodes.getIds();
-  if (allIds.length === 0) return;
-  var pos = network.getPositions();
-  var bb = {{}};
-  allIds.forEach(function(id) {{
-    try {{ bb[id] = network.getBoundingBox(id); }} catch(e) {{}}
-  }});
-
-  /* レベル別にノードをグループ化 */
-  var levelMap = {{}};
-  nodes.forEach(function(n) {{
-    var lv = n.level != null ? n.level : 0;
-    if (!levelMap[lv]) levelMap[lv] = [];
-    levelMap[lv].push(n.id);
-  }});
-
-  var HGAP = 12; /* 最小水平ギャップ(px) */
-  var changed = false;
-
-  for (var lv in levelMap) {{
-    var ids = levelMap[lv];
-    if (ids.length < 2) continue;
-    /* X座標でソート */
-    ids.sort(function(a, b) {{ return (pos[a] ? pos[a].x : 0) - (pos[b] ? pos[b].x : 0); }});
-    /* 重なり検出 & 解消 */
-    for (var i = 0; i < ids.length - 1; i++) {{
-      var aId = ids[i], bId = ids[i + 1];
-      var aBB = bb[aId], bBB = bb[bId];
-      if (!aBB || !bBB) continue;
-      var overlap = aBB.right + HGAP - bBB.left;
-      if (overlap > 0) {{
-        /* a を左に、b を右に均等シフト */
-        var shift = overlap / 2 + 1;
-        pos[aId].x -= shift;
-        pos[bId].x += shift;
-        /* 後続ノードへの波及: シフト量を連鎖 */
-        for (var j = i + 2; j < ids.length; j++) {{
-          pos[ids[j]].x += shift;
-        }}
-        /* BB更新 */
-        aBB.left -= shift; aBB.right -= shift;
-        bBB.left += shift; bBB.right += shift;
-        changed = true;
-      }}
-    }}
-  }}
-
-  if (changed) {{
-    /* 調整後の座標を適用 */
-    var updates = [];
-    allIds.forEach(function(id) {{
-      if (pos[id]) updates.push({{ id: id, x: pos[id].x, y: pos[id].y }});
-    }});
-    nodes.update(updates);
-    network.fit({{ padding: 30, animation: false }});
-  }} else {{
-    network.fit({{ padding: 30 }});
-  }}
-}});
-</script></body></html>
-"""
     # ホップ距離内訳バー
     hop_labels = []
     sym_col = _IMPACT_STATE_COLORS["symptom"]
@@ -1494,8 +809,4 @@ network.once('afterDrawing', function() {{
         f'padding:5px 12px;background:#fff3e0;border:1px solid #ffe0b2;'
         f'border-radius:4px;margin-top:4px;">{summary_text}</div>'
     )
-
-    # ★ キャッシュに保存
-    st.session_state[_impact_cache_key] = {"sig": _impact_sig, "html": html, "summary": summary_html}
-    components.html(html, height=370)
     st.markdown(summary_html, unsafe_allow_html=True)
