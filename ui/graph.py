@@ -65,10 +65,19 @@ def _node_extents(nid: str, topology: dict, font_size: int = 12) -> tuple:
     Returns: (above, below) — y座標からの上方向・下方向の広がり(px)
     """
     node = topology.get(nid) if topology else None
-    if not isinstance(node, dict):
-        node = {}
+    # dict と NetworkNode オブジェクトの両方を処理
+    if node is None:
+        node_dict: dict = {}
+    elif isinstance(node, dict):
+        node_dict = node
+    else:
+        # NetworkNode オブジェクト → getattr で属性取得
+        node_dict = {
+            "type": getattr(node, "type", "UNKNOWN"),
+            "metadata": getattr(node, "metadata", {}),
+        }
     n_lines = 2  # ID行 + (type/role)行
-    meta = node.get("metadata", {})
+    meta = node_dict.get("metadata", {})
     if isinstance(meta, dict):
         if meta.get("redundancy_type"):
             n_lines += 1
@@ -78,7 +87,7 @@ def _node_extents(nid: str, topology: dict, font_size: int = 12) -> tuple:
     line_h = font_size + 5
     text_h = n_lines * line_h + 24
 
-    node_type = node.get("type", "UNKNOWN")
+    node_type = node_dict.get("type", "UNKNOWN")
     visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
     shape = visual.get("shape", "box")
 
@@ -130,8 +139,10 @@ def _load_zones_for_site(topology: dict) -> dict:
     #   - location が一切無い場合は空辞書を返し hierarchical フォールバック
 
     # デバイスノードのみ抽出（_ プレフィックスのメタキーを除外）
+    # ★ raw (JSON dict) を使用: topology パラメータは NetworkNode オブジェクトの
+    #   場合があり isinstance(v, dict) が False になるため、JSON から直接取得する。
     device_nodes = {
-        k: v for k, v in topology.items()
+        k: v for k, v in raw.items()
         if isinstance(v, dict) and not k.startswith("_")
     }
     if not device_nodes:
@@ -684,7 +695,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
         # network.fit() がコンテンツをコンテナ幅に収めるズームを適用するため、
         # Python 側でもズーム後の高さを近似する。
         # layout="wide" 時のメインカラム幅は通常 1000-1200px（サイドバー表示時）。
-        _APPROX_CONTAINER_W = 1100  # 近似コンテナ幅 (px) — wide layout 前提
+        _APPROX_CONTAINER_W = 1400  # 近似コンテナ幅 (px) — wide layout 前提（余裕を持たせる）
         _col_bounds = zones.get("_col_bounds", {})
         _row_bounds = zones.get("_row_bounds", {})
         if _col_bounds and _row_bounds:
@@ -700,8 +711,8 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                 + ENV_PAD_TOP + 18 + _bottom_pad  # パディング + ラベル + ゾーン下端
             )
             _approx_zoom = min(_APPROX_CONTAINER_W / _content_w, 1.0) if _content_w > 0 else 1.0
-            _canvas_h = int(_content_h * _approx_zoom) + 50  # 凡例・ボタン分（最小限）
-            _canvas_h = max(_canvas_h, 400)  # 最低高さ
+            _canvas_h = int(_content_h * _approx_zoom) + 100  # ゾーン拡張 + 凡例分
+            _canvas_h = max(_canvas_h, 500)  # 最低高さ
         elif _row_bounds:
             _max_grid_y = max(rb["y_start"] + rb["height"] for rb in _row_bounds.values())
             _canvas_h = int(_max_grid_y + ENV_PAD_TOP + ENV_PAD + ZONE_PAD + 80)
@@ -1059,13 +1070,23 @@ network.once('afterDrawing', function() {{
    * + ResizeObserver pattern (CSS-driven canvas sizing)
    * 参照: vis.js #1832, Streamlit #4659 */
   if (_useFixed) {{
-    /* ── 固定座標レイアウト: network.fit() のみ ──
-     * Python 側で _canvas_h を正確に算出済み。
-     * DOM 操作（wrap.style.height, postMessage 等）は一切行わない。
-     * DOM を変更すると Streamlit が「コンポーネント描画中」と判断し
-     * 半透明オーバーレイ（白いベール）が消えなくなる。
-     * network.fit() がコンテンツをキャンバス内にフィットさせる。 */
+    /* ── 固定座標レイアウト: 2パス fit ──
+     * network.fit() はノード BB のみを考慮し、beforeDrawing で描画する
+     * ゾーン/エンベロープ矩形を含まない。そのためゾーン矩形がキャンバス外に
+     * はみ出す場合がある。2パス方式でゾーン分の余白を確保:
+     *   Pass 1: 初期 fit → 実際の scale を取得
+     *   Pass 2: ゾーン拡張量(world px)をscaleで変換 → 必要paddingで再fit
+     * DOM 操作は一切行わない（白いベール回避）。 */
     network.fit({{padding:30, animation:false}});
+    var _sc = network.getScale();
+    var _hasEnv = zones._envelopes && Object.keys(zones._envelopes).length > 0;
+    var _topExt = ({ZONE_PAD_TOP} + (_hasEnv ? {ENV_PAD_TOP} + 20 : 0)) * _sc;
+    var _botExt = ({ZONE_PAD} + (_hasEnv ? {ENV_PAD} : 0) + 10) * _sc;
+    var _sideExt = ({ZONE_PAD} + (_hasEnv ? {ENV_PAD} : 0) + 5) * _sc;
+    var _needPad = Math.ceil(Math.max(_topExt, _botExt, _sideExt)) + 5;
+    if (_needPad > 30) {{
+      network.fit({{padding: _needPad, animation:false}});
+    }}
     return;
   }}
   var allIds = nodes.getIds();
