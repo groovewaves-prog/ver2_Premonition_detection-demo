@@ -66,22 +66,30 @@
 
 ## 未完了・保留タスク
 
-### 動作検証
-- Custom Component の実環境テスト（`streamlit run app.py` での動作確認）
-- 特に以下の確認が必要:
-  - Site A/B（hierarchical レイアウト）でのリフロー動作
-  - Site C（fixed レイアウト + ゾーン描画）での表示
-  - 影響伝搬グラフの表示
-  - アラーム発報時のノード色更新が iframe 再生成なしで反映されるか
-  - `declare_component` の `path=` 指定でフロントエンドが正しくサーブされるか
+### Streamlit v1.55.0 ソースコード検証（プロトコル互換性確認済み）
 
-### FAD-1: デバイスタイプレジストリ
-- CLAUDE.md に方針記載あり、未着手
+Streamlit フロントエンドのバンドル JS を逆解析し、以下を確認:
 
-### その他（前セッションから継続）
-- `simulate_command_execution()` の SSH executor 差し替え（L2移行）
-- LLM駆動の診断コマンド計画（現在はルールベース）
-- メンテナンスモード永続化（現状 session_state のみ）
+1. **iframe は再生成されない**: React `ref` で iframe を保持。`src` URL は固定で変わらないため
+   React は DOM 要素を再利用する。`React.memo` でコンポーネント全体をメモ化済み
+2. **args 更新は postMessage**: `useEffect` で args 変更を検知 → 既存 iframe の
+   `contentWindow.postMessage({type: 'streamlit:render', args: ...})` で送信
+3. **メッセージフォーマット互換性**:
+   - `componentReady`: `{apiVersion: 1}` → Streamlit は `t.apiVersion` で抽出 ✓
+   - `setFrameHeight`: `{height: N}` → Streamlit は `D(t, "height")` で抽出 ✓
+   - `render` (受信): `event.data.args` にコンポーネント kwargs が格納 ✓
+
+## 完了した検証タスク
+
+| チェック項目 | 結果 |
+|---|---|
+| インポートチェーン（app.py → ui/ → components/） | OK |
+| `declare_component` の path 解決 | OK（`__file__` ベース） |
+| `streamlit run app.py` 起動 | OK（エラーなし、HTTP 200） |
+| ゾーン座標計算（Site C、18ノード） | OK |
+| 凡例HTML生成 | OK |
+| postMessage プロトコル互換性 | OK（Streamlit v1.55.0 ソース確認済） |
+| iframe 非再生成の確認 | OK（React.memo + ref + useEffect パターン確認） |
 
 ## 既知の問題・注意点
 
@@ -99,6 +107,8 @@
 
 ## 次セッションへの推奨アクション
 
-1. **`streamlit run app.py` で実環境テスト** — 最優先。Custom Component が正しく描画されるか確認
-2. **問題があれば**: `declare_component` の path 解決を確認（相対パス vs 絶対パス）
-3. **postMessage プロトコルの互換性**: Streamlit バージョンアップ時に通信が壊れないか確認
+1. **ブラウザでの実描画テスト** — `streamlit run app.py` でブラウザアクセスし、
+   各サイト（A/B/C）でトポロジーマップが正しく表示されるか目視確認
+2. **差分更新テスト** — アラーム発報・解除時にノード色が iframe 再生成なしで更新されるか確認
+   （開発者ツールの Network/Console タブで iframe リクエストを監視）
+3. **影響伝搬グラフテスト** — BFS 影響伝搬グラフの表示確認
