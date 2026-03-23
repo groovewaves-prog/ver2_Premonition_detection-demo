@@ -99,6 +99,11 @@ def render_sidebar():
                         st.session_state.live_result = None
                         st.session_state.verification_result = None
 
+                    # ★ 案A: シナリオ切替フラグを立てる
+                    #   cockpit.py で検知し、重い処理（prediction_pipeline, auto_tuning）を
+                    #   スキップして高速レンダリングする。次回 rerun でフル計算。
+                    st.session_state["_scenario_just_changed"] = True
+
                     # ★ 重要：セッションステート変更後は必ず rerun
                     st.rerun()
 
