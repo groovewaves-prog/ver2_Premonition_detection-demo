@@ -406,9 +406,10 @@ def _execute_remediation(cand, topology, scenario, dt_engine, is_pred_rem):
                 st.session_state["injected_weak_signal"] = None
 
                 if dt_engine:
-                    dt_engine.forecast_auto_resolve(
-                        cand["id"],
-                        "mitigated",
+                    # ★ 案C統一: バックグラウンド実行でUIブロック防止
+                    from ui.async_inference import submit_auto_resolve
+                    submit_auto_resolve(
+                        dt_engine, cand["id"], "mitigated",
                         note="セーフティガード付き修復の検証完了により自動解消"
                     )
 

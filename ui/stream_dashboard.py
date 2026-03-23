@@ -327,16 +327,15 @@ def render_stream_dashboard():
                 try:
                     _dt_engine = _get_shared_dt_engine()
                     if _dt_engine is not None:
-                        _esc_result = _dt_engine.forecast_auto_confirm_on_incident(
-                            device_id=sim.device_id,
-                            scenario=seq.pattern,
+                        # ★ 案C統一: バックグラウンドで自動昇格（UIブロック防止）
+                        from ui.async_inference import submit_auto_confirm_single
+                        submit_auto_confirm_single(
+                            _dt_engine, sim.device_id, seq.pattern,
                         )
-                        if _esc_result.get("confirmed", 0) > 0:
-                            st.warning(
-                                f"⚡ {sim.device_id} が障害フェーズ（L5）に到達。"
-                                f"予兆履歴の {_esc_result['confirmed']}件を"
-                                f"「根本原因候補（アクティブインシデント）」へ自動昇格しました。"
-                            )
+                        st.info(
+                            f"⚡ {sim.device_id} が障害フェーズ（L5）に到達。"
+                            f"予兆履歴の自動昇格をバックグラウンドで実行中..."
+                        )
                 except Exception as e:
                     logger.debug("Auto-escalation skipped: %s", e)
                 st.session_state[_escalation_key] = True

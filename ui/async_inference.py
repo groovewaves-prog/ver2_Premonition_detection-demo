@@ -396,3 +396,55 @@ def submit_auto_confirm(dt_engine, site_id: str, critical_devices: set, scenario
     future = _executor.submit(_bg_confirm)
     with _pending_lock:
         _pending_futures[task_key] = future
+
+
+def submit_auto_resolve(dt_engine, device_id: str, outcome: str, note: str = ""):
+    """forecast_auto_resolve をバックグラウンドで実行する（fire-and-forget）。
+
+    remediation / verifier / prediction_pipeline から呼ばれる。
+    UIスレッドを一切ブロックしない。
+    """
+    task_key = f"resolve_{device_id}_{outcome}"
+    with _pending_lock:
+        existing = _pending_futures.get(task_key)
+        if existing and not existing.done():
+            return
+        _cleanup_futures()
+
+    def _bg_resolve():
+        try:
+            dt_engine.forecast_auto_resolve(device_id, outcome, note=note)
+            logger.debug("BG auto_resolve complete: %s → %s", device_id, outcome)
+        except Exception as e:
+            logger.warning("BG auto_resolve failed for %s: %s", device_id, e)
+
+    future = _executor.submit(_bg_resolve)
+    with _pending_lock:
+        _pending_futures[task_key] = future
+
+
+def submit_auto_confirm_single(dt_engine, device_id: str, scenario: str):
+    """単一デバイスの forecast_auto_confirm_on_incident をバックグラウンドで実行する。
+
+    stream_dashboard.py から呼ばれる（批量版 submit_auto_confirm とは別）。
+    Returns: None（結果は次回UIリフレッシュで反映）
+    """
+    task_key = f"confirm_single_{device_id}"
+    with _pending_lock:
+        existing = _pending_futures.get(task_key)
+        if existing and not existing.done():
+            return
+        _cleanup_futures()
+
+    def _bg_confirm_single():
+        try:
+            result = dt_engine.forecast_auto_confirm_on_incident(
+                device_id=device_id, scenario=scenario,
+            )
+            logger.debug("BG auto_confirm_single complete: %s → %s", device_id, result)
+        except Exception as e:
+            logger.warning("BG auto_confirm_single failed for %s: %s", device_id, e)
+
+    future = _executor.submit(_bg_confirm_single)
+    with _pending_lock:
+        _pending_futures[task_key] = future
