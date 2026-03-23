@@ -66,8 +66,8 @@
     "label": "Srv",
     "visual": {
       "shape": "box",
-      "bg": "#e3f2fd",
-      "border": "#5B8DB8",
+      "bg": "#e8f5e9",
+      "border": "#6B9E72",
       "icon": "\ud83d\udda5"
     },
     "diagnostics": [
@@ -82,8 +82,8 @@
     "label": "Cloud GW",
     "visual": {
       "shape": "diamond",
-      "bg": "#ede7f6",
-      "border": "#7E57C2",
+      "bg": "#e8f5e9",
+      "border": "#6B9E72",
       "icon": "\u2601"
     },
     "diagnostics": [
@@ -97,8 +97,8 @@
     "label": "Cloud",
     "visual": {
       "shape": "star",
-      "bg": "#ede7f6",
-      "border": "#7E57C2",
+      "bg": "#e8f5e9",
+      "border": "#6B9E72",
       "icon": "\u2601"
     },
     "diagnostics": [

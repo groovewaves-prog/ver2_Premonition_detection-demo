@@ -115,28 +115,135 @@ def _load_zones_for_site(topology: dict) -> dict:
     if "_zones" in raw:
         return raw["_zones"]
 
-    # metadata.location からゾーンを自動生成
-    location_groups: dict = {}
-    for node_id, node_data in topology.items():
-        if not isinstance(node_data, dict):
-            continue
-        metadata = node_data.get("metadata", {})
-        if not isinstance(metadata, dict):
-            continue
-        loc = metadata.get("location")
-        if loc:
-            location_groups.setdefault(loc, []).append(node_id)
+    # ─── metadata.location + 親子関係から rows/grid 付きゾーンを自動生成 ───
+    #
+    # アルゴリズム:
+    #   1. location を持つ最上位レイヤー = 分割レイヤー
+    #   2. 分割レイヤーより上のノード → Core Network ゾーン
+    #   3. 分割レイヤーの各ノード + その子孫 → サブツリーゾーン
+    #   4. 各ゾーン内でレイヤー順に rows を生成
+    #   5. Core を上段、サブツリーを下段にグリッド配置
+    #
+    # デメリット防止策:
+    #   - location が無いノードは Core に集約（1ノード1ゾーンの乱立防止）
+    #   - 子ノードの location は無視し、分割レイヤーの location をゾーン名に採用
+    #   - location が一切無い場合は空辞書を返し hierarchical フォールバック
 
-    zones = {}
-    for i, (loc, node_ids) in enumerate(location_groups.items()):
-        palette = _ZONE_AUTO_PALETTE[i % len(_ZONE_AUTO_PALETTE)]
-        zone_key = f"auto_{i}"
-        zones[zone_key] = {
-            "label": loc,
-            "color": palette["color"],
-            "border": palette["border"],
-            "nodes": node_ids,
+    # デバイスノードのみ抽出（_ プレフィックスのメタキーを除外）
+    device_nodes = {
+        k: v for k, v in topology.items()
+        if isinstance(v, dict) and not k.startswith("_")
+    }
+    if not device_nodes:
+        return {}
+
+    # 親子マップ構築
+    children_map: dict = {}
+    for nid, nd in device_nodes.items():
+        pid = nd.get("parent_id")
+        if pid and pid in device_nodes:
+            children_map.setdefault(pid, []).append(nid)
+
+    # 分割レイヤー: location を持つ最上位レイヤー
+    min_loc_layer: int | None = None
+    for nid, nd in device_nodes.items():
+        meta = nd.get("metadata", {})
+        if isinstance(meta, dict) and meta.get("location"):
+            layer = nd.get("layer", 99)
+            if min_loc_layer is None or layer < min_loc_layer:
+                min_loc_layer = layer
+    if min_loc_layer is None:
+        return {}  # location 未定義 → hierarchical フォールバック
+
+    # Core ノード vs サブツリールートの分離
+    core_nodes: list = []
+    subtree_roots: list = []
+    for nid, nd in device_nodes.items():
+        layer = nd.get("layer", 0)
+        if layer < min_loc_layer:
+            core_nodes.append(nid)
+        elif layer == min_loc_layer:
+            subtree_roots.append(nid)
+
+    # サブツリーの子孫を再帰収集
+    def _descendants(root_id: str) -> list:
+        result = [root_id]
+        for cid in children_map.get(root_id, []):
+            result.extend(_descendants(cid))
+        return result
+
+    assigned = set(core_nodes)
+    subtrees: list = []
+    for rid in subtree_roots:
+        members = _descendants(rid)
+        assigned.update(members)
+        subtrees.append((rid, members))
+
+    # 未割当ノード（parent_id 不整合等）→ Core に追加
+    for nid in device_nodes:
+        if nid not in assigned:
+            core_nodes.append(nid)
+
+    # サブツリーをロケーション名でソート（安定した列順序）
+    def _root_label(item):
+        rid, _ = item
+        meta = device_nodes[rid].get("metadata", {})
+        return meta.get("location", "") if isinstance(meta, dict) else ""
+    subtrees.sort(key=_root_label)
+
+    # ゾーン内ノードをレイヤー順に rows 化するヘルパー
+    def _make_rows(node_ids: list) -> list:
+        by_layer: dict = {}
+        for nid in node_ids:
+            layer = device_nodes[nid].get("layer", 0) if nid in device_nodes else 0
+            by_layer.setdefault(layer, []).append(nid)
+        return [nodes for _, nodes in sorted(by_layer.items())]
+
+    # ── ゾーン定義の組み立て ──
+    zones: dict = {}
+    palette_idx = 0
+    n_cols = max(len(subtrees), 1)
+    subtree_row = 1 if core_nodes else 0
+
+    zones["_grid"] = {
+        "col_width": 340,
+        "node_h_gap": 150,
+        "font_size": 12,
+        "edge_gap": 35,
+        "zone_gap": 30,
+    }
+
+    # Core ゾーン
+    if core_nodes:
+        rows = _make_rows(core_nodes)
+        p = _ZONE_AUTO_PALETTE[palette_idx % len(_ZONE_AUTO_PALETTE)]
+        palette_idx += 1
+        zones["auto_core"] = {
+            "label": "Core Network",
+            "color": p["color"],
+            "border": p["border"],
+            "nodes": core_nodes,
+            "grid": [0, 0, n_cols, 1],
+            "rows": rows,
         }
+
+    # サブツリーゾーン
+    for col, (rid, members) in enumerate(subtrees):
+        rows = _make_rows(members)
+        meta = device_nodes[rid].get("metadata", {})
+        loc = (meta.get("location", f"Zone {col + 1}")
+               if isinstance(meta, dict) else f"Zone {col + 1}")
+        p = _ZONE_AUTO_PALETTE[palette_idx % len(_ZONE_AUTO_PALETTE)]
+        palette_idx += 1
+        zones[f"auto_{col}"] = {
+            "label": loc,
+            "color": p["color"],
+            "border": p["border"],
+            "nodes": [n for ns in rows for n in ns],
+            "grid": [col, subtree_row, 1, 1],
+            "rows": rows,
+        }
+
     return zones
 
 
@@ -586,10 +693,11 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                 - min(cb["x_start"] for cb in _col_bounds.values())
                 + (ENV_PAD + 5) * 2  # エンベロープパディング
             )
+            _bottom_pad = (ZONE_PAD + ENV_PAD + 5) if "_envelopes" in zones else (ZONE_PAD + 5)
             _content_h = (
                 max(rb["y_start"] + rb["height"] for rb in _row_bounds.values())
                 - min(rb["y_start"] for rb in _row_bounds.values())
-                + ENV_PAD_TOP + 18 + ENV_PAD + 5  # パディング + ラベル
+                + ENV_PAD_TOP + 18 + _bottom_pad  # パディング + ラベル + ゾーン下端
             )
             _approx_zoom = min(_APPROX_CONTAINER_W / _content_w, 1.0) if _content_w > 0 else 1.0
             _canvas_h = int(_content_h * _approx_zoom) + 50  # 凡例・ボタン分（最小限）
