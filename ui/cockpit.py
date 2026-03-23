@@ -589,44 +589,35 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 st.rerun()
 
     # 自動チューニング + 自動TP確認
-    # ★ 案A: _fast_render 時はスキップ（DB I/O 削減）
+    # ★ 案A+B: バックグラウンド実行でUIブロックを完全排除
     # ★ 高速化: シミュレーション操作中（スライダー変更）もスキップ
     _sim_active = bool(st.session_state.get("injected_weak_signal"))
     if dt_engine and not _sim_active and not _fast_render:
-        try:
-            dt_engine.maybe_run_auto_tuning()
-        except Exception as _tune_e:
-            logger.warning("auto_tuning failed: %s", _tune_e)
+        from ui.async_inference import submit_auto_tuning, submit_auto_confirm
+        submit_auto_tuning(dt_engine, site_id)
 
-    if dt_engine and scenario != "正常稼働" and not _sim_active and not _fast_render:
-        critical_devices = {a.device_id for a in alarms if a.severity == "CRITICAL"}
-        for dev_id in critical_devices:
-            try:
-                confirmed_count = dt_engine.forecast_auto_confirm_on_incident(
-                    dev_id, scenario=scenario, note="障害シナリオ発生により自動確認"
-                )
-                if confirmed_count > 0:
-                    logger.info(f"Auto-confirmed {confirmed_count} predictions for {dev_id} on scenario: {scenario}")
-            except Exception as _ac_e:
-                logger.warning("auto_confirm failed for %s: %s", dev_id, _ac_e)
+        if scenario != "正常稼働":
+            critical_devices = {a.device_id for a in alarms if a.severity == "CRITICAL"}
+            submit_auto_confirm(dt_engine, site_id, critical_devices, scenario)
 
     # =====================================================
     # DT予兆パイプライン（prediction_pipeline.py に委譲）
     # ★ 案A: _fast_render 時はスキップ → 次回レンダリングでフル実行
     # =====================================================
+    # ★ 案B改善: spinner を除去してUIブロック（白いベール）を防止。
+    #   predict_api は既にバックグラウンド実行（async_inference.py）のため
+    #   spinner による視覚的ブロックは不要。
     if dt_engine and not _fast_render:
         try:
-            # ★ 案B: spinner で処理中フィードバック
-            with st.spinner("🔍 予兆検知パイプラインを実行中..."):
-                run_prediction_pipeline(
-                    dt_engine=dt_engine,
-                    alarms=alarms,
-                    analysis_results=analysis_results,
-                    site_id=site_id,
-                    api_key=api_key,
-                    topology=topology,
-                    scenario=scenario,
-                )
+            run_prediction_pipeline(
+                dt_engine=dt_engine,
+                alarms=alarms,
+                analysis_results=analysis_results,
+                site_id=site_id,
+                api_key=api_key,
+                topology=topology,
+                scenario=scenario,
+            )
         except Exception as _pp_e:
             logger.warning("prediction_pipeline failed: %s", _pp_e)
 

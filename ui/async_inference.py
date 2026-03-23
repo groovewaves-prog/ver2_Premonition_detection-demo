@@ -90,7 +90,7 @@ class _BackgroundStore:
 
 # プロセスレベルのシングルトン
 _bg_store = _BackgroundStore()
-_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ai_inference")
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai_inference")
 _pending_futures: Dict[str, Future] = {}
 _pending_lock = threading.Lock()
 
@@ -326,3 +326,73 @@ def _cleanup_futures():
     done_keys = [k for k, f in _pending_futures.items() if f.done()]
     for k in done_keys:
         _pending_futures.pop(k, None)
+
+
+# =====================================================
+# バックグラウンド: auto_tuning / auto_confirm
+# =====================================================
+_last_tuning_ts: Dict[str, float] = {}
+_TUNING_INTERVAL = 30.0   # 最低30秒間隔
+
+def submit_auto_tuning(dt_engine, site_id: str):
+    """auto_tuning をバックグラウンドで実行する（スロットリング付き）。
+
+    毎rerunで呼ばれてもUIをブロックしない。
+    """
+    now = time.time()
+    if now - _last_tuning_ts.get(site_id, 0) < _TUNING_INTERVAL:
+        return
+    _last_tuning_ts[site_id] = now
+
+    task_key = f"tuning_{site_id}"
+    with _pending_lock:
+        existing = _pending_futures.get(task_key)
+        if existing and not existing.done():
+            return
+        _cleanup_futures()
+
+    def _bg_tuning():
+        try:
+            dt_engine.maybe_run_auto_tuning()
+        except Exception as e:
+            logger.warning("BG auto_tuning failed for %s: %s", site_id, e)
+
+    future = _executor.submit(_bg_tuning)
+    with _pending_lock:
+        _pending_futures[task_key] = future
+
+
+_last_confirm_ts: Dict[str, float] = {}
+_CONFIRM_INTERVAL = 30.0
+
+def submit_auto_confirm(dt_engine, site_id: str, critical_devices: set, scenario: str):
+    """forecast_auto_confirm_on_incident をバックグラウンドで実行する。"""
+    if not critical_devices:
+        return
+    now = time.time()
+    confirm_key = f"confirm_{site_id}"
+    if now - _last_confirm_ts.get(confirm_key, 0) < _CONFIRM_INTERVAL:
+        return
+    _last_confirm_ts[confirm_key] = now
+
+    task_key = f"confirm_{site_id}"
+    with _pending_lock:
+        existing = _pending_futures.get(task_key)
+        if existing and not existing.done():
+            return
+        _cleanup_futures()
+
+    def _bg_confirm():
+        try:
+            for dev_id in critical_devices:
+                confirmed_count = dt_engine.forecast_auto_confirm_on_incident(
+                    dev_id, scenario=scenario, note="障害シナリオ発生により自動確認"
+                )
+                if confirmed_count > 0:
+                    logger.info("Auto-confirmed %d predictions for %s", confirmed_count, dev_id)
+        except Exception as e:
+            logger.warning("BG auto_confirm failed for %s: %s", site_id, e)
+
+    future = _executor.submit(_bg_confirm)
+    with _pending_lock:
+        _pending_futures[task_key] = future

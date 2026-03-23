@@ -99,6 +99,11 @@ def render_sidebar():
                         st.session_state.live_result = None
                         st.session_state.verification_result = None
 
+                    # 4. トラフィックモニタのチャートモードをリセット
+                    #   折れ線グラフ（重い）が選択状態のまま残ると
+                    #   次回レンダリングで遅延の原因になる
+                    st.session_state.pop("_traffic_chart_mode", None)
+
                     # ★ 案A: シナリオ切替フラグを立てる
                     #   cockpit.py で検知し、重い処理（prediction_pipeline, auto_tuning）を
                     #   スキップして高速レンダリングする。次回 rerun でフル計算。
