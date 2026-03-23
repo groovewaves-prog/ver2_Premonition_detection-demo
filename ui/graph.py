@@ -422,7 +422,16 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     # ★ トポロジーグラフHTML キャッシュ（入力が同一なら再構築スキップ）
     _topo_cache_key = "_topo_graph_cache"
     _alarm_sig = tuple(sorted((a.device_id, a.severity, a.is_root_cause) for a in alarms))
-    _analysis_sig = tuple(sorted((r.get("id", ""), r.get("status", ""), r.get("prob", 0)) for r in analysis_results))
+    # ★ 白いベール対策: prob の微小変化でキャッシュミスしないよう視覚関連フィールドのみ使用。
+    #   prob は 0.1 単位に丸め、is_prediction の有無で分類。
+    #   prob の精密値はツールチップに影響するが、iframe 再生成のコスト（白いベール）が
+    #   ツールチップの鮮度より重い。
+    _analysis_sig = tuple(sorted((
+        r.get("id", ""),
+        r.get("classification", r.get("status", "")),
+        "P" if r.get("is_prediction") else "",
+        round(r.get("prob", 0), 1),
+    ) for r in analysis_results))
     _maint_sig = tuple(sorted(st.session_state.get("maint_devices", {}).get(
         st.session_state.get("active_site", ""), set())))
     _zone_sig = st.session_state.get("active_site", "A")
@@ -470,6 +479,14 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
     zones = _load_zones_for_site(topology)
     fixed_positions = _compute_fixed_positions(zones, topology)
     _use_fixed = bool(fixed_positions)
+    # ★ 白いベール対策: network.fit() の padding を Python 側で事前計算。
+    #   network.fit() はノード BB のみ考慮し、beforeDrawing のゾーン/エンベロープ矩形を
+    #   含まない。ゾーン拡張量(world px)の最大値を padding として設定することで
+    #   1回の fit で全ゾーンを表示枠内に収める（2パス fit 不要 → 描画サイクル削減）。
+    _has_envelopes = "_envelopes" in zones
+    _zone_top_ext = ZONE_PAD_TOP + (ENV_PAD_TOP + 20 if _has_envelopes else 0)
+    _zone_side_ext = ZONE_PAD + (ENV_PAD if _has_envelopes else 0)
+    _fit_pad = max(_zone_top_ext, _zone_side_ext) + 10  # 安全マージン
 
     # --- ノード生成 ---
     # _zones 等のメタデータキー（_ プレフィックス）をデバイスノードとして処理しない
@@ -794,6 +811,7 @@ var nodes = new vis.DataSet({nodes_json});
 var edges = new vis.DataSet({edges_json});
 var zones = {zones_json};
 var _useFixed = {'true' if _use_fixed else 'false'};
+var _fitPad = {_fit_pad};
 var data = {{ nodes: nodes, edges: edges }};
 var options = {{
     {_layout_js},
@@ -1070,23 +1088,14 @@ network.once('afterDrawing', function() {{
    * + ResizeObserver pattern (CSS-driven canvas sizing)
    * 参照: vis.js #1832, Streamlit #4659 */
   if (_useFixed) {{
-    /* ── 固定座標レイアウト: 2パス fit ──
+    /* ── 固定座標レイアウト: 単一 fit ──
      * network.fit() はノード BB のみを考慮し、beforeDrawing で描画する
-     * ゾーン/エンベロープ矩形を含まない。そのためゾーン矩形がキャンバス外に
-     * はみ出す場合がある。2パス方式でゾーン分の余白を確保:
-     *   Pass 1: 初期 fit → 実際の scale を取得
-     *   Pass 2: ゾーン拡張量(world px)をscaleで変換 → 必要paddingで再fit
-     * DOM 操作は一切行わない（白いベール回避）。 */
-    network.fit({{padding:30, animation:false}});
-    var _sc = network.getScale();
-    var _hasEnv = zones._envelopes && Object.keys(zones._envelopes).length > 0;
-    var _topExt = ({ZONE_PAD_TOP} + (_hasEnv ? {ENV_PAD_TOP} + 20 : 0)) * _sc;
-    var _botExt = ({ZONE_PAD} + (_hasEnv ? {ENV_PAD} : 0) + 10) * _sc;
-    var _sideExt = ({ZONE_PAD} + (_hasEnv ? {ENV_PAD} : 0) + 5) * _sc;
-    var _needPad = Math.ceil(Math.max(_topExt, _botExt, _sideExt)) + 5;
-    if (_needPad > 30) {{
-      network.fit({{padding: _needPad, animation:false}});
-    }}
+     * ゾーン/エンベロープ矩形を含まない。Python 側でゾーン拡張量を計算し
+     * _fitPad として注入。単一 fit で全ゾーンを表示枠内に収める。
+     * DOM 操作は一切行わない（白いベール回避）。
+     * ★ 2パス fit を廃止: 複数 fit は追加の描画サイクルを発生させ、
+     *   iframe の描画完了を遅延させて白いベールの原因となる。 */
+    network.fit({{padding: _fitPad, animation:false}});
     return;
   }}
   var allIds = nodes.getIds();
