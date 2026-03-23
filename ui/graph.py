@@ -1,9 +1,7 @@
 # ui/graph.py  ―  vis.js インタラクティブトポロジー描画
 #   色優先順位・予兆アンバーハイライト・3分類対応
 #   ★ Streamlit Custom Component 移行済み: iframe 再生成なし → 白いベール根治
-import json
 import streamlit as st
-import streamlit.components.v1 as components
 from alarm_generator import NodeColor, Alarm
 from typing import List, Dict, Any, Tuple
 from components.topology_graph import topology_graph as _topology_component
@@ -558,9 +556,7 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                                 })
                                 added_edges.add(edge_key2)
 
-    # --- レイアウト設定 ---
-    # 初期レイアウトのパラメータ（リフローが最終調整するため、大まかな値で十分）
-    _level_sep, _node_sp, _tree_sp = 200, 150, 150
+    # --- キャンバス高さ算出 ---
     if _use_fixed:
         # グリッドセル境界からキャンバス高さを算出。
         # network.fit() がコンテンツをコンテナ幅に収めるズームを適用するため、
