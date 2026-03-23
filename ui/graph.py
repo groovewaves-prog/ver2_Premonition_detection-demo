@@ -65,10 +65,19 @@ def _node_extents(nid: str, topology: dict, font_size: int = 12) -> tuple:
     Returns: (above, below) — y座標からの上方向・下方向の広がり(px)
     """
     node = topology.get(nid) if topology else None
-    if not isinstance(node, dict):
-        node = {}
+    # dict と NetworkNode オブジェクトの両方を処理
+    if node is None:
+        node_dict: dict = {}
+    elif isinstance(node, dict):
+        node_dict = node
+    else:
+        # NetworkNode オブジェクト → getattr で属性取得
+        node_dict = {
+            "type": getattr(node, "type", "UNKNOWN"),
+            "metadata": getattr(node, "metadata", {}),
+        }
     n_lines = 2  # ID行 + (type/role)行
-    meta = node.get("metadata", {})
+    meta = node_dict.get("metadata", {})
     if isinstance(meta, dict):
         if meta.get("redundancy_type"):
             n_lines += 1
@@ -78,7 +87,7 @@ def _node_extents(nid: str, topology: dict, font_size: int = 12) -> tuple:
     line_h = font_size + 5
     text_h = n_lines * line_h + 24
 
-    node_type = node.get("type", "UNKNOWN")
+    node_type = node_dict.get("type", "UNKNOWN")
     visual = _DEVICE_TYPE_VISUALS.get(node_type) or _get_visual(node_type)
     shape = visual.get("shape", "box")
 
@@ -130,8 +139,10 @@ def _load_zones_for_site(topology: dict) -> dict:
     #   - location が一切無い場合は空辞書を返し hierarchical フォールバック
 
     # デバイスノードのみ抽出（_ プレフィックスのメタキーを除外）
+    # ★ raw (JSON dict) を使用: topology パラメータは NetworkNode オブジェクトの
+    #   場合があり isinstance(v, dict) が False になるため、JSON から直接取得する。
     device_nodes = {
-        k: v for k, v in topology.items()
+        k: v for k, v in raw.items()
         if isinstance(v, dict) and not k.startswith("_")
     }
     if not device_nodes:
