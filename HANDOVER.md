@@ -66,18 +66,32 @@
 
 ## 未完了・保留タスク
 
-### Streamlit v1.55.0 ソースコード検証（プロトコル互換性確認済み）
+### Streamlit v1.55.0 ソースコード検証（プロトコル互換性・iframe 非再生成 確認済み）
 
-Streamlit フロントエンドのバンドル JS を逆解析し、以下を確認:
+Python バックエンド + フロントエンドバンドル JS の両方を解析し、以下を確認:
 
-1. **iframe は再生成されない**: React `ref` で iframe を保持。`src` URL は固定で変わらないため
-   React は DOM 要素を再利用する。`React.memo` でコンポーネント全体をメモ化済み
-2. **args 更新は postMessage**: `useEffect` で args 変更を検知 → 既存 iframe の
-   `contentWindow.postMessage({type: 'streamlit:render', args: ...})` で送信
-3. **メッセージフォーマット互換性**:
-   - `componentReady`: `{apiVersion: 1}` → Streamlit は `t.apiVersion` で抽出 ✓
-   - `setFrameHeight`: `{height: N}` → Streamlit は `D(t, "height")` で抽出 ✓
-   - `render` (受信): `event.data.args` にコンポーネント kwargs が格納 ✓
+#### iframe が再生成されない証拠（`key` 指定時）
+
+**Python 側 (`elements/lib/utils.py:243-245`)**:
+```python
+if isinstance(key_as_main_identity, set) and user_key:
+    kwargs_to_use = {k: v for k, v in kwargs.items() if k in key_as_main_identity}
+```
+- `key_as_main_identity = {"name", "url"}` + `user_key` 指定時、
+  **`json_args` は element ID 計算から除外される**
+- → args が変わっても element ID は不変 → React は iframe を再利用
+
+**フロントエンド側 (バンドル JS)**:
+- iframe は React `ref` で保持、`React.memo` でメモ化
+- args 変更時は `useEffect` → 既存 iframe の `contentWindow.postMessage({type: 'streamlit:render', ...})` で送信
+- iframe `src` URL は固定（再生成トリガーにならない）
+
+**必須条件**: `key` パラメータの指定。我々は `key=f"topo_{site}"`, `key=f"impact_{root_id}"` で実装済み。
+
+#### postMessage メッセージフォーマット互換性
+- `componentReady`: `{apiVersion: 1}` → Streamlit は `t.apiVersion` で抽出 ✓
+- `setFrameHeight`: `{height: N}` → Streamlit は `D(t, "height")` で抽出 ✓
+- `render` (受信): `event.data.args` にコンポーネント kwargs が格納 ✓
 
 ## 完了した検証タスク
 
