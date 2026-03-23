@@ -262,14 +262,21 @@ def _auto_resolve_outcomes(
     site_id: str,
     _conflict: bool,
 ):
-    """Execute 成功や CRITICAL アラームによる自動 outcome 登録。"""
+    """Execute 成功や CRITICAL アラームによる自動 outcome 登録。
+
+    ★ 案C統一: forecast_auto_resolve をバックグラウンドで実行し、
+    UIスレッドをブロックしない。
+    """
+    from ui.async_inference import submit_auto_resolve
+
     # 自動 outcome 登録（Execute 成功）
     for _rid, _recovered in list(st.session_state.get("recovered_devices", {}).items()):
         if _recovered:
             _auto_key = f"dt_auto_mitigated_{site_id}_{_rid}"
             if not st.session_state.get(_auto_key):
-                dt_engine.forecast_auto_resolve(
-                    _rid, "mitigated", note="Execute 成功による自動解消")
+                submit_auto_resolve(
+                    dt_engine, _rid, "mitigated",
+                    note="Execute 成功による自動解消")
                 st.session_state[_auto_key] = True
 
     # CRITICAL アラームによる自動確定
@@ -278,8 +285,8 @@ def _auto_resolve_outcomes(
         for _cd in _critical_devices:
             _auto_key = f"dt_auto_confirmed_{site_id}_{_cd}"
             if not st.session_state.get(_auto_key):
-                dt_engine.forecast_auto_resolve(
-                    _cd, "confirmed_incident",
+                submit_auto_resolve(
+                    dt_engine, _cd, "confirmed_incident",
                     note="CRITICAL アラームによる自動確定")
                 st.session_state[_auto_key] = True
 

@@ -394,10 +394,11 @@ def run_safeguarded_remediation(
         session.conclusion = "Recovery Confirmed: 全検証項目がパスしました。修復は正常に完了しています。"
 
         # DT連携: forecast 自動解消
+        # ★ 案C統一: バックグラウンド実行でUIブロック防止
         if dt_engine and is_pred:
-            dt_engine.forecast_auto_resolve(
-                device_id,
-                "mitigated",
+            from ui.async_inference import submit_auto_resolve
+            submit_auto_resolve(
+                dt_engine, device_id, "mitigated",
                 note="セーフティガード付き修復の検証完了により自動解消",
             )
     elif verdict == "rollback_needed":
