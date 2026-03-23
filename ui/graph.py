@@ -586,10 +586,11 @@ def render_topology_graph(topology: dict, alarms: List[Alarm], analysis_results:
                 - min(cb["x_start"] for cb in _col_bounds.values())
                 + (ENV_PAD + 5) * 2  # エンベロープパディング
             )
+            _bottom_pad = (ZONE_PAD + ENV_PAD + 5) if "_envelopes" in zones else (ZONE_PAD + 5)
             _content_h = (
                 max(rb["y_start"] + rb["height"] for rb in _row_bounds.values())
                 - min(rb["y_start"] for rb in _row_bounds.values())
-                + ENV_PAD_TOP + 18 + ENV_PAD + 5  # パディング + ラベル
+                + ENV_PAD_TOP + 18 + _bottom_pad  # パディング + ラベル + ゾーン下端
             )
             _approx_zoom = min(_APPROX_CONTAINER_W / _content_w, 1.0) if _content_w > 0 else 1.0
             _canvas_h = int(_content_h * _approx_zoom) + 50  # 凡例・ボタン分（最小限）
