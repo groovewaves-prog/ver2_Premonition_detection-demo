@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; }
+  #topo-wrap { position:relative; width:100%; overflow:hidden; }
+  #mynetwork { width:100%; height:100%; border:1px solid #e0e0e0; border-radius:4px;
+    background:#fafafa; }
+  #legend-bar {
+    position:absolute; bottom:6px; left:6px; right:6px;
+    background:rgba(250,250,250,0.92); border:1px solid #e0e0e0;
+    border-radius:4px; padding:5px 12px;
+    font:12px/1.4 Arial,sans-serif; color:#444;
+    pointer-events:none; z-index:10;
+  }
+  .lg-swatch {
+    display:inline-block; width:12px; height:12px;
+    vertical-align:middle; margin-right:5px;
+  }
+  .lg-item { margin-right:14px; white-space:nowrap; }
+  #fs-btn, #zoom-btn {
+    position:absolute; z-index:20;
+    background:rgba(255,255,255,0.92); border:1px solid #ccc;
+    border-radius:6px; padding:6px 12px;
+    font:13px/1 Arial,sans-serif; color:#444; cursor:pointer;
+    transition:background 0.2s; user-select:none;
+  }
+  #fs-btn { top:8px; right:8px; }
+  #zoom-btn { top:8px; right:120px; }
+  #fs-btn:hover, #zoom-btn:hover { background:#e3f2fd; border-color:#90caf9; }
+  #zoom-btn.active { background:#e3f2fd; border-color:#1976d2; color:#1976d2; }
+  #topo-wrap:fullscreen,
+  #topo-wrap:-webkit-full-screen {
+    width:100vw; height:100vh; background:#fff;
+  }
+</style>
+</head>
+<body>
+<div id="topo-wrap">
+  <button id="zoom-btn" title="クリックでマウスホイールズームの有効/無効を切替">&#x1F50D; ホイールズーム</button>
+  <button id="fs-btn" title="全画面表示 / 戻る">&#x26F6; 全画面</button>
+  <div id="mynetwork"></div>
+  <div id="legend-bar"></div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+ * Streamlit Custom Component: vis.js トポロジーグラフ
+ * ─────────────────────────────────────────────────────────────
+ * iframe は初回のみ生成。以降は Streamlit の render イベントで
+ * データ差分のみ更新 → 白いベール（白フラッシュ）を根治。
+ *
+ * 通信プロトコル: Streamlit ↔ iframe は postMessage で通信。
+ * streamlit-component-lib の CDN 依存を排除し、
+ * 最小限のプロトコルをインラインで実装。
+ * ═══════════════════════════════════════════════════════════════ */
+(function() {
+  // ── Streamlit communication protocol (inline, no CDN dependency) ──
+  var RENDER_EVENT = 'streamlit:render';
+
+  function sendMessage(type, data) {
+    window.parent.postMessage(
+      Object.assign({ isStreamlitMessage: true, type: type }, data || {}),
+      '*'
+    );
+  }
+
+  function setFrameHeight(h) {
+    sendMessage('streamlit:setFrameHeight', { height: h });
+  }
+
+  function setComponentReady() {
+    sendMessage('streamlit:componentReady', { apiVersion: 1 });
+  }
+
+  // ── State ──
+  var network = null;
+  var nodesDS = null;
+  var edgesDS = null;
+  var currentZones = {};
+  var currentUseFixed = false;
+  var currentFitPad = 50;
+  var _zoomActive = false;
+  var _initialized = false;
+
+  // ── Zone drawing constants ──
+  var ZONE_PAD = 25;
+  var ZONE_PAD_TOP = 30;
+  var ENV_PAD = 18;
+  var ENV_PAD_TOP = 22;
+
+  // ── Button handlers ──
+  var zoomBtn = document.getElementById('zoom-btn');
+  var fsBtn = document.getElementById('fs-btn');
+  var topoWrap = document.getElementById('topo-wrap');
+
+  zoomBtn.addEventListener('click', function(e) {
+    e.preventDefault();
+    _zoomActive = !_zoomActive;
+    if (network) {
+      network.setOptions({ interaction: { zoomView: _zoomActive } });
+    }
+    zoomBtn.classList.toggle('active', _zoomActive);
+    zoomBtn.innerHTML = _zoomActive
+      ? '&#x1F50D; ズーム有効'
+      : '&#x1F50D; ホイールズーム';
+  });
+
+  fsBtn.addEventListener('click', function() {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      (topoWrap.requestFullscreen || topoWrap.webkitRequestFullscreen).call(topoWrap);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    }
+  });
+
+  function onFsChange() {
+    var isFull = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    fsBtn.innerHTML = isFull ? '&#x2716; 戻る' : '&#x26F6; 全画面';
+    if (network) {
+      setTimeout(function() {
+        network.redraw();
+        network.fit({ padding: 40, animation: true });
+      }, 300);
+    }
+  }
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
+
+  /* ══════════════════════════════════════════════════════════════
+   * beforeDrawing: Zone rendering (GML Grid-based Layout)
+   * ──────────────────────────────────────────────────────────────
+   * Ported from ui/graph.py inline JS → Custom Component frontend.
+   * All zone/envelope drawing logic is preserved identically.
+   * ══════════════════════════════════════════════════════════════ */
+  function onBeforeDrawing(ctx) {
+    try {
+      var zones = currentZones;
+      if (!zones || Object.keys(zones).length === 0) return;
+
+      var colBounds = zones._col_bounds || {};
+      var rowBounds = zones._row_bounds || {};
+      var hasGrid = (Object.keys(colBounds).length > 0 && Object.keys(rowBounds).length > 0);
+
+      // Pass 1: Grid-cell based zone rectangles
+      var zoneRects = [];
+      for (var zk in zones) {
+        if (zk.charAt(0) === '_') continue;
+        var z = zones[zk];
+        var memberNodes = z.nodes || [];
+        if (memberNodes.length === 0) continue;
+        var g = z.grid;
+        var x1, y1, x2, y2;
+        var usedGrid = false;
+
+        if (hasGrid && g && g.length >= 4) {
+          var colStart = g[0], rowStart = g[1], colspan = g[2], rowspan = g[3];
+          var cb0 = colBounds[String(colStart)];
+          var cbN = colBounds[String(colStart + colspan - 1)];
+          var rb0 = rowBounds[String(rowStart)];
+          var rbN = rowBounds[String(rowStart + rowspan - 1)];
+          if (cb0 && cbN && rb0 && rbN) {
+            x1 = cb0.x_start;
+            x2 = cbN.x_start + cbN.width;
+            y1 = rb0.y_start;
+            y2 = rbN.y_start + rbN.height;
+            usedGrid = true;
+          }
+        }
+
+        if (!usedGrid) {
+          var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          var found = false;
+          for (var i = 0; i < memberNodes.length; i++) {
+            var nid = memberNodes[i];
+            try {
+              var bb = network.getBoundingBox(nid);
+              if (bb) {
+                if (bb.left < minX) minX = bb.left;
+                if (bb.right > maxX) maxX = bb.right;
+                if (bb.top < minY) minY = bb.top;
+                if (bb.bottom > maxY) maxY = bb.bottom;
+                found = true;
+              }
+            } catch(e) {
+              try {
+                var pp = network.getPositions([nid]);
+                if (pp[nid]) {
+                  var px = pp[nid].x, py = pp[nid].y;
+                  if (px - 80 < minX) minX = px - 80;
+                  if (px + 80 > maxX) maxX = px + 80;
+                  if (py - 80 < minY) minY = py - 80;
+                  if (py + 80 > maxY) maxY = py + 80;
+                  found = true;
+                }
+              } catch(e2) { /* ignore */ }
+            }
+          }
+          if (!found) continue;
+          x1 = minX - ZONE_PAD;
+          y1 = minY - ZONE_PAD_TOP;
+          x2 = maxX + ZONE_PAD;
+          y2 = maxY + ZONE_PAD;
+        }
+
+        // Pass 1b: Safety net
+        if (usedGrid) {
+          for (var i = 0; i < memberNodes.length; i++) {
+            var nid = memberNodes[i];
+            try {
+              var bb = network.getBoundingBox(nid);
+              if (bb) {
+                if (bb.left - ZONE_PAD < x1) x1 = bb.left - ZONE_PAD;
+                if (bb.right + ZONE_PAD > x2) x2 = bb.right + ZONE_PAD;
+                if (bb.top - ZONE_PAD_TOP < y1) y1 = bb.top - ZONE_PAD_TOP;
+                if (bb.bottom + ZONE_PAD > y2) y2 = bb.bottom + ZONE_PAD;
+              }
+            } catch(e) { /* ignore */ }
+          }
+        }
+
+        zoneRects.push({ key: zk, zone: z, x1: x1, y1: y1, x2: x2, y2: y2 });
+      }
+
+      // Pass 2: Envelope rectangles
+      var envelopes = zones._envelopes || {};
+      var envRects = [];
+      for (var ek in envelopes) {
+        var env = envelopes[ek];
+        var childKeys = env.children || [];
+        var eMinX = Infinity, eMinY = Infinity, eMaxX = -Infinity, eMaxY = -Infinity;
+        var eFound = false;
+        for (var ci = 0; ci < childKeys.length; ci++) {
+          for (var ri = 0; ri < zoneRects.length; ri++) {
+            if (zoneRects[ri].key === childKeys[ci]) {
+              var cr = zoneRects[ri];
+              if (cr.x1 < eMinX) eMinX = cr.x1;
+              if (cr.y1 < eMinY) eMinY = cr.y1;
+              if (cr.x2 > eMaxX) eMaxX = cr.x2;
+              if (cr.y2 > eMaxY) eMaxY = cr.y2;
+              eFound = true;
+            }
+          }
+        }
+        if (!eFound) continue;
+        eMinX -= ENV_PAD; eMinY -= ENV_PAD_TOP; eMaxX += ENV_PAD; eMaxY += ENV_PAD;
+        envRects.push({ key: ek, env: env, x1: eMinX, y1: eMinY, x2: eMaxX, y2: eMaxY });
+      }
+
+      // Pass 3: Draw envelopes then zones
+      for (var ei = 0; ei < envRects.length; ei++) {
+        var eR = envRects[ei];
+        var env = eR.env;
+        ctx.fillStyle = env.color || 'rgba(0,0,0,0.03)';
+        ctx.strokeStyle = env.border || '#bdbdbd';
+        ctx.lineWidth = 1.8;
+        if (env.border_style === 'dashed') ctx.setLineDash([8, 5]);
+        ctx.beginPath();
+        var eRad = 12;
+        ctx.moveTo(eR.x1 + eRad, eR.y1);
+        ctx.lineTo(eR.x2 - eRad, eR.y1);
+        ctx.arcTo(eR.x2, eR.y1, eR.x2, eR.y1 + eRad, eRad);
+        ctx.lineTo(eR.x2, eR.y2 - eRad);
+        ctx.arcTo(eR.x2, eR.y2, eR.x2 - eRad, eR.y2, eRad);
+        ctx.lineTo(eR.x1 + eRad, eR.y2);
+        ctx.arcTo(eR.x1, eR.y2, eR.x1, eR.y2 - eRad, eRad);
+        ctx.lineTo(eR.x1, eR.y1 + eRad);
+        ctx.arcTo(eR.x1, eR.y1, eR.x1 + eRad, eR.y1, eRad);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (env.label) {
+          ctx.font = 'bold 12px Arial, sans-serif';
+          ctx.fillStyle = env.border || '#999';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText(env.label, eR.x1 + 12, eR.y1 + 5);
+        }
+      }
+
+      for (var i = 0; i < zoneRects.length; i++) {
+        var zr = zoneRects[i];
+        var z = zr.zone;
+        ctx.fillStyle = z.color || 'rgba(200,200,200,0.15)';
+        ctx.strokeStyle = z.border || '#ccc';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        var r = 8;
+        ctx.moveTo(zr.x1 + r, zr.y1);
+        ctx.lineTo(zr.x2 - r, zr.y1);
+        ctx.arcTo(zr.x2, zr.y1, zr.x2, zr.y1 + r, r);
+        ctx.lineTo(zr.x2, zr.y2 - r);
+        ctx.arcTo(zr.x2, zr.y2, zr.x2 - r, zr.y2, r);
+        ctx.lineTo(zr.x1 + r, zr.y2);
+        ctx.arcTo(zr.x1, zr.y2, zr.x1, zr.y2 - r, r);
+        ctx.lineTo(zr.x1, zr.y1 + r);
+        ctx.arcTo(zr.x1, zr.y1, zr.x1 + r, zr.y1, r);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        if (z.label) {
+          ctx.font = '11px Arial, sans-serif';
+          ctx.fillStyle = z.border || '#888';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText(z.label, zr.x1 + 8, zr.y1 + 5);
+        }
+      }
+    } catch(err) {
+      console.warn('beforeDrawing zone render error:', err);
+    }
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+   * afterDrawing: Universal Measure & Reflow
+   * ──────────────────────────────────────────────────────────────
+   * Ported from ui/graph.py. Handles:
+   * - Fixed layout (Site C): single fit only
+   * - Impact mode: level-based horizontal overlap resolution
+   * - Hierarchical layout (Site A/B): full 6-phase reflow
+   * ══════════════════════════════════════════════════════════════ */
+  function onAfterDrawingOnce() {
+    try {
+      if (currentUseFixed) {
+        network.fit({ padding: currentFitPad, animation: false });
+        return;
+      }
+
+      var allIds = nodesDS.getIds();
+      if (allIds.length === 0) { network.fit({ padding: 50 }); return; }
+
+      // Check if impact mode (nodes have level property)
+      var layoutMode = null;
+      try {
+        var firstNode = nodesDS.get(allIds[0]);
+        if (firstNode && firstNode.level !== undefined) {
+          layoutMode = 'impact';
+        }
+      } catch(e) {}
+
+      if (layoutMode === 'impact') {
+        _reflowImpact(allIds);
+        return;
+      }
+
+      // ── Full hierarchical reflow (Site A/B) ──
+      var pos = network.getPositions();
+      var bb = {};
+      allIds.forEach(function(id) {
+        try { bb[id] = network.getBoundingBox(id); } catch(e) {}
+      });
+
+      // BFS level detection
+      var children = {};
+      var inDeg = {};
+      allIds.forEach(function(id) { children[id] = []; inDeg[id] = 0; });
+      edgesDS.forEach(function(e) {
+        if (children[e.from]) children[e.from].push(e.to);
+        inDeg[e.to] = (inDeg[e.to] || 0) + 1;
+      });
+      var levels = {};
+      var queue = [];
+      allIds.forEach(function(id) {
+        if (!inDeg[id] || inDeg[id] === 0) { levels[id] = 0; queue.push(id); }
+      });
+      var head = 0;
+      while (head < queue.length) {
+        var cur = queue[head++];
+        children[cur].forEach(function(ch) {
+          var nl = levels[cur] + 1;
+          if (levels[ch] === undefined || levels[ch] < nl) {
+            levels[ch] = nl;
+            queue.push(ch);
+          }
+        });
+      }
+      allIds.forEach(function(id) {
+        if (levels[id] === undefined) levels[id] = 0;
+      });
+
+      var lvGroups = {};
+      allIds.forEach(function(id) {
+        var lv = levels[id];
+        if (!lvGroups[lv]) lvGroups[lv] = [];
+        lvGroups[lv].push(id);
+      });
+      var sortedLvs = Object.keys(lvGroups).map(Number).sort(function(a,b){return a-b;});
+      sortedLvs.forEach(function(lv) {
+        lvGroups[lv].sort(function(a,b){ return pos[a].x - pos[b].x; });
+      });
+
+      // Y-proximity fallback
+      var finalRows = [];
+      sortedLvs.forEach(function(lv) {
+        var grp = lvGroups[lv];
+        grp.sort(function(a,b){ return pos[a].y - pos[b].y; });
+        var subRow = [grp[0]];
+        for (var i = 1; i < grp.length; i++) {
+          if (Math.abs(pos[grp[i]].y - pos[subRow[0]].y) < 50) {
+            subRow.push(grp[i]);
+          } else {
+            finalRows.push(subRow);
+            subRow = [grp[i]];
+          }
+        }
+        finalRows.push(subRow);
+      });
+      finalRows.sort(function(a,b) {
+        var ya = 0, yb = 0;
+        a.forEach(function(id){ ya += pos[id].y; });
+        b.forEach(function(id){ yb += pos[id].y; });
+        return ya/a.length - yb/b.length;
+      });
+
+      // Phase 4: Vertical reflow
+      var MIN_V_GAP = 40;
+      var rd = finalRows.map(function(row) {
+        var cy = 0;
+        row.forEach(function(id){ cy += pos[id].y; });
+        cy /= row.length;
+        var mxA = 0, mxB = 0;
+        var xL = Infinity, xR = -Infinity;
+        row.forEach(function(id) {
+          var b = bb[id];
+          if (b) {
+            mxA = Math.max(mxA, pos[id].y - b.top);
+            mxB = Math.max(mxB, b.bottom - pos[id].y);
+            if (b.left < xL) xL = b.left;
+            if (b.right > xR) xR = b.right;
+          }
+        });
+        return {row:row, cy:cy, above:Math.max(mxA,20), below:Math.max(mxB,20), xL:xL, xR:xR};
+      });
+
+      var newCY = [rd[0].cy];
+      for (var r = 1; r < rd.length; r++) {
+        var bestNeeded = rd[r].cy;
+        for (var p = r - 1; p >= 0; p--) {
+          if (rd[p].xR + 20 > rd[r].xL && rd[r].xR + 20 > rd[p].xL) {
+            var needed = newCY[p] + rd[p].below + MIN_V_GAP + rd[r].above;
+            bestNeeded = Math.max(bestNeeded, needed);
+            break;
+          }
+        }
+        newCY.push(bestNeeded);
+      }
+
+      // Phase 5: Horizontal reflow
+      var MIN_H_GAP = 20;
+      var xNew = {};
+      finalRows.forEach(function(row) {
+        if (row.length < 2) return;
+        row.sort(function(a,b){ return pos[a].x - pos[b].x; });
+        var shifts = new Array(row.length);
+        shifts[0] = 0;
+        for (var j = 1; j < row.length; j++) {
+          var prevId = row[j-1], currId = row[j];
+          var prevRight = (bb[prevId] ? bb[prevId].right : pos[prevId].x + 80) + shifts[j-1];
+          var currLeft = bb[currId] ? bb[currId].left : pos[currId].x - 80;
+          var overlap = prevRight + MIN_H_GAP - currLeft;
+          shifts[j] = (overlap > 0) ? shifts[j-1] + overlap : shifts[j-1];
+        }
+        var totalShift = shifts[row.length-1];
+        if (totalShift > 0) {
+          var halfShift = totalShift / 2;
+          for (var j = 0; j < row.length; j++) {
+            var dx = shifts[j] - halfShift;
+            if (Math.abs(dx) > 1) xNew[row[j]] = pos[row[j]].x + dx;
+          }
+        }
+      });
+
+      // Phase 6: Apply
+      for (var r = 0; r < finalRows.length; r++) {
+        var dy = newCY[r] - rd[r].cy;
+        finalRows[r].forEach(function(id) {
+          var nx = (xNew[id] !== undefined) ? xNew[id] : pos[id].x;
+          var ny = pos[id].y + dy;
+          if (Math.abs(ny - pos[id].y) > 1 || Math.abs(nx - pos[id].x) > 1) {
+            network.moveNode(id, nx, ny);
+          }
+        });
+      }
+      setTimeout(function(){ network.fit({padding:50, animation:false}); }, 100);
+    } catch(err) {
+      console.warn('afterDrawing reflow error:', err);
+      try { network.fit({padding:50, animation:false}); } catch(e2) {}
+    }
+  }
+
+  // ── Impact graph reflow ──
+  function _reflowImpact(allIds) {
+    var pos = network.getPositions();
+    var bb = {};
+    allIds.forEach(function(id) {
+      try { bb[id] = network.getBoundingBox(id); } catch(e) {}
+    });
+
+    var levelMap = {};
+    nodesDS.forEach(function(n) {
+      var lv = n.level != null ? n.level : 0;
+      if (!levelMap[lv]) levelMap[lv] = [];
+      levelMap[lv].push(n.id);
+    });
+
+    var HGAP = 12;
+    var changed = false;
+
+    for (var lv in levelMap) {
+      var ids = levelMap[lv];
+      if (ids.length < 2) continue;
+      ids.sort(function(a, b) { return (pos[a] ? pos[a].x : 0) - (pos[b] ? pos[b].x : 0); });
+      for (var i = 0; i < ids.length - 1; i++) {
+        var aId = ids[i], bId = ids[i + 1];
+        var aBB = bb[aId], bBB = bb[bId];
+        if (!aBB || !bBB) continue;
+        var overlap = aBB.right + HGAP - bBB.left;
+        if (overlap > 0) {
+          var shift = overlap / 2 + 1;
+          pos[aId].x -= shift;
+          pos[bId].x += shift;
+          for (var j = i + 2; j < ids.length; j++) {
+            pos[ids[j]].x += shift;
+          }
+          aBB.left -= shift; aBB.right -= shift;
+          bBB.left += shift; bBB.right += shift;
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      var updates = [];
+      allIds.forEach(function(id) {
+        if (pos[id]) updates.push({ id: id, x: pos[id].x, y: pos[id].y });
+      });
+      nodesDS.update(updates);
+      network.fit({ padding: 30, animation: false });
+    } else {
+      network.fit({ padding: 30 });
+    }
+  }
+
+  // ── Build vis.js options from layout config ──
+  function buildOptions(args) {
+    var fontSize = args.fontSize || 12;
+    var layoutJs = args.layoutJs || {};
+    var layoutOpt, edgeSmooth;
+
+    if (layoutJs.mode === 'impact') {
+      layoutOpt = {
+        hierarchical: {
+          enabled: true,
+          direction: "UD",
+          sortMethod: "directed",
+          levelSeparation: 85,
+          nodeSpacing: 120,
+          treeSpacing: 150,
+          parentCentralization: true
+        }
+      };
+      edgeSmooth = { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.3 };
+    } else if (args.useFixed) {
+      layoutOpt = { hierarchical: false };
+      edgeSmooth = false;
+    } else {
+      layoutOpt = {
+        hierarchical: {
+          enabled: true,
+          direction: 'UD',
+          sortMethod: 'directed',
+          levelSeparation: 200,
+          nodeSpacing: 150,
+          treeSpacing: 150,
+          blockShifting: true,
+          edgeMinimization: true,
+          parentCentralization: true
+        }
+      };
+      edgeSmooth = false;
+    }
+
+    return {
+      layout: layoutOpt,
+      physics: { enabled: false },
+      interaction: {
+        hover: true,
+        tooltipDelay: 100,
+        zoomView: _zoomActive,
+        dragView: true,
+        dragNodes: false
+      },
+      nodes: {
+        font: { size: fontSize, face: 'Arial, sans-serif', multi: false },
+        margin: { top: 8, bottom: 8, left: 10, right: 10 },
+        shapeProperties: { borderRadius: 8 }
+      },
+      edges: {
+        smooth: edgeSmooth
+      }
+    };
+  }
+
+  // ── Diff update: only modify changed nodes/edges ──
+  function diffUpdateNodes(newNodes) {
+    var existingIds = {};
+    nodesDS.getIds().forEach(function(id) { existingIds[id] = true; });
+    var newIds = {};
+    var toAdd = [];
+    var toUpdate = [];
+
+    for (var i = 0; i < newNodes.length; i++) {
+      var n = newNodes[i];
+      newIds[n.id] = true;
+      if (existingIds[n.id]) {
+        toUpdate.push(n);
+      } else {
+        toAdd.push(n);
+      }
+    }
+
+    // Remove nodes that no longer exist
+    var toRemove = [];
+    for (var id in existingIds) {
+      if (!newIds[id]) toRemove.push(id);
+    }
+
+    if (toRemove.length > 0) nodesDS.remove(toRemove);
+    if (toAdd.length > 0) nodesDS.add(toAdd);
+    if (toUpdate.length > 0) nodesDS.update(toUpdate);
+
+    return (toRemove.length > 0 || toAdd.length > 0);
+  }
+
+  function diffUpdateEdges(newEdges) {
+    var existingEdges = edgesDS.get();
+    var existingSig = existingEdges.map(function(e) { return e.from + '->' + e.to; }).sort().join('|');
+    var newSig = newEdges.map(function(e) { return e.from + '->' + e.to; }).sort().join('|');
+
+    if (existingSig !== newSig) {
+      edgesDS.clear();
+      edgesDS.add(newEdges);
+      return true;
+    }
+    return false;
+  }
+
+  // ── Handle render events from Streamlit ──
+  function onRender(args) {
+    var nodes = args.nodes || [];
+    var edges = args.edges || [];
+    var zones = args.zones || {};
+    var useFixed = args.useFixed || false;
+    var fitPad = args.fitPad || 50;
+    var canvasH = args.canvasH || 500;
+    var legendHtml = args.legendHtml || '';
+
+    // Update state
+    currentZones = zones;
+    currentUseFixed = useFixed;
+    currentFitPad = fitPad;
+
+    // Update legend
+    document.getElementById('legend-bar').innerHTML = legendHtml;
+
+    // Set container height
+    var wrap = document.getElementById('topo-wrap');
+    wrap.style.height = canvasH + 'px';
+
+    // Show/hide buttons based on mode
+    var isImpact = args.layoutJs && args.layoutJs.mode === 'impact';
+    zoomBtn.style.display = isImpact ? 'none' : '';
+    fsBtn.style.display = isImpact ? 'none' : '';
+
+    if (!_initialized) {
+      // ── First render: create vis.js network ──
+      nodesDS = new vis.DataSet(nodes);
+      edgesDS = new vis.DataSet(edges);
+      var data = { nodes: nodesDS, edges: edgesDS };
+      var options = buildOptions(args);
+      var container = document.getElementById('mynetwork');
+      network = new vis.Network(container, data, options);
+
+      // Register zone drawing callback
+      network.on('beforeDrawing', onBeforeDrawing);
+      // One-shot reflow
+      network.once('afterDrawing', onAfterDrawingOnce);
+
+      _initialized = true;
+    } else {
+      // ── Subsequent renders: diff update (no iframe recreation!) ──
+      var structureChanged = diffUpdateNodes(nodes);
+      structureChanged = diffUpdateEdges(edges) || structureChanged;
+
+      if (structureChanged) {
+        // Structure changed: need reflow
+        network.once('afterDrawing', onAfterDrawingOnce);
+      }
+
+      // Redraw to update zones
+      network.redraw();
+    }
+
+    // Signal frame height to Streamlit
+    setFrameHeight(canvasH);
+  }
+
+  // ── Listen for Streamlit render messages ──
+  window.addEventListener('message', function(event) {
+    if (!event.data) return;
+
+    // Streamlit sends render data as: { type: 'streamlit:render', args: {...} }
+    if (event.data.type === RENDER_EVENT) {
+      onRender(event.data.args || {});
+    }
+  });
+
+  // ── Signal that component is ready to receive data ──
+  setComponentReady();
+})();
+</script>
+</body>
+</html>
