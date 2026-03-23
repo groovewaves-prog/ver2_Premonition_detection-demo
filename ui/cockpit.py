@@ -404,6 +404,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     display_name = get_display_name(site_id)
     scenario = getattr(st.session_state, 'site_scenarios', {}).get(site_id, "正常稼働")
 
+    # ★ 案A: シナリオ切替直後フラグ — 重い処理をスキップして高速レンダリング
+    _fast_render = st.session_state.pop("_scenario_just_changed", False)
+
     # ヘッダー
     col_header = st.columns([4, 1])
     with col_header[0]:
@@ -515,20 +518,26 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
     # ★ エッセンス1+3: 軽量キーでエンジン取得 & 推論結果キャッシュ
     current_topo_hash = get_topo_hash_cached(site_id)
-    engine = _get_cached_logical_rca_by_site(site_id, current_topo_hash)
 
-    # ★ エッセンス4: 非同期推論（ゼロ・ウェイティング）
-    #   バックグラウンドで RCA 分析をキックし、結果はキャッシュから即座に取得。
-    #   計算中はアラーム情報から即席分類を生成し、完了後に最新結果に切り替わる。
-    submit_rca_task(site_id, current_topo_hash, alarms)
-
-    # 軽量フォールバック: アラーム情報のみで即席分類を生成（LLM呼び出しなし）
-    # 非同期タスク完了までの間、UIが空にならないようにする。
+    # ★ 案A: _fast_render 時はエンジン取得と RCA submit をスキップ
+    #   フォールバック結果（アラーム情報のみの即席分類）でUIを高速描画する。
     _fallback = _build_alarm_based_fallback(alarms)
 
-    analysis_results, _is_analyzing = get_rca_result(
-        site_id, alarms, fallback_results=_fallback
-    )
+    if _fast_render:
+        engine = None
+        analysis_results = _fallback
+        _is_analyzing = False
+    else:
+        engine = _get_cached_logical_rca_by_site(site_id, current_topo_hash)
+
+        # ★ エッセンス4: 非同期推論（ゼロ・ウェイティング）
+        #   バックグラウンドで RCA 分析をキックし、結果はキャッシュから即座に取得。
+        #   計算中はアラーム情報から即席分類を生成し、完了後に最新結果に切り替わる。
+        submit_rca_task(site_id, current_topo_hash, alarms)
+
+        analysis_results, _is_analyzing = get_rca_result(
+            site_id, alarms, fallback_results=_fallback
+        )
 
     # ★ BugFix: シミュレーション対象デバイスの全祖先をサイレント障害候補から除外。
     #   予兆シグナル(INFO)がデバイスに注入されると、GrayScope がその親・祖父等を
@@ -559,7 +568,11 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     dt_err_key = f"dt_engine_error_{site_id}"
     dt_engine  = None
 
-    if not st.session_state.get(dt_err_key):
+    # ★ 案A: シナリオ切替直後は DT engine 取得をスキップ（最も重い処理を回避）
+    #   2回目以降のレンダリングで @st.cache_resource ヒット → 高速取得
+    if _fast_render:
+        logger.info("Fast render: skipping DT engine, auto_tuning, prediction_pipeline")
+    elif not st.session_state.get(dt_err_key):
         try:
             # ★ エッセンス1: 軽量キーのみでエンジン取得（トポロジーはキャッシュ関数内部で読み込み）
             dt_engine = _get_cached_dt_engine_by_site(site_id, current_topo_hash)
@@ -568,7 +581,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
             st.session_state[dt_err_key] = f"{type(_dte_err).__name__}: {_dte_err}\n{_tb.format_exc()}"
 
     _dte_error = st.session_state.get(dt_err_key)
-    if _dte_error and dt_engine is None:
+    if _dte_error and dt_engine is None and not _fast_render:
         with st.expander("⚠️ Digital Twin Engine 初期化エラー（予兆検知は無効）", expanded=False):
             st.code(_dte_error, language="text")
             if st.button("🔄 再初期化", key=f"dte_retry_{site_id}"):
@@ -576,16 +589,16 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 st.rerun()
 
     # 自動チューニング + 自動TP確認
-    # ★ 高速化: シミュレーション操作中（スライダー変更）は
-    #   auto_tuning と auto_confirm をスキップ（DB I/O 削減）
+    # ★ 案A: _fast_render 時はスキップ（DB I/O 削減）
+    # ★ 高速化: シミュレーション操作中（スライダー変更）もスキップ
     _sim_active = bool(st.session_state.get("injected_weak_signal"))
-    if dt_engine and not _sim_active:
+    if dt_engine and not _sim_active and not _fast_render:
         try:
             dt_engine.maybe_run_auto_tuning()
         except Exception as _tune_e:
             logger.warning("auto_tuning failed: %s", _tune_e)
 
-    if dt_engine and scenario != "正常稼働" and not _sim_active:
+    if dt_engine and scenario != "正常稼働" and not _sim_active and not _fast_render:
         critical_devices = {a.device_id for a in alarms if a.severity == "CRITICAL"}
         for dev_id in critical_devices:
             try:
@@ -599,18 +612,21 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
 
     # =====================================================
     # DT予兆パイプライン（prediction_pipeline.py に委譲）
+    # ★ 案A: _fast_render 時はスキップ → 次回レンダリングでフル実行
     # =====================================================
-    if dt_engine:
+    if dt_engine and not _fast_render:
         try:
-            run_prediction_pipeline(
-                dt_engine=dt_engine,
-                alarms=alarms,
-                analysis_results=analysis_results,
-                site_id=site_id,
-                api_key=api_key,
-                topology=topology,
-                scenario=scenario,
-            )
+            # ★ 案B: spinner で処理中フィードバック
+            with st.spinner("🔍 予兆検知パイプラインを実行中..."):
+                run_prediction_pipeline(
+                    dt_engine=dt_engine,
+                    alarms=alarms,
+                    analysis_results=analysis_results,
+                    site_id=site_id,
+                    api_key=api_key,
+                    topology=topology,
+                    scenario=scenario,
+                )
         except Exception as _pp_e:
             logger.warning("prediction_pipeline failed: %s", _pp_e)
 

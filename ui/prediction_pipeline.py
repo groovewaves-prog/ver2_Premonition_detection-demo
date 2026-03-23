@@ -190,7 +190,8 @@ def _run_predict_loop(
     ★ エッセンス3: predict_api の結果を engine_cache.cached_predict_api 経由で
     キャッシュし、同一状態への再推論を排除。
     """
-    from ui.engine_cache import cached_predict_api
+    from ui.engine_cache import get_topo_hash_cached
+    from ui.async_inference import submit_predict_task, get_predict_result
 
     dt_predictions: List[dict] = []
 
@@ -205,15 +206,22 @@ def _run_predict_loop(
             except Exception:
                 pass
 
+    # ★ 案C: predict_api をバックグラウンドにキック（ノンブロッキング）
+    _topo_hash = get_topo_hash_cached(site_id)
+    for _dev_id, (_msgs_list, _src) in _grouped.items():
+        _combined_msg = "\n".join(_msgs_list)
+        submit_predict_task(
+            site_id, _topo_hash, _dev_id,
+            _combined_msg, _src, _sim_level, len(_msgs_list),
+        )
+
     for _dev_id, (_msgs_list, _src) in _grouped.items():
         try:
             _combined_msg = "\n".join(_msgs_list)
 
-            # ★ エッセンス3: キャッシュ層経由で predict_api を呼び出し
-            _preds_returned = cached_predict_api(
-                dt_engine, _dev_id, _combined_msg,
-                site_id, _src, _sim_level,
-                len(_msgs_list), api_key,
+            # ★ 案C: バックグラウンド結果を即座に取得（未完了なら空リスト）
+            _preds_returned, _pred_analyzing = get_predict_result(
+                _dev_id, _combined_msg, _sim_level,
             )
 
             if not _preds_returned and _src == "simulation":
