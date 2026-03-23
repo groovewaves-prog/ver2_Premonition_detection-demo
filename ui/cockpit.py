@@ -705,6 +705,10 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
     show_command_popup_if_pending()
 
     # 0.5 メンテナンスモード通知バナー
+    # ★ 白いベール対策: st.empty() でデルタパスを安定化。
+    #   条件分岐で要素が出現/消滅すると、後続コンポーネント（トポロジーマップ等）の
+    #   Streamlit 内部 ID が変わり、iframe が再生成されて白いベールが発生する。
+    _maint_slot = st.empty()
     if _maint_devs:
         _maint_list = ", ".join(sorted(_maint_devs))
         # アクティブなウィンドウ情報を付加
@@ -717,7 +721,7 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
                 _end_str = _w["end"].strftime("%m/%d %H:%M")
                 _wlabel = _w.get("label", "")
                 _active_win_info += f" | 📅 {_wlabel or 'ウィンドウ'} 〜{_end_str}"
-        st.info(
+        _maint_slot.info(
             f"🔧 **メンテナンスモード**: {len(_maint_devs)}台のアラームを抑制中 "
             f"({_maint_list})"
             + (f" — {_suppressed_count}件のアラームを非表示" if _suppressed_count else "")
@@ -725,8 +729,9 @@ def render_incident_cockpit(site_id: str, api_key: Optional[str]):
         )
 
     # 0.9 AI分析中インジケーター
+    _analyzing_slot = st.empty()
     if _is_analyzing or is_any_analyzing(site_id):
-        st.info("🧠 **AI分析中...** バックグラウンドで推論を実行しています。完了次第、結果が更新されます。")
+        _analyzing_slot.info("🧠 **AI分析中...** バックグラウンドで推論を実行しています。完了次第、結果が更新されます。")
 
     # 1. KPIバナー
     prediction_count, noise_reduction = render_kpi_banner(
