@@ -101,11 +101,21 @@ def _interpolate_level(level_map: dict, effective_level: float) -> float:
 def _classify_interface_direction(
     iface: dict, device_id: str, topology: Optional[dict],
 ) -> str:
-    """インターフェースの方向（Uplink/Downlink）をトポロジーから推定する。"""
+    """インターフェースの方向（Uplink/Downlink）をトポロジーから推定する。
+
+    Spine-Leaf等のメッシュトポロジーでは、冗長グループのピアの子も
+    自身の downlink として正しく分類する。
+    また、トポロジーに存在しない接続先（WAN等の外部回線）は
+    一律 uplink として扱う。
+    """
     if not topology:
         return "unknown"
     connected_to = iface.get('connected_to', '')
-    if not connected_to or connected_to == 'WAN_UPLINK':
+    if not connected_to:
+        return "uplink"
+
+    # 接続先がトポロジーに存在しない → 外部回線（WAN_UPLINK等）
+    if connected_to not in topology:
         return "uplink"
 
     # 自デバイスの parent_id を取得
@@ -136,6 +146,18 @@ def _classify_interface_direction(
                          else getattr(target, 'parent_id', None))
         if target_parent == device_id:
             return "downlink"
+
+        # Spine-Leaf対応: 接続先の parent が自分の冗長ピアなら downlink
+        # (例: SPINE_SW_C02 → LEAF_SW_C01 は LEAF の parent が SPINE_SW_C01 だが、
+        #  SPINE_SW_C01 と C02 は同一冗長グループなので downlink)
+        if rg and target_parent:
+            peer_of_target_parent = topology.get(target_parent)
+            if peer_of_target_parent:
+                tp_rg = (peer_of_target_parent.get('redundancy_group')
+                         if isinstance(peer_of_target_parent, dict)
+                         else getattr(peer_of_target_parent, 'redundancy_group', None))
+                if tp_rg == rg:
+                    return "downlink"
 
     return "uplink"  # デフォルトはuplink扱い
 
@@ -480,13 +502,24 @@ def render_traffic_monitor(
 
     with st.expander(_traffic_label, expanded=degradation_level > 0):
         # ---- デバイスセレクター ----
-        devices_with_interfaces = [
-            dev_id for dev_id, node in topology.items()
-            if get_node_attr(node, 'interfaces')
+        # メタデータキー（_zones等）を除外してデバイスノードのみ抽出
+        _all_device_ids = [
+            dev_id for dev_id in topology
+            if not dev_id.startswith('_') and isinstance(topology[dev_id], dict)
         ]
+        devices_with_interfaces = [
+            dev_id for dev_id in _all_device_ids
+            if get_node_attr(topology[dev_id], 'interfaces')
+        ]
+        _devices_without = len(_all_device_ids) - len(devices_with_interfaces)
         if not devices_with_interfaces:
             st.info("トポロジーにインターフェース情報がありません。")
             return
+        if _devices_without > 0:
+            st.caption(
+                f"⚠ {_devices_without} 台のデバイスに `interfaces` 定義がないため"
+                f"トラフィックモニターの対象外です。"
+            )
 
         if degradation_level > 0:
             st.caption(f"劣化シナリオ: **{scenario_label}** — {scenario_desc}")
@@ -661,8 +694,28 @@ def render_traffic_monitor(
 
             total_devices = len(downstream)
 
-            # 影響レベル判定（帯域利用率ベース）
-            if avg_util >= 90:
+            # 影響レベル判定（帯域利用率ベース + 障害シナリオ考慮）
+            # サイレント障害やレイテンシ系障害は帯域が低くても影響がある
+            _is_silent_scenario = scenario_key == "latency_jitter" and degradation_level >= 2
+            if _is_silent_scenario and avg_util < 60:
+                # サイレント障害: 帯域は正常だが接続品質が劣化
+                _secondary = profile.get("secondary", {}) if profile else {}
+                _sec_values = _secondary.get("values", {})
+                _sec_val = _interpolate_level(_sec_values, degradation_level) if _sec_values else 0
+                _sec_name = _secondary.get("name", "")
+                if _sec_val >= 150:
+                    impact_level = "重大"
+                    impact_color = "#FF5722"
+                    impact_desc = f"{_sec_name}劣化により配下デバイスで接続品質が大幅に低下"
+                elif _sec_val >= 30:
+                    impact_level = "軽微"
+                    impact_color = "#FF9800"
+                    impact_desc = f"{_sec_name}増大 ({_sec_val:.0f}{_secondary.get('unit', '')}) — 接続品質に影響の可能性"
+                else:
+                    impact_level = "なし"
+                    impact_color = "#4CAF50"
+                    impact_desc = "通常のトラフィック状態"
+            elif avg_util >= 90:
                 impact_level = "深刻"
                 impact_color = "#D32F2F"
                 impact_desc = "帯域飽和により配下デバイス全体に影響"

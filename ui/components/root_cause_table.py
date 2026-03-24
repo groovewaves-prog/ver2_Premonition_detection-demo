@@ -212,7 +212,6 @@ def _render_incident_triage(cand: dict, topology: dict):
             _rc_actions = _get_fallback_triage_actions(cand, topology)
         if _rc_actions:
             cand['recommended_actions'] = _rc_actions
-            _auto_execute_incident_triage(_rc_actions, _rc_dev)
             # ★ st.rerun() を廃止し、その場で描画を完結させる
             with st.expander(f"🛠 初期確認: {_rc_dev}", expanded=True):
                 st.caption(
@@ -282,20 +281,6 @@ def _get_fallback_triage_actions(cand: dict, topology: dict) -> list:
                 "steps": "show ip bgp summary\nshow ip ospf neighbor",
             },
         ]
-
-
-def _auto_execute_incident_triage(rec_actions: list, device_id: str):
-    """障害トリアージ生成と同時に全showコマンドを自動実行する。"""
-    from .command_popup import extract_cli_commands, simulate_command_execution
-    _inline_key = f"_triage_inline_incident_{device_id}_{device_id}"
-    _results = {}
-    for ra in rec_actions:
-        _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
-        for cmd in extract_cli_commands(_steps):
-            if cmd not in _results:
-                _results[cmd] = simulate_command_execution(cmd, device_id)
-    if _results:
-        st.session_state[_inline_key] = _results
 
 
 def _generate_incident_triage_lazy(cand: dict, topology: dict) -> list:

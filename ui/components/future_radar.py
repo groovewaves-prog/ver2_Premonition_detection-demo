@@ -2,6 +2,7 @@
 import json as _json
 import re as _re
 import logging
+from datetime import timedelta
 import streamlit as st
 from typing import List
 from .helpers import st_html, build_ci_context_for_chat
@@ -11,18 +12,18 @@ from ui.service_tier import render_tier_gated, TIER_PHM
 logger = logging.getLogger(__name__)
 
 
-def _auto_execute_triage_commands(rec_actions: list, device_id: str, card_idx):
-    """トリアージ生成と同時に全showコマンドを自動実行し、インライン結果に格納する。"""
-    from .command_popup import extract_cli_commands, simulate_command_execution
-    _inline_key = f"_triage_inline_{card_idx}_{device_id}"
-    _results = {}
-    for ra in rec_actions:
-        _steps = ra.get("steps", ra.get("command", ra.get("action", "")))
-        for cmd in extract_cli_commands(_steps):
-            if cmd not in _results:
-                _results[cmd] = simulate_command_execution(cmd, device_id)
-    if _results:
-        st.session_state[_inline_key] = _results
+@st.fragment(run_every=timedelta(seconds=1))
+def _render_stream_fragment():
+    """ストリームダッシュボードをフラグメント化して自動リフレッシュ。
+
+    run_every=1s でフラグメント単位のみ再描画し、
+    ページ全体の rerun を回避する（白いベール根治）。
+    """
+    from ui.stream_dashboard import render_stream_dashboard, _get_simulator as _get_stream_sim
+    _stream_sim = _get_stream_sim()
+    if _stream_sim is None or not _stream_sim.is_started:
+        return
+    render_stream_dashboard()
 
 
 def _generate_prediction_triage_lazy(pc: dict, topology: dict) -> list:
@@ -263,8 +264,6 @@ def _render_radar_fragment(prediction_candidates: List[dict], topology: dict):
                 rec_actions = _generate_prediction_triage_lazy(pc, topology)
                 if rec_actions:
                     pc['recommended_actions'] = rec_actions
-                    # ★ AI自動実行: 生成と同時に全showコマンドを事前実行
-                    _auto_execute_triage_commands(rec_actions, _pred_device, _stable_card_idx)
                 st.rerun()
 
 
@@ -275,11 +274,9 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
 
     st.markdown("### 🔮 AIOps Future Radar")
     with render_tier_gated(TIER_PHM, "予兆検知 (Future Radar)"), st.container(border=True):
-        # ★ 連続劣化モニタリング: 初期確認の上に配置
-        from ui.stream_dashboard import render_stream_dashboard, _get_simulator as _get_stream_sim
-        _stream_sim = _get_stream_sim()
-        if _stream_sim is not None and _stream_sim.is_started:
-            render_stream_dashboard()
+        # ★ 連続劣化モニタリング: フラグメント化して自動リフレッシュ
+        #   ページ全体の rerun を回避（白いベール根治）
+        _render_stream_fragment()
 
         # ★ 高速化: フラグメント化により、トリアージボタン操作時に
         #   ページ全体を再描画せず、このセクションのみ再レンダリング

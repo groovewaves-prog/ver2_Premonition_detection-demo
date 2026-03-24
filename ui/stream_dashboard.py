@@ -88,7 +88,6 @@ def render_stream_dashboard():
     """
     sim = _get_simulator()
     if sim is None or not sim.is_started:
-        st.session_state["_stream_needs_refresh"] = False
         return False  # ストリーム非実行
 
     seq = sim.sequence
@@ -364,13 +363,9 @@ def render_stream_dashboard():
             if _sync_errors:
                 st.caption(f"⚠ 一部エラー: {', '.join(_sync_errors)}")
 
-    # ── 自動リフレッシュ ──
-    if not is_complete:
-        st.session_state["_stream_needs_refresh"] = True
-        return True
-
-    st.session_state["_stream_needs_refresh"] = False
-    return False
+    # ── 自動リフレッシュは @st.fragment(run_every=1s) で処理 ──
+    # ページ全体の rerun は不要（白いベール根治）
+    return not is_complete
 
 
 def _run_completion_sync(sim: AlarmStreamSimulator) -> dict:
