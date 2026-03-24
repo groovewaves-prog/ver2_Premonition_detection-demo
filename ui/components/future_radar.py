@@ -2,6 +2,7 @@
 import json as _json
 import re as _re
 import logging
+from datetime import timedelta
 import streamlit as st
 from typing import List
 from .helpers import st_html, build_ci_context_for_chat
@@ -9,6 +10,20 @@ from .command_popup import render_triage_cards
 from ui.service_tier import render_tier_gated, TIER_PHM
 
 logger = logging.getLogger(__name__)
+
+
+@st.fragment(run_every=timedelta(seconds=1))
+def _render_stream_fragment():
+    """ストリームダッシュボードをフラグメント化して自動リフレッシュ。
+
+    run_every=1s でフラグメント単位のみ再描画し、
+    ページ全体の rerun を回避する（白いベール根治）。
+    """
+    from ui.stream_dashboard import render_stream_dashboard, _get_simulator as _get_stream_sim
+    _stream_sim = _get_stream_sim()
+    if _stream_sim is None or not _stream_sim.is_started:
+        return
+    render_stream_dashboard()
 
 
 def _generate_prediction_triage_lazy(pc: dict, topology: dict) -> list:
@@ -259,11 +274,9 @@ def render_future_radar(prediction_candidates: List[dict], topology: dict = None
 
     st.markdown("### 🔮 AIOps Future Radar")
     with render_tier_gated(TIER_PHM, "予兆検知 (Future Radar)"), st.container(border=True):
-        # ★ 連続劣化モニタリング: 初期確認の上に配置
-        from ui.stream_dashboard import render_stream_dashboard, _get_simulator as _get_stream_sim
-        _stream_sim = _get_stream_sim()
-        if _stream_sim is not None and _stream_sim.is_started:
-            render_stream_dashboard()
+        # ★ 連続劣化モニタリング: フラグメント化して自動リフレッシュ
+        #   ページ全体の rerun を回避（白いベール根治）
+        _render_stream_fragment()
 
         # ★ 高速化: フラグメント化により、トリアージボタン操作時に
         #   ページ全体を再描画せず、このセクションのみ再レンダリング

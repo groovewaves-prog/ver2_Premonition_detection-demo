@@ -53,12 +53,8 @@ def render_sidebar():
                 if selected != current:
                     st.session_state.site_scenarios[site_id] = selected
 
-                    # ★ シナリオ切替時: ストリームシミュレータ + リフレッシュフラグを
-                    #   即座にクリア。これを行わないと app.py の自動リフレッシュループ
-                    #   (time.sleep + st.rerun) が残存し、白いベールが点滅する。
+                    # ★ シナリオ切替時: ストリームシミュレータをクリア
                     _clear_simulator()
-                    st.session_state["_stream_needs_refresh"] = False
-                    st.session_state["_stream_rerun_count"] = 0
 
                     # ★ 予兆シミュレーションとの競合を防ぐため自動クリア
                     injected = st.session_state.get("injected_weak_signal")
@@ -103,6 +99,15 @@ def render_sidebar():
                     #   折れ線グラフ（重い）が選択状態のまま残ると
                     #   次回レンダリングで遅延の原因になる
                     st.session_state.pop("_traffic_chart_mode", None)
+
+                    # 5. トリアージキャッシュ + インライン実行結果をクリア
+                    #   前シナリオの結果が残ると未実行コマンドに ✅ が表示される
+                    _keys_to_clear = [k for k in list(st.session_state.keys())
+                                      if k.startswith("_triage_pred_")
+                                      or k.startswith("_triage_inline_")
+                                      or k.startswith("_triage_incident_")]
+                    for k in _keys_to_clear:
+                        st.session_state.pop(k, None)
 
                     # ★ 案A: シナリオ切替フラグを立てる
                     #   cockpit.py で検知し、重い処理（prediction_pipeline, auto_tuning）を

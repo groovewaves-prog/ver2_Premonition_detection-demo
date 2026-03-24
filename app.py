@@ -1,6 +1,5 @@
 # app.py (Refactored Entry Point)
 import streamlit as st
-import time
 from utils.state import init_session_state
 from ui.sidebar import render_sidebar
 from ui.dashboard import render_site_status_board, render_triage_center
@@ -80,20 +79,8 @@ def main():
                     st.session_state[_tab_key] = _TAB_NAMES[1]
                     st.rerun()
 
-        # ストリーム実行中: 自動リフレッシュ（0.5s間隔）
-        # ★ デッドロック防止: 連続rerunカウンタで無限ループを検出・遮断
-        _stream_needs_refresh = st.session_state.get("_stream_needs_refresh", False)
-        if stream_running and _stream_needs_refresh:
-            _rerun_count = st.session_state.get("_stream_rerun_count", 0) + 1
-            st.session_state["_stream_rerun_count"] = _rerun_count
-            if _rerun_count > 15:  # 15回 × 0.5s = 7.5秒超 → 異常と判断
-                st.session_state["_stream_needs_refresh"] = False
-                st.session_state["_stream_rerun_count"] = 0
-            else:
-                time.sleep(0.5)
-                st.rerun()
-        else:
-            st.session_state["_stream_rerun_count"] = 0
+        # ストリーム実行中の自動リフレッシュは @st.fragment(run_every=...)
+        # でフラグメント単位で処理する（全ページ rerun 不要）
     else:
         # ★ エンジン事前ウォームアップ: ダッシュボード表示中にバックグラウンドで
         #   LogicalRCA / DigitalTwinEngine を初期化し、「詳細」押下時の待ち時間を解消
